@@ -52,3 +52,10 @@ func (p *Postgres) Balance(ctx context.Context, accountID string) (Balance, erro
 }
 
 func (p *Postgres) Audit(ctx context.Context) error { return ErrNotImplemented }
+
+// Reconcile finds holds past expires_at and settles or releases them (I6). It
+// lives on Postgres, not the Ledger interface: scanning expired holds with
+// FOR UPDATE SKIP LOCKED needs a transaction the interface cannot express.
+func (p *Postgres) Reconcile(ctx context.Context, lookup UsageLookup, now time.Time) (Report, error) {
+	return Report{}, ErrNotImplemented
+}

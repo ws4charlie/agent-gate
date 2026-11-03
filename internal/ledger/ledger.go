@@ -84,8 +84,3 @@ type UsageLookup interface {
 // Report summarises one reconciler pass (I6). T1 decides the fields; T0 only
 // reserves the name so Reconcile can be declared.
 type Report struct{}
-
-// Reconcile finds holds past expires_at and settles or releases them (I6).
-func Reconcile(ctx context.Context, l Ledger, lookup UsageLookup, now time.Time) (Report, error) {
-	return Report{}, ErrNotImplemented
-}
