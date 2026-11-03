@@ -23,6 +23,14 @@ var (
 	ErrIdempotencyConflict = errors.New("ledger: idempotency key reused with different parameters")
 	ErrAccountInactive     = errors.New("ledger: account inactive")
 	ErrNotImplemented      = errors.New("not implemented")
+
+	// ErrHoldNotActive: the hold is already terminal (or, for Extend, not
+	// active) under a different key. A caller that lost a race to another
+	// settle or release must skip, not retry (I3).
+	ErrHoldNotActive   = errors.New("ledger: hold not active")
+	ErrHoldNotFound    = errors.New("ledger: hold not found")
+	ErrAccountNotFound = errors.New("ledger: account not found")
+	ErrInvalidRequest  = errors.New("ledger: invalid request")
 )
 
 type ReserveReq struct {
@@ -81,6 +89,10 @@ type UsageLookup interface {
 	Lookup(ctx context.Context, provider, upstreamID string) (Usage, bool, error)
 }
 
-// Report summarises one reconciler pass (I6). T1 decides the fields; T0 only
-// reserves the name so Reconcile can be declared.
-type Report struct{}
+// Report summarises one reconciler pass (I6). Holds another process had
+// locked, or that went terminal first, are skipped and counted nowhere.
+type Report struct {
+	Settled  int // settled from usage found by UsageLookup
+	Released int // released unmetered: no upstream id, or lookup found nothing
+	Errors   int // holds left active because lookup or the write failed
+}
