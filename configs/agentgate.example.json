@@ -1,0 +1,9 @@
+{
+  "listen": "127.0.0.1:8080",
+  "database_url": "postgres:///agentgate?host=/tmp",
+  "max_hold_nanos": 5000000000,
+  "default_max_tokens": 1024,
+  "providers": {
+    "openrouter": { "base_url": "https://openrouter.ai/api/v1" }
+  }
+}
