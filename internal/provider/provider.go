@@ -1,4 +1,6 @@
-// Package provider holds types shared by upstream adapters. Adapters arrive in T2.
+// Package provider holds what is specific to an upstream wire format: usage
+// parsing, routing, request building, and the chat-completions <-> Messages
+// translation. It never touches the ledger.
 package provider
 
 import "github.com/ws4charlie/agent-gate/internal/money"

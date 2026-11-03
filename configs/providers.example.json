@@ -1,0 +1,12 @@
+{
+  "providers": {
+    "openrouter": { "kind": "openai-compatible", "base_url": "https://openrouter.ai/api/v1" },
+    "anthropic":  { "kind": "anthropic",         "base_url": "https://api.anthropic.com/v1" },
+    "openai":     { "kind": "openai-compatible", "base_url": "https://api.openai.com/v1", "include_usage": true }
+  },
+  "routes": [
+    { "prefix": "anthropic-direct/", "provider": "anthropic", "strip": true },
+    { "prefix": "openai-direct/",    "provider": "openai",    "strip": true },
+    { "prefix": "",                  "provider": "openrouter" }
+  ]
+}
