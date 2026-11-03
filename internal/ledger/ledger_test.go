@@ -543,8 +543,8 @@ func TestReconcileRacingSettle_I3(t *testing.T) {
 	acct := funded(t, l, 10_000)
 	late := time.Now().Add(time.Hour)
 
-	// Deterministic loss: the reconciler locks the hold and is parked inside
-	// Lookup; the live settle queues on the row lock, then sees it terminal.
+	// The reconciler is parked inside Lookup. It holds no lock then, so a live
+	// settle must finish without waiting for it, and the reconciler loses.
 	h := reserve(t, l, acct, "r1", 100)
 	if err := l.AttachUpstream(ctx, h.ID, "fake", "up1"); err != nil {
 		t.Fatal(err)
@@ -559,19 +559,22 @@ func TestReconcileRacingSettle_I3(t *testing.T) {
 		recDone <- rep
 	}()
 	<-inLookup
-	settleErr := make(chan error, 1)
-	go func() {
-		_, err := l.Settle(ctx, ledger.SettleReq{HoldID: h.ID, Actual: 70, IdemKey: "live"})
-		settleErr <- err
-	}()
-	time.Sleep(200 * time.Millisecond) // let the settle block on FOR UPDATE
+	if _, err := l.Settle(ctx, ledger.SettleReq{HoldID: h.ID, Actual: 70, IdemKey: "live"}); err != nil {
+		t.Fatalf("live settle while reconciler is in Lookup: %v", err)
+	}
+	select {
+	case <-recDone:
+		t.Fatal("settle test is vacuous: reconciler returned before being unparked")
+	default:
+	}
 	close(proceed)
-	if rep := <-recDone; rep != (ledger.Report{Settled: 1}) {
-		t.Fatalf("reconcile report %+v", rep)
+	if rep := <-recDone; rep != (ledger.Report{}) {
+		t.Fatalf("reconciler must count nothing after losing, got %+v", rep)
 	}
-	if err := <-settleErr; !errors.Is(err, ledger.ErrHoldNotActive) {
-		t.Fatalf("live settle should lose with ErrHoldNotActive, got %v", err)
+	if b := bal(t, l, acct); b.Balance != 10_000-70 || b.Held != 0 {
+		t.Fatalf("balance %+v", b)
 	}
+	mustAudit(t, l)
 
 	// The other order: live settle wins, the reconciler skips and counts nothing.
 	h2 := reserve(t, l, acct, "r2", 100)
@@ -627,6 +630,66 @@ func TestReconcileRacingSettle_I3(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM (SELECT hold_id FROM ledger_entries WHERE kind='settle'
 		GROUP BY hold_id HAVING count(*) > 1) x`).Scan(&multi); err != nil || multi != 0 {
 		t.Fatalf("holds settled twice: %d %v", multi, err)
+	}
+	mustAudit(t, l)
+}
+
+// I6: a lease extended while the reconciler looks up usage is live again, so
+// the reconciler must leave the hold active.
+func TestReconcileSkipsExtendedHold_I6(t *testing.T) {
+	l, _ := setup(t)
+	acct := funded(t, l, 1000)
+	h := reserve(t, l, acct, "r1", 100)
+	if err := l.AttachUpstream(ctx, h.ID, "fake", "up1"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Add(2 * time.Minute) // past the 1m TTL
+	inLookup, proceed := make(chan struct{}), make(chan struct{})
+	recDone := make(chan ledger.Report, 1)
+	go func() {
+		rep, err := l.Reconcile(ctx, blockingLookup{inLookup, proceed, 60}, now)
+		if err != nil {
+			t.Error(err)
+		}
+		recDone <- rep
+	}()
+	<-inLookup
+	if err := l.Extend(ctx, h.ID, time.Hour); err != nil { // real clock: expires well past `now`
+		t.Fatal(err)
+	}
+	close(proceed)
+	if rep := <-recDone; rep != (ledger.Report{}) {
+		t.Fatalf("report %+v", rep)
+	}
+	if b := bal(t, l, acct); b.Held != 100 {
+		t.Fatalf("hold was closed despite the extend: %+v", b)
+	}
+	mustAudit(t, l)
+}
+
+type ctxLookup struct{}
+
+func (ctxLookup) Lookup(c context.Context, _, _ string) (ledger.Usage, bool, error) {
+	<-c.Done()
+	return ledger.Usage{}, false, c.Err()
+}
+
+// I6: a lookup that never answers is cut off by the timeout; the hold stays
+// active for the next pass.
+func TestReconcileLookupTimeout_I6(t *testing.T) {
+	l, _ := setup(t)
+	l = l.WithLookupTimeout(20 * time.Millisecond)
+	acct := funded(t, l, 1000)
+	h := reserve(t, l, acct, "r1", 100)
+	if err := l.AttachUpstream(ctx, h.ID, "fake", "up1"); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := l.Reconcile(ctx, ctxLookup{}, time.Now().Add(time.Hour))
+	if err != nil || rep != (ledger.Report{Errors: 1}) {
+		t.Fatalf("report %+v %v", rep, err)
+	}
+	if b := bal(t, l, acct); b.Held != 100 {
+		t.Fatalf("hold should stay active: %+v", b)
 	}
 	mustAudit(t, l)
 }

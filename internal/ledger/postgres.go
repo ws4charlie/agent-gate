@@ -20,17 +20,31 @@ import (
 type Postgres struct {
 	pool *pgxpool.Pool
 	now  func() time.Time
+
+	lookupTimeout time.Duration // bound on one UsageLookup call during Reconcile
 }
+
+const defaultLookupTimeout = 10 * time.Second
 
 var _ Ledger = (*Postgres)(nil)
 
-func New(pool *pgxpool.Pool) *Postgres { return &Postgres{pool: pool, now: time.Now} }
+func New(pool *pgxpool.Pool) *Postgres {
+	return &Postgres{pool: pool, now: time.Now, lookupTimeout: defaultLookupTimeout}
+}
 
 // WithClock returns a copy that stamps expires_at from now. Tests use it to
 // move time; Reconcile takes its own `now` argument.
 func (p *Postgres) WithClock(now func() time.Time) *Postgres {
 	c := *p
 	c.now = now
+	return &c
+}
+
+// WithLookupTimeout returns a copy with a different per-lookup bound; tests
+// shrink it.
+func (p *Postgres) WithLookupTimeout(d time.Duration) *Postgres {
+	c := *p
+	c.lookupTimeout = d
 	return &c
 }
 
@@ -402,7 +416,10 @@ func (p *Postgres) Balance(ctx context.Context, accountID string) (Balance, erro
 // lives on Postgres, not the Ledger interface: scanning expired holds with
 // FOR UPDATE SKIP LOCKED needs a transaction the interface cannot express.
 //
-// Each hold gets its own transaction, so one bad hold cannot block the rest.
+// Each hold gets its own short transaction, so one bad hold cannot block the
+// rest. UsageLookup is a network call, so it runs before the transaction, with
+// no lock and no connection held, under lookupTimeout; the transaction then
+// re-checks that the hold is still active, expired and unchanged.
 // Keys are "reconcile:<hold id>" so a repeat pass or a second reconciler can
 // never produce a second terminal entry (I3, I4). A hold a live settle holds
 // locked is skipped by SKIP LOCKED; one that went terminal first is no longer
@@ -448,19 +465,33 @@ func (p *Postgres) Reconcile(ctx context.Context, lookup UsageLookup, now time.T
 }
 
 func (p *Postgres) reconcileOne(ctx context.Context, lookup UsageLookup, id string, now time.Time) (outcome string, err error) {
+	// 1. Unlocked peek: is it still expired and active, and where is its usage?
+	peek, err := scanHold(p.pool.QueryRow(ctx, holdSelect+` WHERE id=$1 AND status='active' AND expires_at <= $2`, id, now.UTC()))
+	if err != nil {
+		return "", err // ErrNoRows: went terminal or was extended since the scan
+	}
+
+	// 2. The (possibly slow, networked) lookup runs with no transaction, no row
+	// lock and no pool connection held, so it can never stall a live Settle.
+	var u Usage
+	var found bool
+	if peek.UpstreamID != "" { // never attached: nothing to look up
+		lctx, cancel := context.WithTimeout(ctx, p.lookupTimeout)
+		u, found, err = lookup.Lookup(lctx, peek.Provider, peek.UpstreamID)
+		cancel()
+		if err != nil {
+			return "", err
+		}
+	}
+
+	// 3. Lock and re-check: anything that changed while we looked (settled,
+	// released, extended, re-attached) means our answer may be stale; skip.
+	key := "reconcile:" + peek.ID
 	err = p.inTx(ctx, func(tx pgx.Tx) error {
 		h, err := scanHold(tx.QueryRow(ctx, holdSelect+` WHERE id=$1 AND status='active' AND expires_at <= $2
-			FOR UPDATE SKIP LOCKED`, id, now.UTC()))
+			AND provider=$3 AND upstream_id=$4 FOR UPDATE SKIP LOCKED`, id, now.UTC(), peek.Provider, peek.UpstreamID))
 		if err != nil {
-			return err // ErrNoRows: locked elsewhere or already terminal
-		}
-		key := "reconcile:" + h.ID
-		var u Usage
-		var found bool
-		if h.UpstreamID != "" { // never attached: nothing to look up
-			if u, found, err = lookup.Lookup(ctx, h.Provider, h.UpstreamID); err != nil {
-				return err
-			}
+			return err // ErrNoRows: locked elsewhere or changed
 		}
 		if found && u.Cost >= 0 {
 			if _, err := settleLocked(ctx, tx, h, u.Cost, key, "reconciled from usage: "+u.Source); err != nil {

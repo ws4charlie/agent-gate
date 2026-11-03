@@ -31,11 +31,11 @@ Entries per operation (the held and balance deltas Audit relies on):
 
 ## Key flows
 
-- **Reserve** ([postgres.go:102](../../internal/ledger/postgres.go)). Insert the hold with `ON CONFLICT DO NOTHING` (a concurrent duplicate waits for the winner, then replays), then one conditional `UPDATE accounts SET held = held + $a WHERE status='active' AND balance - held >= $a`. No row back means insufficient funds (or inactive); the transaction rolls back and the hold insert vanishes.
-- **Settle** ([postgres.go:320](../../internal/ledger/postgres.go)). `SELECT ... FOR UPDATE` the hold, then the account. `settleLocked` ([:256](../../internal/ledger/postgres.go)) applies I7: `charged = min(actual, hold + free balance)`, `unrecovered = actual - charged`.
-- **Release** ([:358](../../internal/ledger/postgres.go)). Lock the hold, return its amount to free balance.
-- **Reconcile** ([:410](../../internal/ledger/postgres.go)). List expired active holds, then one transaction per hold with `FOR UPDATE SKIP LOCKED`. Usage found via `UsageLookup` means settle; otherwise release with memo `reconciler: unmetered`. Keys are `reconcile:<hold id>`.
-- **Audit** ([:484](../../internal/ledger/postgres.go)). One repeatable-read snapshot; recomputes balances and held from entries and checks them against the accounts and active holds.
+- **Reserve** ([postgres.go:116](../../internal/ledger/postgres.go)). Insert the hold with `ON CONFLICT DO NOTHING` (a concurrent duplicate waits for the winner, then replays), then one conditional `UPDATE accounts SET held = held + $a WHERE status='active' AND balance - held >= $a`. No row back means insufficient funds (or inactive); the transaction rolls back and the hold insert vanishes.
+- **Settle** ([postgres.go:334](../../internal/ledger/postgres.go)). `SELECT ... FOR UPDATE` the hold, then the account. `settleLocked` ([:270](../../internal/ledger/postgres.go)) applies I7: `charged = min(actual, hold + free balance)`, `unrecovered = actual - charged`.
+- **Release** ([:372](../../internal/ledger/postgres.go)). Lock the hold, return its amount to free balance.
+- **Reconcile** ([:427](../../internal/ledger/postgres.go)). List expired active holds. For each: peek without a lock, call `UsageLookup` with no transaction open (10s timeout), then open a short transaction, take the row with `FOR UPDATE SKIP LOCKED` and re-check it is still active, expired and unchanged. Usage found means settle; otherwise release with memo `reconciler: unmetered`. Keys are `reconcile:<hold id>`.
+- **Audit** ([:515](../../internal/ledger/postgres.go)). One repeatable-read snapshot; recomputes balances and held from entries and checks them against the accounts and active holds.
 
 Lock order is always hold, then account. Reserve and Deposit lock only the account. So nothing deadlocks.
 
@@ -55,8 +55,9 @@ Lock order is always hold, then account. Reserve and Deposit lock only the accou
 
 - **Process dies after Reserve.** Hold stays active until `expires_at`; Reconcile closes it.
 - **Client retries.** Same key replays the stored result. A different amount is `ErrIdempotencyConflict`.
-- **Live settle vs reconciler.** Whoever locks the hold first wins. The loser sees a terminal hold: a live settle gets `ErrHoldNotActive`; the reconciler skips and counts nothing.
+- **Live settle vs reconciler.** Whoever commits first wins. A live settle that comes second gets `ErrHoldNotActive`; a reconciler that comes second re-checks, skips and counts nothing.
 - **Reconciler crashes mid-pass.** Each hold is its own transaction, so finished holds stay finished.
+- **Slow or hung lookup.** It holds no lock and no connection, so live settles proceed; the timeout turns it into an error.
 - **Lookup error.** The hold stays active, `Report.Errors` counts it, the next pass retries.
 
 ## Gotchas hit
@@ -85,5 +86,6 @@ Lock order is always hold, then account. Reserve and Deposit lock only the accou
 10. **How does the crash test prove I6?** A separate process reserves and is SIGKILLed; the test advances `now`, runs Reconcile, and checks both the found-usage and not-found paths, then Audit.
 11. **Why must lock order be hold then account?** Settle, Release and Reconcile all take it, so no two can wait on each other in a cycle.
 12. **Why is `Extend` GREATEST(...)?** A late, shorter extend must not shorten the lease and expose a live request to the reconciler.
+13. **Why does the usage lookup sit outside the transaction?** It is an HTTP call. Inside, a slow provider would hold the hold's row lock (blocking a live Settle) and a pool connection. Outside, the transaction re-checks the hold, so a settle or extend that happened meanwhile just makes the reconciler skip.
 
 </details>
