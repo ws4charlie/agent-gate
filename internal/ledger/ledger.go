@@ -95,4 +95,17 @@ type Report struct {
 	Settled  int // settled from usage found by UsageLookup
 	Released int // released unmetered: no upstream id, or lookup found nothing
 	Errors   int // holds left active because lookup or the write failed
+
+	// Outcomes lists every hold this pass closed, so the caller can audit them.
+	Outcomes []ReconcileOutcome
+}
+
+// ReconcileOutcome is one hold closed by the reconciler. For "settled", Amount
+// is what was charged and Source says where the usage came from; for
+// "released" (unmetered), Amount is the hold returned to the account.
+type ReconcileOutcome struct {
+	HoldID, AccountID string
+	Result            string // "settled" | "released"
+	Amount            money.Nanos
+	Source            string
 }

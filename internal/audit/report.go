@@ -21,6 +21,8 @@ type Line struct {
 	Spend, Unrecovered                   money.Nanos
 	Input, Output, CacheRead, CacheWrite int64
 	Savings                              money.Nanos // what the cache-read tokens saved versus plain input
+	Unmetered                            int64       // holds the reconciler released with no usage found (I6)
+	UnmeteredNanos                       money.Nanos // what those releases returned
 	BySource                             map[string]SourceSplit
 }
 
@@ -44,8 +46,10 @@ func Report(ctx context.Context, pool *pgxpool.Pool, since time.Time, by string,
 	if by != "model" && by != "account" {
 		return nil, fmt.Errorf("report: --by must be model or account, not %q", by)
 	}
-	rows, err := pool.Query(ctx, `SELECT account_id, model, cost_source, count(*), sum(cost_nanos), sum(unrecovered_nanos),
-		sum(input_tokens), sum(output_tokens), sum(cache_read_tokens), sum(cache_write_tokens)
+	rows, err := pool.Query(ctx, `SELECT account_id, model, cost_source,
+		count(*) FILTER (WHERE status NOT LIKE 'reconciled\_%'), sum(cost_nanos), sum(unrecovered_nanos),
+		sum(input_tokens), sum(output_tokens), sum(cache_read_tokens), sum(cache_write_tokens),
+		count(*) FILTER (WHERE unmetered), sum(unmetered_nanos)
 		FROM audit_events WHERE at >= $1 AND kind = 'model' GROUP BY account_id, model, cost_source`, since.UTC())
 	if err != nil {
 		return nil, err
@@ -55,11 +59,14 @@ func Report(ctx context.Context, pool *pgxpool.Pool, since time.Time, by string,
 	for rows.Next() {
 		var acct, model, src string
 		var n int64
-		var cost, unrec, in, out, cr, cw int64
-		if err := rows.Scan(&acct, &model, &src, &n, &cost, &unrec, &in, &out, &cr, &cw); err != nil {
+		var cost, unrec, in, out, cr, cw, um, umN int64
+		if err := rows.Scan(&acct, &model, &src, &n, &cost, &unrec, &in, &out, &cr, &cw, &um, &umN); err != nil {
 			return nil, err
 		}
 		key := model
+		if key == "" {
+			key = "(reconciler)"
+		}
 		if by == "account" {
 			key = acct
 		}
@@ -68,7 +75,9 @@ func Report(ctx context.Context, pool *pgxpool.Pool, since time.Time, by string,
 			l = &Line{Key: key, BySource: map[string]SourceSplit{}}
 			agg[key] = l
 		}
-		l.Requests += n
+		l.Requests += n // reconciler rows are not requests: the request itself has its own row
+		l.Unmetered += um
+		l.UnmeteredNanos += money.Nanos(umN)
 		l.Spend += money.Nanos(cost)
 		l.Unrecovered += money.Nanos(unrec)
 		l.Input, l.Output, l.CacheRead, l.CacheWrite = l.Input+in, l.Output+out, l.CacheRead+cr, l.CacheWrite+cw
@@ -116,6 +125,8 @@ func Print(w io.Writer, by string, lines []Line) {
 		total.CacheRead += l.CacheRead
 		total.CacheWrite += l.CacheWrite
 		total.Savings += l.Savings
+		total.Unmetered += l.Unmetered
+		total.UnmeteredNanos += l.UnmeteredNanos
 		for k, v := range l.BySource {
 			s := total.BySource[k]
 			s.Requests += v.Requests
@@ -137,4 +148,5 @@ func Print(w io.Writer, by string, lines []Line) {
 		fmt.Fprintf(w, "  %s=%d reqs / %s USD", k, s.Requests, s.Spend)
 	}
 	fmt.Fprintln(w)
+	fmt.Fprintf(w, "unmetered: %d holds released with no usage found, %s USD returned\n", total.Unmetered, total.UnmeteredNanos)
 }

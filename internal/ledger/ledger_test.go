@@ -134,12 +134,12 @@ func TestReplay_I3_I4(t *testing.T) {
 	late := time.Now().Add(time.Hour)
 	lk := fakeLookup{"up-3": 40}
 	rep, err := l.Reconcile(ctx, lk, late)
-	if err != nil || rep != (ledger.Report{Settled: 1, Released: 1}) {
+	if err != nil || counts(rep) != (rc{Settled: 1, Released: 1}) {
 		t.Fatalf("reconcile: %+v %v", rep, err)
 	}
 	for i := 0; i < 100; i++ {
 		rep, err := l.Reconcile(ctx, lk, late)
-		if err != nil || rep != (ledger.Report{}) {
+		if err != nil || counts(rep) != (rc{}) {
 			t.Fatalf("reconcile replay %d: %+v %v", i, rep, err)
 		}
 	}
@@ -581,7 +581,7 @@ func TestReconcileRacingSettle_I3(t *testing.T) {
 	default:
 	}
 	close(proceed)
-	if rep := <-recDone; rep != (ledger.Report{}) {
+	if rep := <-recDone; counts(rep) != (rc{}) {
 		t.Fatalf("reconciler must count nothing after losing, got %+v", rep)
 	}
 	if b := bal(t, l, acct); b.Balance != 10_000-70 || b.Held != 0 {
@@ -594,7 +594,7 @@ func TestReconcileRacingSettle_I3(t *testing.T) {
 	if _, err := l.Settle(ctx, ledger.SettleReq{HoldID: h2.ID, Actual: 70, IdemKey: "live2"}); err != nil {
 		t.Fatal(err)
 	}
-	if rep, err := l.Reconcile(ctx, fakeLookup{}, late); err != nil || rep != (ledger.Report{}) {
+	if rep, err := l.Reconcile(ctx, fakeLookup{}, late); err != nil || counts(rep) != (rc{}) {
 		t.Fatalf("reconcile after live settle: %+v %v", rep, err)
 	}
 
@@ -671,7 +671,7 @@ func TestReconcileSkipsExtendedHold_I6(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(proceed)
-	if rep := <-recDone; rep != (ledger.Report{}) {
+	if rep := <-recDone; counts(rep) != (rc{}) {
 		t.Fatalf("report %+v", rep)
 	}
 	if b := bal(t, l, acct); b.Held != 100 {
@@ -698,7 +698,7 @@ func TestReconcileLookupTimeout_I6(t *testing.T) {
 		t.Fatal(err)
 	}
 	rep, err := l.Reconcile(ctx, ctxLookup{}, time.Now().Add(time.Hour))
-	if err != nil || rep != (ledger.Report{Errors: 1}) {
+	if err != nil || counts(rep) != (rc{Errors: 1}) {
 		t.Fatalf("report %+v %v", rep, err)
 	}
 	if b := bal(t, l, acct); b.Held != 100 {
@@ -761,12 +761,12 @@ func TestCrashRecovery_I6(t *testing.T) {
 		t.Fatalf("holds not visible after crash: %+v", b)
 	}
 	// Not expired yet: the reconciler must leave them alone.
-	if rep, err := l.Reconcile(ctx, fakeLookup{"up-found": 420}, time.Now()); err != nil || rep != (ledger.Report{}) {
+	if rep, err := l.Reconcile(ctx, fakeLookup{"up-found": 420}, time.Now()); err != nil || counts(rep) != (rc{}) {
 		t.Fatalf("early reconcile: %+v %v", rep, err)
 	}
 
 	rep, err := l.Reconcile(ctx, fakeLookup{"up-found": 420}, time.Now().Add(time.Hour))
-	if err != nil || rep != (ledger.Report{Settled: 1, Released: 1}) {
+	if err != nil || counts(rep) != (rc{Settled: 1, Released: 1}) {
 		t.Fatalf("reconcile: %+v %v", rep, err)
 	}
 	if b := bal(t, l, acct); b != (ledger.Balance{AccountID: acct, Balance: 10_000 - 420, Held: 0}) {
@@ -990,3 +990,8 @@ func TestStateful_I1_I2(t *testing.T) {
 		check()
 	})
 }
+
+// counts drops Outcomes so a Report can be compared with !=.
+type rc struct{ Settled, Released, Errors int }
+
+func counts(r ledger.Report) rc { return rc{r.Settled, r.Released, r.Errors} }

@@ -450,12 +450,14 @@ func (p *Postgres) Reconcile(ctx context.Context, lookup UsageLookup, now time.T
 		if err := ctx.Err(); err != nil {
 			return rep, err
 		}
-		settled, err := p.reconcileOne(ctx, lookup, id, now)
+		oc, err := p.reconcileOne(ctx, lookup, id, now)
 		switch {
-		case err == nil && settled == "settled":
+		case err == nil && oc.Result == "settled":
 			rep.Settled++
-		case err == nil && settled == "released":
+			rep.Outcomes = append(rep.Outcomes, oc)
+		case err == nil && oc.Result == "released":
 			rep.Released++
+			rep.Outcomes = append(rep.Outcomes, oc)
 		case err == nil, errors.Is(err, ErrHoldNotActive), errors.Is(err, pgx.ErrNoRows):
 			// lost the race to a live settle: nothing to count
 		default:
@@ -465,11 +467,11 @@ func (p *Postgres) Reconcile(ctx context.Context, lookup UsageLookup, now time.T
 	return rep, nil
 }
 
-func (p *Postgres) reconcileOne(ctx context.Context, lookup UsageLookup, id string, now time.Time) (outcome string, err error) {
+func (p *Postgres) reconcileOne(ctx context.Context, lookup UsageLookup, id string, now time.Time) (outcome ReconcileOutcome, err error) {
 	// 1. Unlocked peek: is it still expired and active, and where is its usage?
 	peek, err := scanHold(p.pool.QueryRow(ctx, holdSelect+` WHERE id=$1 AND status='active' AND expires_at <= $2`, id, now.UTC()))
 	if err != nil {
-		return "", err // ErrNoRows: went terminal or was extended since the scan
+		return outcome, err // ErrNoRows: went terminal or was extended since the scan
 	}
 
 	// 2. The (possibly slow, networked) lookup runs with no transaction, no row
@@ -481,7 +483,7 @@ func (p *Postgres) reconcileOne(ctx context.Context, lookup UsageLookup, id stri
 		u, found, err = lookup.Lookup(lctx, peek.Provider, peek.UpstreamID)
 		cancel()
 		if err != nil {
-			return "", err
+			return outcome, err
 		}
 	}
 
@@ -495,16 +497,17 @@ func (p *Postgres) reconcileOne(ctx context.Context, lookup UsageLookup, id stri
 			return err // ErrNoRows: locked elsewhere or changed
 		}
 		if found && u.Cost >= 0 {
-			if _, err := settleLocked(ctx, tx, h, u.Cost, key, "reconciled from usage: "+u.Source); err != nil {
+			st, err := settleLocked(ctx, tx, h, u.Cost, key, "reconciled from usage: "+u.Source)
+			if err != nil {
 				return err
 			}
-			outcome = "settled"
+			outcome = ReconcileOutcome{HoldID: h.ID, AccountID: h.AccountID, Result: "settled", Amount: st.Charged, Source: u.Source}
 			return nil
 		}
 		if _, err := releaseLocked(ctx, tx, h, key, "reconciler: unmetered"); err != nil {
 			return err
 		}
-		outcome = "released"
+		outcome = ReconcileOutcome{HoldID: h.ID, AccountID: h.AccountID, Result: "released", Amount: h.Amount}
 		return nil
 	})
 	return outcome, err

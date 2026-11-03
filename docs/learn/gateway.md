@@ -28,12 +28,13 @@ Order of work in [`run`](../../internal/server/server.go) (line 180): authentica
 
 - **Hold size.** `bytes/3` of the request body as input tokens (priced at the dearer of input and cache-write) plus `max_tokens` (or the default) at the output price, capped at `max_hold_nanos`. High on purpose: an overage is only partly recoverable (I7).
 - **Duplicates.** `ledger.Reserve` replays the first hold for a used key, so it cannot tell "retry" from "first call". The gateway first inserts a claim row in `gateway_requests`; the loser gets 409 `duplicate_request` carrying the winner's request id, and upstream is never called. If Reserve then fails (no funds), the claim is deleted so the same key can be retried after a top-up.
-- **Streaming.** `stream` reads upstream in chunks, writes and flushes each chunk to the client, then hands the same bytes to a `provider.Parser` (a line-splitting `io.Writer`). Nothing is buffered beyond one read. First chunk with an id triggers `AttachUpstream`.
+- **Streaming.** `stream` reads upstream in chunks, writes and flushes each chunk to the client, then hands the same bytes to a `provider.Parser` (a line-splitting `io.Writer`). Nothing is buffered beyond one read. The upstream id is attached as soon as the response headers arrive: `X-Generation-Id` (OpenRouter sends it on both surfaces; the Anthropic body id `msg_...` cannot be looked up) wins, the body id is the fallback.
 - **Translation.** Chat completions routed to an `anthropic` provider go through `ChatToMessages`; the response is converted back by `MessagesToChat` or, for streams, `SSETranslator` one event at a time. Usage is parsed from the raw Anthropic bytes before translation.
 - **Cost source.** Provider-reported `cost` wins; else price table on reported tokens; else a token estimate (`estimated`). OpenAI reports cached tokens inside `prompt_tokens`; the parser subtracts them so every class is priced once.
 - **Lease.** A goroutine calls `Extend` every `HoldTTL/10` (30 s) while the upstream call runs. TTL is 5 minutes: nine missed ticks fit before expiry, and it is far longer than the lag before a finished call shows up in OpenRouter's `/generation`, so a "not found" at reconcile time means "no generation", not "not indexed yet".
 - **Settle.** Key `settle:<hold id>`. `ErrHoldNotActive` means the reconciler already closed the hold: audit `settle_lost_to_reconciler` with the real usage, never retry.
-- **Reconcile.** `agentgate reconcile` and a 30 s loop inside `serve` call `Postgres.Reconcile` with `provider.GenerationLookup` (OpenRouter `GET /generation?id=`).
+- **Reconcile.** `agentgate reconcile` and a 30 s loop inside `serve` call `server.Reconcile`, which runs `Postgres.Reconcile` with `provider.GenerationLookup` (OpenRouter `GET /generation?id=`; a 400 means the id can never resolve, so it counts as not found) and writes one audit row per closed hold: `reconciled_settled` or `reconciled_unmetered`. The report shows how many holds and how much money were unmetered.
+- **Failed streams.** `Parser.Failed()` is true for an in-band error or a missing terminal event; the audit status is `upstream_failed` and what arrived is charged.
 
 ## Invariants and the test that proves each
 
@@ -54,6 +55,7 @@ Order of work in [`run`](../../internal/server/server.go) (line 180): authentica
 - **Upstream dies mid-stream.** Bytes already sent stay sent; usage seen so far (or an estimate) is charged; audit `upstream_failed`.
 - **Client disconnects.** The request context cancels the upstream call; settle and audit use a context detached from the client so they still run.
 - **Gateway dies after Reserve.** Hold expires 5 minutes after the last extend; the reconciler settles from `/generation` or releases it unmetered.
+- **Unary body unreadable.** The client gets 502 `upstream_failed`, never an empty 200.
 - **Audit write fails.** Logged; the money path is not affected.
 
 ## Gotchas hit

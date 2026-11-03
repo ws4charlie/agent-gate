@@ -40,6 +40,12 @@ func (g *GenerationLookup) Lookup(ctx context.Context, name, upstreamID string) 
 	}
 	defer resp.Body.Close()
 	switch {
+	case resp.StatusCode == http.StatusBadRequest:
+		// "Invalid generation ID": the provider says this id can never resolve
+		// (e.g. a msg_ id stored by an older gateway). Retrying forever would keep
+		// the credits held, so treat it as "no generation". 5xx, 429 and network
+		// errors stay errors and are retried.
+		return ledger.Usage{}, false, nil
 	case resp.StatusCode == http.StatusNotFound:
 		// Safe to read as "no generation" only because hold TTLs outlast the
 		// endpoint's indexing lag (see server.HoldTTL).

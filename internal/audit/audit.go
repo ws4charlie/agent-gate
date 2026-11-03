@@ -38,6 +38,8 @@ const (
 	StatusIdempotencyConflict = "idempotency_conflict"
 	StatusInternal            = "internal_error"
 	StatusUnroutable          = "unknown_model"
+	StatusReconciledSettled   = "reconciled_settled"   // closed by the reconciler from provider usage
+	StatusReconciledUnmetered = "reconciled_unmetered" // closed by the reconciler with no usage found (I6)
 	SourceProvider            = "provider"
 	SourcePriceTable          = "price_table"
 	SourceEstimated           = "estimated"
@@ -46,11 +48,12 @@ const (
 
 // Extra carries what the shared Event type has no field for.
 type Extra struct {
-	HoldID       string
-	Unrecovered  money.Nanos // I7: part of the cost the ledger could not collect
-	Unmetered    bool        // the hold was released with no usage found
-	RequestBody  *string     // only when body storage is on; already redacted
-	ResponseBody *string
+	HoldID         string
+	Unrecovered    money.Nanos // I7: part of the cost the ledger could not collect
+	Unmetered      bool        // the hold was released with no usage found
+	UnmeteredNanos money.Nanos // how much that release returned to the account
+	RequestBody    *string     // only when body storage is on; already redacted
+	ResponseBody   *string
 }
 
 type Store struct{ pool *pgxpool.Pool }
@@ -68,12 +71,12 @@ func (s *Store) Write(ctx context.Context, e Event, x Extra) error {
 	}
 	_, err := s.pool.Exec(ctx, `INSERT INTO audit_events (request_id, account_id, agent_id, run_id, kind, model, provider,
 		status, cost_source, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, upstream_id,
-		cost_nanos, unrecovered_nanos, unmetered, hold_id, latency_ms, overhead_ms, err, request_body, response_body, at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
+		cost_nanos, unrecovered_nanos, unmetered, hold_id, latency_ms, overhead_ms, err, request_body, response_body, at, unmetered_nanos)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
 		e.RequestID, e.AccountID, e.AgentID, e.RunID, e.Kind, e.Model, e.Provider, e.Status, e.CostSource,
 		e.Usage.InputTokens, e.Usage.OutputTokens, e.Usage.CacheReadTokens, e.Usage.CacheWriteTokens, e.Usage.UpstreamID,
 		int64(e.Cost), int64(x.Unrecovered), x.Unmetered, x.HoldID, e.LatencyMs, e.OverheadMs, e.Err,
-		x.RequestBody, x.ResponseBody, e.At.UTC().Truncate(time.Microsecond))
+		x.RequestBody, x.ResponseBody, e.At.UTC().Truncate(time.Microsecond), int64(x.UnmeteredNanos))
 	return err
 }
 
@@ -86,7 +89,7 @@ type Row struct {
 func (s *Store) ByRequest(ctx context.Context, requestID string) ([]Row, error) {
 	rows, err := s.pool.Query(ctx, `SELECT request_id, account_id, agent_id, run_id, kind, model, provider, status, cost_source,
 		input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, upstream_id, cost_nanos, unrecovered_nanos,
-		unmetered, hold_id, latency_ms, overhead_ms, err, request_body, response_body, at
+		unmetered, hold_id, latency_ms, overhead_ms, err, request_body, response_body, at, unmetered_nanos
 		FROM audit_events WHERE request_id=$1 ORDER BY id`, requestID)
 	if err != nil {
 		return nil, err
@@ -97,7 +100,7 @@ func (s *Store) ByRequest(ctx context.Context, requestID string) ([]Row, error) 
 		var r Row
 		if err := rows.Scan(&r.RequestID, &r.AccountID, &r.AgentID, &r.RunID, &r.Kind, &r.Model, &r.Provider, &r.Status, &r.CostSource,
 			&r.Usage.InputTokens, &r.Usage.OutputTokens, &r.Usage.CacheReadTokens, &r.Usage.CacheWriteTokens, &r.Usage.UpstreamID,
-			&r.Cost, &r.Unrecovered, &r.Unmetered, &r.HoldID, &r.LatencyMs, &r.OverheadMs, &r.Err, &r.RequestBody, &r.ResponseBody, &r.At); err != nil {
+			&r.Cost, &r.Unrecovered, &r.Unmetered, &r.HoldID, &r.LatencyMs, &r.OverheadMs, &r.Err, &r.RequestBody, &r.ResponseBody, &r.At, &r.UnmeteredNanos); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

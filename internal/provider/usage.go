@@ -28,6 +28,10 @@ type Parser struct {
 	// OutChars counts generated characters (text, tool-argument JSON). It feeds
 	// the token estimate when the upstream sends no usage (I8).
 	OutChars int
+
+	terminal bool // saw [DONE] (OpenAI format) or message_stop (Anthropic)
+	inband   bool // saw an in-band error
+	pinned   bool
 }
 
 const maxLine = 1 << 20 // a line longer than this is not an SSE event we care about
@@ -54,6 +58,14 @@ func (p *Parser) Write(b []byte) (int, error) {
 	}
 	return len(b), nil
 }
+
+// Failed reports a stream that did not end cleanly: an in-band error arrived,
+// or the bytes stopped before the format's terminal event ([DONE] for OpenAI
+// format, message_stop for Anthropic). A clean TCP close alone proves nothing (I8).
+func (p *Parser) Failed() bool { return p.inband || !p.terminal }
+
+// SetUpstreamID pins the id (from a response header); body ids no longer replace it.
+func (p *Parser) SetUpstreamID(id string) { p.u.UpstreamID, p.pinned = id, id != "" }
 
 // Usage returns what was seen; ok is false when no usage object ever arrived.
 func (p *Parser) Usage() (Usage, bool) { return p.u, p.seen }
@@ -96,9 +108,11 @@ type event struct {
 	} `json:"message"`
 	Delta   json.RawMessage `json:"delta"`
 	Content []contentPart   `json:"content"` // anthropic non-stream
+	Error   json.RawMessage `json:"error"`
 	Choices []struct {
-		Delta   *struct{ Content *string } `json:"delta"`
-		Message *struct{ Content *string } `json:"message"`
+		FinishReason *string                    `json:"finish_reason"`
+		Delta        *struct{ Content *string } `json:"delta"`
+		Message      *struct{ Content *string } `json:"message"`
 	} `json:"choices"`
 }
 
@@ -109,14 +123,29 @@ type contentPart struct {
 }
 
 func (p *Parser) object(raw []byte) {
+	if string(raw) == "[DONE]" {
+		p.terminal = true
+		return
+	}
 	if len(raw) == 0 || raw[0] != '{' {
-		return // "[DONE]", comments, blanks
+		return // comments, blanks
 	}
 	var e event
 	if json.Unmarshal(raw, &e) != nil {
 		return
 	}
-	if e.ID != "" && p.u.UpstreamID == "" {
+	if len(e.Error) > 0 && string(e.Error) != "null" || e.Type == "error" {
+		p.inband = true
+	}
+	if e.Type == "message_stop" {
+		p.terminal = true
+	}
+	for _, c := range e.Choices {
+		if c.FinishReason != nil && *c.FinishReason == "error" {
+			p.inband = true // OpenRouter reports mid-stream failures this way
+		}
+	}
+	if e.ID != "" && p.u.UpstreamID == "" && !p.pinned {
 		p.u.UpstreamID = e.ID
 	}
 	switch p.format {
@@ -137,7 +166,7 @@ func (p *Parser) object(raw []byte) {
 		}
 	case FormatAnthropic:
 		if e.Message != nil {
-			if e.Message.ID != "" {
+			if e.Message.ID != "" && !p.pinned {
 				p.u.UpstreamID = e.Message.ID
 			}
 			p.mergeAnthropic(e.Message.Usage)

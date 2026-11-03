@@ -109,7 +109,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if rep, err := led.Reconcile(ctx, lookup, time.Now()); err != nil {
+				if rep, err := server.Reconcile(ctx, led, lookup, srv.Audit, time.Now()); err != nil {
 					log.Error("reconcile", "err", err)
 				} else if rep.Settled+rep.Released+rep.Errors > 0 {
 					log.Info("reconcile", "settled", rep.Settled, "released", rep.Released, "errors", rep.Errors)
@@ -268,7 +268,7 @@ func reconcileCmd(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	lookup := &provider.GenerationLookup{Client: http.DefaultClient, Providers: pc.Providers, Key: config.ProviderKey}
-	rep, err := ledger.New(pool).Reconcile(ctx, lookup, time.Now())
+	rep, err := server.Reconcile(ctx, ledger.New(pool), lookup, audit.NewStore(pool), time.Now())
 	if err != nil {
 		return err
 	}

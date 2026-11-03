@@ -295,11 +295,18 @@ func (c *call) run() {
 		return
 	}
 
+	// OpenRouter puts the id that /generation understands in a header on every
+	// response, also on the Anthropic surface whose body id (msg_...) cannot be
+	// looked up. Attach it before reading the body: it wins over any body id and
+	// narrows the window in which a crash leaves an unattached hold (I6).
+	genID := resp.Header.Get("X-Generation-Id")
+	c.attach(hold, target.Name, genID)
+
 	var res outcome
 	if hdr.Stream {
-		res = c.stream(hold, resp, up, target.Name)
+		res = c.stream(hold, resp, up, target.Name, genID)
 	} else {
-		res = c.unary(hold, resp, up, target.Name)
+		res = c.unary(hold, resp, up, target.Name, genID)
 	}
 	upSpan.End()
 	c.ev.OverheadMs = time.Since(c.start).Milliseconds() - time.Since(upStart).Milliseconds()
@@ -426,6 +433,8 @@ func (c *call) release(h ledger.Hold, reason string) {
 	}
 }
 
+var errStreamIncomplete = errors.New("stream ended without a terminal event or carried an error")
+
 // outcome is what the transfer phase learned.
 type outcome struct {
 	usage       provider.Usage
@@ -449,22 +458,32 @@ func (c *capture) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (c *call) unary(h ledger.Hold, resp *http.Response, up provider.Upstream, name string) outcome {
+func (c *call) unary(h ledger.Hold, resp *http.Response, up provider.Upstream, name, genID string) outcome {
 	var res outcome
+	// Nothing has been written to the client yet, so a failure here can still
+	// become an honest 502 instead of an empty 200. Settling rules are unchanged.
+	failed := func(err error) outcome {
+		res.upstreamErr = err
+		res.clientGone = c.r.Context().Err() != nil
+		if !res.clientGone {
+			writeErr(c.w, c.f, http.StatusBadGateway, "upstream_failed", "upstream response could not be read", nil)
+		}
+		return res
+	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxRequestBytes))
 	res.got = len(data) > 0
 	if err != nil {
-		res.upstreamErr = err
-		res.clientGone = c.r.Context().Err() != nil
-		return res
+		return failed(err)
 	}
 	res.usage, res.outChars, res.seen = provider.ParseBody(up.Wire, data)
+	if genID != "" {
+		res.usage.UpstreamID = genID
+	}
 	out := data
 	if up.Translate {
 		t, err := provider.MessagesToChat(data, c.ev.Model)
 		if err != nil {
-			res.upstreamErr = err
-			return res
+			return failed(err)
 		}
 		out = t
 	}
@@ -477,15 +496,18 @@ func (c *call) unary(h ledger.Hold, resp *http.Response, up provider.Upstream, n
 	if c.s.StoreBodies {
 		res.response = out
 	}
-	c.attach(h, name, res.usage.UpstreamID)
+	if genID == "" {
+		c.attach(h, name, res.usage.UpstreamID) // provider without the header: body id
+	}
 	return res
 }
 
 // stream copies SSE bytes to the client as they arrive and tees them to the
 // usage parser. Nothing is buffered beyond one read (PLAN flow step 5).
-func (c *call) stream(h ledger.Hold, resp *http.Response, up provider.Upstream, name string) outcome {
+func (c *call) stream(h ledger.Hold, resp *http.Response, up provider.Upstream, name, genID string) outcome {
 	var res outcome
 	parser := provider.NewParser(up.Wire)
+	parser.SetUpstreamID(genID)
 	cap := &capture{on: c.s.StoreBodies}
 	fl, _ := c.w.(http.Flusher)
 	flush := func() {
@@ -499,7 +521,7 @@ func (c *call) stream(h ledger.Hold, resp *http.Response, up provider.Upstream, 
 	c.w.WriteHeader(http.StatusOK)
 	flush()
 
-	attached := false
+	attached := genID != "" // already attached from the header
 	after := func() {
 		if u, _ := parser.Usage(); !attached && u.UpstreamID != "" {
 			attached = true
@@ -569,6 +591,11 @@ func (c *call) stream(h ledger.Hold, resp *http.Response, up provider.Upstream, 
 	}
 	res.usage, res.seen = parser.Usage()
 	res.outChars = parser.OutChars
+	if !res.clientGone && res.upstreamErr == nil && parser.Failed() {
+		// A clean close without the terminal event, or an in-band error, is a
+		// failed stream, not a success (I8).
+		res.upstreamErr = errStreamIncomplete
+	}
 	res.response = cap.buf.Bytes()
 	return res
 }
@@ -629,8 +656,11 @@ func (c *call) settle(h ledger.Hold, price pricing.Price, reqBytes int, res outc
 		c.ev.CostSource = audit.SourceEstimated
 	}
 	if err != nil {
+		// The response is already on its way to the client: never write to it.
+		// The hold stays active and the reconciler closes it.
 		s.Log.Error("price", "request_id", c.ev.RequestID, "err", err)
-		c.fail(http.StatusInternalServerError, audit.StatusInternal, "internal_error", "internal error", nil)
+		c.ev.Err = "price_failed"
+		c.finish(audit.StatusInternal)
 		return
 	}
 	c.ev.Usage = u

@@ -37,6 +37,9 @@ type Script struct {
 	DieAfter                       int           // abort the connection after this many stream events (0: never)
 	Gate                           chan struct{} // if set, wait for it after the first event
 	NoGeneration                   bool          // do not record the call for /generation lookups
+	TruncateBody                   bool          // non-stream: promise more bytes than sent, then drop the connection
+	InBandError                    bool          // stream carries an in-band error event instead of finishing
+	NoTerminal                     bool          // stream ends with a clean EOF before [DONE] / message_stop
 }
 
 // Call is one recorded request.
@@ -96,6 +99,10 @@ func variant(model string, base Script) Script {
 	switch {
 	case strings.HasSuffix(model, "-die"):
 		base.DieAfter, base.Text = 3, []string{"one ", "two ", "three ", "four ", "five"}
+	case strings.HasSuffix(model, "-inband"):
+		base.InBandError = true
+	case strings.HasSuffix(model, "-noterm"):
+		base.NoTerminal = true
 	case strings.HasSuffix(model, "-nousage"):
 		base.NoUsage = true
 	case strings.HasSuffix(model, "-429"):
@@ -184,17 +191,21 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, anthropic bool) {
 		return
 	}
 
-	id := "gen-" + strconv.Itoa(n)
+	// OpenRouter sends the generation id in a header on every response, also on
+	// the Anthropic surface, where the body id (msg_...) cannot be looked up.
+	genID := "gen-" + strconv.Itoa(n)
+	id := genID
 	if anthropic {
 		id = "msg_" + strconv.Itoa(n)
 	}
+	w.Header().Set("X-Generation-Id", genID)
 	in, out := sc.tokens()
 	record := func(sent int64, partial bool) {
 		if sc.NoGeneration {
 			return
 		}
 		s.mu.Lock()
-		s.gens[id] = gen{usage: sc, in: in, out: sent, visible: time.Now().Add(s.GenDelay), partial: partial}
+		s.gens[genID] = gen{usage: sc, in: in, out: sent, visible: time.Now().Add(s.GenDelay), partial: partial}
 		s.mu.Unlock()
 	}
 
@@ -206,6 +217,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, anthropic bool) {
 			b = sc.anthropicBody(id, req.Model)
 		} else {
 			b = sc.openAIBody(id, req.Model)
+		}
+		if sc.TruncateBody {
+			w.Header().Set("Content-Length", strconv.Itoa(len(b)+64))
+			_, _ = w.Write(b[:len(b)/2])
+			w.(http.Flusher).Flush()
+			panic(http.ErrAbortHandler)
 		}
 		_, _ = w.Write(b)
 		return
@@ -250,6 +267,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, anthropic bool) {
 // generation mimics OpenRouter's GET /generation?id=. A call is visible only
 // after GenDelay, like the real endpoint's indexing lag.
 func (s *Server) generation(w http.ResponseWriter, r *http.Request) {
+	if !strings.HasPrefix(r.URL.Query().Get("id"), "gen-") {
+		http.Error(w, `{"error":{"message":"Invalid generation ID"}}`, http.StatusBadRequest)
+		return
+	}
 	s.mu.Lock()
 	g, ok := s.gens[r.URL.Query().Get("id")]
 	s.mu.Unlock()
@@ -358,9 +379,15 @@ func (sc Script) events(anthropic bool, id, model string) []string {
 			ev = append(ev, chunk(map[string]any{"tool_calls": []any{map[string]any{"index": 0,
 				"function": map[string]any{"arguments": sc.ToolArgs}}}}, nil))
 		}
+		if sc.InBandError {
+			return append(ev, sse("", `{"error":{"message":"scripted in-band error","code":500}}`))
+		}
 		ev = append(ev, chunk(map[string]any{}, finish))
 		if !sc.NoUsage {
 			ev = append(ev, sse("", fmt.Sprintf(`{"id":%q,"object":"chat.completion.chunk","model":%s,"choices":[],"usage":%s}`, id, js(model), sc.usageOpenAI())))
+		}
+		if sc.NoTerminal {
+			return ev
 		}
 		return append(ev, sse("", "[DONE]"))
 	}
@@ -373,6 +400,9 @@ func (sc Script) events(anthropic bool, id, model string) []string {
 	ev = append(ev, sse("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`))
 	for _, t := range sc.texts() {
 		ev = append(ev, sse("content_block_delta", js(map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": t}})))
+	}
+	if sc.InBandError {
+		return append(ev, sse("error", `{"type":"error","error":{"type":"overloaded_error","message":"scripted in-band error"}}`))
 	}
 	ev = append(ev, sse("content_block_stop", `{"type":"content_block_stop","index":0}`))
 	stop := "end_turn"
@@ -389,5 +419,8 @@ func (sc Script) events(anthropic bool, id, model string) []string {
 		md += `,"usage":` + sc.usageAnthropic(false)
 	}
 	ev = append(ev, sse("message_delta", md+"}"))
+	if sc.NoTerminal {
+		return ev
+	}
 	return append(ev, sse("message_stop", `{"type":"message_stop"}`))
 }
