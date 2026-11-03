@@ -363,6 +363,19 @@ func TestSettleWritesDistinctEntries_I3(t *testing.T) {
 	}
 }
 
+// I4: a replayed Reserve returns exactly the first ExpiresAt even when the
+// clock has sub-microsecond precision (Postgres stores microseconds).
+func TestReserveReplayExpiresAtPrecision_I4(t *testing.T) {
+	l, _ := setup(t)
+	l = l.WithClock(func() time.Time { return time.Unix(1_800_000_000, 123_456_789) })
+	acct := funded(t, l, 100)
+	first := reserve(t, l, acct, "r", 10)
+	again := reserve(t, l, acct, "r", 10)
+	if !first.ExpiresAt.Equal(again.ExpiresAt) {
+		t.Fatalf("first %v != replay %v", first.ExpiresAt, again.ExpiresAt)
+	}
+}
+
 func TestExtend(t *testing.T) {
 	var clock = time.Now()
 	l, pool := setup(t)

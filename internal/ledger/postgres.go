@@ -124,7 +124,8 @@ func (p *Postgres) Reserve(ctx context.Context, r ReserveReq) (Hold, error) {
 	err := p.inTx(ctx, func(tx pgx.Tx) error {
 		// Insert first, ON CONFLICT DO NOTHING: a concurrent duplicate waits
 		// here for the winner to commit, then falls into the replay branch (I4).
-		expires := p.now().Add(r.TTL).UTC()
+		// timestamptz keeps microseconds; truncate so the first response equals a replay (I4).
+		expires := p.now().Add(r.TTL).UTC().Truncate(time.Microsecond)
 		var id string
 		err := tx.QueryRow(ctx, `INSERT INTO holds (account_id, idem_key, kind, amount_nanos, expires_at)
 			VALUES ($1,$2,$3,$4,$5)
@@ -220,7 +221,7 @@ func (p *Postgres) Extend(ctx context.Context, holdID string, ttl time.Duration)
 	}
 	// GREATEST: a late, shorter extend must never shorten the lease.
 	tag, err := p.pool.Exec(ctx, `UPDATE holds SET expires_at = GREATEST(expires_at, $2)
-		WHERE id=$1 AND status='active'`, holdID, p.now().Add(ttl).UTC())
+		WHERE id=$1 AND status='active'`, holdID, p.now().Add(ttl).UTC().Truncate(time.Microsecond)) // same rule as Reserve
 	if err != nil {
 		return err
 	}
