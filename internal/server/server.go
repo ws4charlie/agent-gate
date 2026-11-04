@@ -11,7 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,9 +21,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
+	"github.com/ws4charlie/agent-gate/internal/agents"
+	"github.com/ws4charlie/agent-gate/internal/approval"
 	"github.com/ws4charlie/agent-gate/internal/audit"
 	"github.com/ws4charlie/agent-gate/internal/ledger"
 	"github.com/ws4charlie/agent-gate/internal/money"
+	"github.com/ws4charlie/agent-gate/internal/policy"
 	"github.com/ws4charlie/agent-gate/internal/pricing"
 	"github.com/ws4charlie/agent-gate/internal/provider"
 )
@@ -60,6 +63,12 @@ type Server struct {
 	ExtendEvery      time.Duration
 	StoreBodies      bool      // opt-in; bodies are redacted before storage (I9)
 	Payments         *Payments // nil disables POST /v1/payments (T3)
+
+	// T4 policy. All three default to working instances over Pool.
+	Agents      *agents.Store
+	Approvals   *approval.Queue
+	Registry    *agents.Registry // in-flight calls by agent, for the kill switch (I12)
+	ApprovalTTL time.Duration    // how long a queued request waits for a human (default 15m)
 }
 
 func (s *Server) defaults() {
@@ -84,6 +93,18 @@ func (s *Server) defaults() {
 	}
 	if s.MaxHold == 0 {
 		s.MaxHold = 5_000_000_000
+	}
+	if s.Agents == nil {
+		s.Agents = agents.NewStore(s.Pool)
+	}
+	if s.Approvals == nil {
+		s.Approvals = &approval.Queue{Store: approval.NewStore(s.Pool), Ledger: s.Ledger}
+	}
+	if s.Registry == nil {
+		s.Registry = &agents.Registry{}
+	}
+	if s.ApprovalTTL == 0 {
+		s.ApprovalTTL = approval.DefaultTTL
 	}
 }
 
@@ -128,6 +149,10 @@ type call struct {
 	ev    audit.Event
 	ext   audit.Extra
 	done  bool
+
+	agent  agents.Agent    // who is calling (T4: the credential's agent)
+	snap   policy.Snapshot // what the engine saw for this request
+	killed atomic.Bool     // set when the kill switch cancelled this call (I12)
 }
 
 // finish writes the audit row and closes the span; it runs once. It uses a
@@ -185,7 +210,7 @@ func (c *call) run() {
 	s := c.s
 
 	// 1. authenticate
-	acct, err := authenticate(c.ctx, s.Pool, c.r)
+	agent, err := s.authenticate(c.ctx, c.r)
 	if err != nil {
 		if errors.Is(err, errUnauthorized) {
 			c.fail(http.StatusUnauthorized, audit.StatusUnauthorized, "unauthorized", "missing or invalid API key", nil)
@@ -195,8 +220,12 @@ func (c *call) run() {
 		}
 		return
 	}
-	c.ev.AccountID = acct
-	c.span.SetAttributes(attribute.String("account.id", acct))
+	c.agent = agent
+	c.ev.AccountID, c.ev.AgentID = agent.AccountID, agent.ID
+	c.span.SetAttributes(attribute.String("account.id", agent.AccountID), attribute.String("agent.id", agent.ID))
+	if c.refuseInactive(policy.KindModel) { // rule 1, before anything else (I12)
+		return
+	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(c.w, c.r.Body, maxRequestBytes))
 	if err != nil {
@@ -237,12 +266,7 @@ func (c *call) run() {
 		return
 	}
 
-	// policy: T4 puts per-agent rules here; the span exists now so traces keep their shape.
-	_, pspan := c.child("policy")
-	pspan.SetAttributes(attribute.String("decision", "allow"))
-	pspan.End()
-
-	// 3. estimate the worst case and reserve it
+	// 3. estimate the worst case: it is both the policy amount and the hold
 	maxOut := hdr.MaxTokens
 	if hdr.MaxCompletionTokens > 0 {
 		maxOut = hdr.MaxCompletionTokens
@@ -250,11 +274,59 @@ func (c *call) run() {
 	if maxOut <= 0 {
 		maxOut = s.DefaultMaxTokens
 	}
-	hold, ok := c.reserve(body, maxOut, price)
+	amount, ok := c.estimate(body, maxOut, price)
+	if !ok {
+		return
+	}
+
+	// 4. policy: approval check, engine, then (below) the atomic charge
+	task, ok := c.taskID()
+	if !ok {
+		return
+	}
+	idem, ok := c.idemKey()
+	if !ok {
+		return
+	}
+	fp := approval.Fingerprint("model", hdr.Model, itoa(int64(amount)), task, bodyHash(body))
+	approved, approvalID, stop := c.checkApproval(idem, fp)
+	if stop {
+		return
+	}
+	preq := policy.Request{AgentID: agent.ID, Kind: policy.KindModel, Model: hdr.Model, Amount: amount, TaskID: task, Approved: approved}
+	_, pspan := c.child("policy")
+	d, ok := c.evaluate(preq, approvalID)
+	pspan.SetAttributes(attribute.String("decision", string(d.Verdict)), attribute.String("rule", d.Rule))
+	pspan.End()
+	if !ok {
+		c.releaseApproved(approved)
+		return
+	}
+	switch d.Verdict {
+	case policy.Deny:
+		c.releaseApproved(approved)
+		c.denyResponse(d)
+		return
+	case policy.RequireApproval:
+		// Lock the money while a human decides: reserve now and park the request
+		// (queueApproval stretches the lease over the approval window).
+		hold, ok := c.reserve(amount, idem, true, s.HoldTTL)
+		if !ok {
+			return
+		}
+		c.ext.HoldID = hold.ID
+		c.queueApproval(hold, preq, idem, fp, d)
+		return
+	}
+	// An approved replay reuses the claim and the hold made when it was queued.
+	hold, ok := c.reserve(amount, idem, !approved, s.HoldTTL)
 	if !ok {
 		return
 	}
 	c.ext.HoldID = hold.ID
+	if !c.charge(hold, preq) {
+		return
+	}
 
 	// release on any early exit before money is consumed
 	up, err := provider.Build(target, key, c.f, c.r.Header, body, hdr.Stream, s.DefaultMaxTokens)
@@ -268,12 +340,21 @@ func (c *call) run() {
 	stopLease := c.lease(hold.ID)
 	defer stopLease()
 	upCtx, upSpan := c.child("upstream")
+	upCtx, cancelUp := context.WithCancel(upCtx)
+	defer cancelUp()
+	defer c.trackInFlight(cancelUp)() // I12: the kill switch cancels this call
 	upStart := time.Now()
 	req, _ := http.NewRequestWithContext(upCtx, http.MethodPost, up.URL, bytes.NewReader(up.Body))
 	req.Header = up.Header
 	resp, err := s.Client.Do(req)
 	if err != nil {
 		upSpan.End()
+		if c.killed.Load() {
+			c.release(hold, "agent killed")
+			c.ev.Err = policy.RuleKilled
+			c.fail(http.StatusForbidden, StatusKilled, policy.RuleKilled, "agent was killed", nil)
+			return
+		}
 		c.release(hold, "upstream unreachable")
 		if c.r.Context().Err() != nil {
 			c.finish(audit.StatusClientDisconnected)
@@ -319,10 +400,9 @@ func (c *call) run() {
 	c.settle(hold, price, len(body), res)
 }
 
-// reserve prices the worst case and holds it. A repeated Idempotency-Key is
-// refused here, before any upstream call (PLAN flow step 7).
-func (c *call) reserve(body []byte, maxOut int64, price pricing.Price) (ledger.Hold, bool) {
-	s := c.s
+// estimate prices the worst case of a request: the amount that is both held
+// and shown to the policy engine.
+func (c *call) estimate(body []byte, maxOut int64, price pricing.Price) (money.Nanos, bool) {
 	// Input is estimated high (bytes/3); priced at the dearer of plain input and
 	// cache write so a cache-writing request cannot exceed its hold.
 	inPrice := max(price.Input, price.CacheWrite)
@@ -330,49 +410,50 @@ func (c *call) reserve(body []byte, maxOut int64, price pricing.Price) (ledger.H
 	outCost, e2 := money.Cost(maxOut, price.Output)
 	if e1 != nil || e2 != nil {
 		c.fail(http.StatusBadRequest, audit.StatusBadRequest, "bad_request", "request too large to price", nil)
-		return ledger.Hold{}, false
+		return 0, false
 	}
-	amount := min(inCost+outCost, s.MaxHold)
-	amount = max(amount, 1)
+	return max(min(inCost+outCost, c.s.MaxHold), 1), true
+}
 
-	idem := strings.TrimSpace(c.r.Header.Get("Idempotency-Key"))
-	if len(idem) > 255 {
-		c.fail(http.StatusBadRequest, audit.StatusBadRequest, "bad_request", "Idempotency-Key too long", nil)
-		return ledger.Hold{}, false
-	}
-	generated := idem == ""
-	if generated {
-		idem = "gen-" + c.ev.RequestID
-	}
-
+// reserve holds the amount. A repeated Idempotency-Key is refused here, before
+// any upstream call (PLAN flow step 7). claim=false is for the replay of an
+// approved request: its claim row and hold were made when it was queued, and
+// Reserve with the same key and amount returns that same hold (I4).
+func (c *call) reserve(amount money.Nanos, idem string, claim bool, ttl time.Duration) (ledger.Hold, bool) {
+	s := c.s
 	rctx, rspan := c.child("reserve")
 	defer rspan.End()
 
 	// Claim the key. ledger.Reserve replays the first hold for a used key and
 	// cannot say "this is a duplicate", so the gateway keeps its own claim row,
 	// which also remembers the original request id for the 409 body.
-	tag, err := s.Pool.Exec(rctx, `INSERT INTO gateway_requests (account_id, idem_key, request_id) VALUES ($1,$2,$3)
-		ON CONFLICT DO NOTHING`, c.ev.AccountID, idem, c.ev.RequestID)
-	if err != nil {
-		s.Log.Error("claim", "err", err)
-		c.fail(http.StatusInternalServerError, audit.StatusInternal, "internal_error", "internal error", nil)
-		return ledger.Hold{}, false
-	}
-	if tag.RowsAffected() == 0 {
-		var orig string
-		_ = s.Pool.QueryRow(rctx, `SELECT request_id FROM gateway_requests WHERE account_id=$1 AND idem_key=$2`,
-			c.ev.AccountID, idem).Scan(&orig)
-		c.fail(http.StatusConflict, audit.StatusDuplicate, "duplicate_request", "this Idempotency-Key was already used",
-			map[string]any{"original_request_id": orig})
-		return ledger.Hold{}, false
+	if claim {
+		tag, err := s.Pool.Exec(rctx, `INSERT INTO gateway_requests (account_id, idem_key, request_id) VALUES ($1,$2,$3)
+			ON CONFLICT DO NOTHING`, c.ev.AccountID, idem, c.ev.RequestID)
+		if err != nil {
+			s.Log.Error("claim", "err", err)
+			c.fail(http.StatusInternalServerError, audit.StatusInternal, "internal_error", "internal error", nil)
+			return ledger.Hold{}, false
+		}
+		if tag.RowsAffected() == 0 {
+			var orig string
+			_ = s.Pool.QueryRow(rctx, `SELECT request_id FROM gateway_requests WHERE account_id=$1 AND idem_key=$2`,
+				c.ev.AccountID, idem).Scan(&orig)
+			c.fail(http.StatusConflict, audit.StatusDuplicate, "duplicate_request", "this Idempotency-Key was already used",
+				map[string]any{"original_request_id": orig})
+			return ledger.Hold{}, false
+		}
 	}
 	unclaim := func() {
+		if !claim {
+			return
+		}
 		_, _ = s.Pool.Exec(context.WithoutCancel(rctx), `DELETE FROM gateway_requests WHERE account_id=$1 AND idem_key=$2 AND request_id=$3`,
 			c.ev.AccountID, idem, c.ev.RequestID)
 	}
 
 	hold, err := s.Ledger.Reserve(rctx, ledger.ReserveReq{AccountID: c.ev.AccountID, Amount: amount, IdemKey: idem,
-		Kind: ledger.KindModel, TTL: s.HoldTTL, Memo: "model " + c.ev.Model})
+		Kind: ledger.KindModel, TTL: ttl, Memo: "model " + c.ev.Model})
 	switch {
 	case err == nil && hold.Status != "active":
 		// Used key whose hold is already terminal: same answer as a duplicate (never call upstream).
@@ -432,8 +513,12 @@ func (c *call) lease(holdID string) func() {
 func (c *call) release(h ledger.Hold, reason string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.ctx), 5*time.Second)
 	defer cancel()
-	if _, err := c.s.Ledger.Release(ctx, h.ID, "release:"+h.ID, reason); err != nil && !errors.Is(err, ledger.ErrHoldNotActive) {
-		c.s.Log.Error("release", "request_id", c.ev.RequestID, "err", err) // reconciler will close it
+	_, err := c.s.Ledger.Release(ctx, h.ID, approval.ReleaseKey(h.ID), reason)
+	switch {
+	case err == nil:
+		c.closeCharge(h.ID, 0) // nothing was spent: give the budget windows their estimate back
+	case !errors.Is(err, ledger.ErrHoldNotActive):
+		c.s.Log.Error("release", "request_id", c.ev.RequestID, "err", err) // reconciler will close it, and the charge with it
 	}
 }
 
@@ -469,7 +554,11 @@ func (c *call) unary(h ledger.Hold, resp *http.Response, up provider.Upstream, n
 	failed := func(err error) outcome {
 		res.upstreamErr = err
 		res.clientGone = c.r.Context().Err() != nil
-		if !res.clientGone {
+		switch {
+		case res.clientGone:
+		case c.killed.Load():
+			writeErr(c.w, c.f, http.StatusForbidden, policy.RuleKilled, "agent was killed", nil)
+		default:
 			writeErr(c.w, c.f, http.StatusBadGateway, "upstream_failed", "upstream response could not be read", nil)
 		}
 		return res
@@ -629,6 +718,11 @@ func (c *call) settle(h ledger.Hold, price pricing.Price, reqBytes int, res outc
 	switch {
 	case res.clientGone:
 		status = audit.StatusClientDisconnected
+	case res.upstreamErr != nil && c.killed.Load():
+		// I12: the kill switch cut the stream. Usage received so far is still
+		// settled below (I8); the rest of the hold is released.
+		status = StatusKilled
+		c.ev.Err = policy.RuleKilled
 	case res.upstreamErr != nil:
 		status = audit.StatusUpstreamFailed
 		c.ev.Err = "upstream_stream_failed"
@@ -691,6 +785,7 @@ func (c *call) settle(h ledger.Hold, price pricing.Price, reqBytes int, res outc
 		c.finish(audit.StatusInternal)
 		return
 	}
+	c.closeCharge(h.ID, st.Charged) // the budget windows now hold the real cost, not the estimate
 	c.ev.Cost = st.Charged
 	c.ext.Unrecovered = st.Unrecovered // I7: flagged on the audit row
 	if st.Unrecovered > 0 {

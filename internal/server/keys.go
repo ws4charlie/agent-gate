@@ -3,61 +3,58 @@ package server
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
+	"encoding/hex"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ws4charlie/agent-gate/internal/agents"
+	"github.com/ws4charlie/agent-gate/internal/policy"
 )
 
-const keyPrefix = "ag_"
-
-// CreateKey makes a gateway credential for an account and returns the secret.
-// The secret is 256 random bits; only its SHA-256 is stored (I9), so a database
-// leak does not yield usable credentials and the secret cannot be shown again.
+// CreateKey makes a gateway credential for an account: an agent with the
+// default scope (any model, any tool, no limits, no payees), which is what a
+// T2 API key always was. It returns the secret, shown once; only its SHA-256 is
+// stored (I9). `agentgate agent create` is the way to make a scoped one.
 func CreateKey(ctx context.Context, pool *pgxpool.Pool, accountID, label string) (secret, id string, err error) {
-	var raw [32]byte
-	if _, err := rand.Read(raw[:]); err != nil {
+	var b [3]byte
+	if _, err := rand.Read(b[:]); err != nil {
 		return "", "", err
 	}
-	secret = keyPrefix + base64.RawURLEncoding.EncodeToString(raw[:])
-	h := sha256.Sum256([]byte(secret))
-	err = pool.QueryRow(ctx, `INSERT INTO api_keys (account_id, key_hash, label) VALUES ($1,$2,$3) RETURNING id`,
-		accountID, h[:], label).Scan(&id)
-	if err != nil {
-		return "", "", fmt.Errorf("create key: %w", err)
+	name := "key-" + hex.EncodeToString(b[:])
+	if label != "" {
+		name = label + "-" + hex.EncodeToString(b[:])
 	}
-	return secret, id, nil
+	secret, a, err := agents.NewStore(pool).Create(ctx, accountID, name, policy.DefaultScope())
+	if err != nil && label != "" { // a label that is not a valid name: fall back to the plain one
+		secret, a, err = agents.NewStore(pool).Create(ctx, accountID, "key-"+hex.EncodeToString(b[:]), policy.DefaultScope())
+	}
+	return secret, a.ID, err
 }
 
 var errUnauthorized = errors.New("unauthorized")
 
-// authenticate resolves the account behind a request. Claude Code sends
+// bearer pulls the credential out of the request. Claude Code sends
 // Authorization: Bearer or x-api-key depending on setup; both are accepted.
-//
-// The lookup is a plain indexed equality on SHA-256(secret), not a
-// constant-time compare: the secret has 256 bits of entropy and the database
-// only ever sees its hash, so an attacker cannot use timing to walk toward a
-// valid hash without already knowing a preimage. (A constant-time compare would
-// matter for comparing the secrets themselves, which we never do.)
-func authenticate(ctx context.Context, pool *pgxpool.Pool, r *http.Request) (accountID string, err error) {
+func bearer(r *http.Request) string {
 	tok := strings.TrimSpace(r.Header.Get("X-Api-Key"))
 	if tok == "" {
 		if a, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
 			tok = strings.TrimSpace(a)
 		}
 	}
-	if tok == "" {
-		return "", errUnauthorized
+	return tok
+}
+
+// authenticate resolves the agent behind a request. A killed or revoked agent
+// authenticates and is then refused by policy rule 1, so the refusal is
+// audited with its rule id.
+func (s *Server) authenticate(ctx context.Context, r *http.Request) (agents.Agent, error) {
+	a, err := s.Agents.Authenticate(ctx, bearer(r))
+	if errors.Is(err, agents.ErrUnauthorized) {
+		return agents.Agent{}, errUnauthorized
 	}
-	h := sha256.Sum256([]byte(tok))
-	err = pool.QueryRow(ctx, `SELECT account_id FROM api_keys WHERE key_hash=$1 AND revoked_at IS NULL`, h[:]).Scan(&accountID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", errUnauthorized
-	}
-	return accountID, err
+	return a, err
 }

@@ -23,15 +23,14 @@ import (
 const price = 10_000 // $0.01 in USDC atomic units
 
 type rig struct {
-	t      *testing.T
-	sim    *x402.Sim
-	ver    *x402.Verifier
-	srv    *httptest.Server
-	key    *ecdsa.PrivateKey
-	w      *wallet.Wallet
-	payTo  common.Address
-	fetch  x402.Fetcher
-	policy *policy.Policy
+	t     *testing.T
+	sim   *x402.Sim
+	ver   *x402.Verifier
+	srv   *httptest.Server
+	key   *ecdsa.PrivateKey
+	w     *wallet.Wallet
+	payTo common.Address
+	fetch x402.Fetcher
 }
 
 func newRig(t *testing.T) *rig {
@@ -58,8 +57,7 @@ func newRig(t *testing.T) *rig {
 	})))
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	p := policy.New(policy.Config{Agents: map[string]policy.AgentRule{"a": {Account: "acct-1", Budget: 1_000_000_000}}, Payees: []string{payTo.Hex()}})
-	return &rig{t: t, sim: sim, ver: v, srv: srv, key: key, w: w, payTo: payTo, policy: p}
+	return &rig{t: t, sim: sim, ver: v, srv: srv, key: key, w: w, payTo: payTo}
 }
 
 func (r *rig) bal(who common.Address) int64 {
@@ -117,13 +115,20 @@ func (r *rig) send(p x402.PaymentPayload) (*http.Response, x402.SettleResponse, 
 	return resp, sr, pr.Error
 }
 
-func (r *rig) allowed() policy.Allowed {
-	a, d := r.policy.Check(policy.Request{AccountID: "acct-1", AgentID: "a", Payee: r.payTo.Hex(), Amount: price * 1000, Network: x402.NetworkLocal})
-	if d != nil {
-		r.t.Fatal(d)
+// allowedFor is what the policy engine would hand out for a payment funded by
+// the given hold: an Allowed tied to that hold.
+func (r *rig) allowedFor(hold string, amount money.Nanos) policy.Allowed {
+	d := policy.Evaluate(
+		policy.Request{AgentID: "a", Kind: policy.KindPayment, Tool: "tool", Payee: r.payTo.Hex(), Network: x402.NetworkLocal, Amount: amount, HoldID: hold},
+		policy.Snapshot{AgentID: "a", Status: policy.StatusActive, Scope: policy.Scope{Tools: []string{"*"}, Payees: []string{r.payTo.Hex()}}})
+	a, ok := d.Allowed()
+	if !ok {
+		r.t.Fatalf("policy refused: %s %s", d.Rule, d.Reason)
 	}
 	return a
 }
+
+func (r *rig) allowed(hold string) policy.Allowed { return r.allowedFor(hold, price*1000) }
 
 func TestSettleEndToEnd(t *testing.T) {
 	r := newRig(t)
@@ -131,7 +136,7 @@ func TestSettleEndToEnd(t *testing.T) {
 	if req.Network != x402.NetworkLocal || req.Amount != "10000" || req.Extra.Name != "USDC" {
 		t.Fatalf("requirements: %+v", req)
 	}
-	p, err := r.w.Pay(context.Background(), r.allowed(), "hold-1", res, req)
+	p, err := r.w.Pay(context.Background(), r.allowed("hold-1"), "hold-1", res, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +154,7 @@ func TestSettleEndToEnd(t *testing.T) {
 func TestReplayMovesMoneyOnce(t *testing.T) {
 	r := newRig(t)
 	req, res := r.challenge()
-	p, _ := r.w.Pay(context.Background(), r.allowed(), "hold-replay", res, req)
+	p, _ := r.w.Pay(context.Background(), r.allowed("hold-replay"), "hold-replay", res, req)
 	if resp, _, _ := r.send(p); resp.StatusCode != 200 {
 		t.Fatalf("first: %d", resp.StatusCode)
 	}
@@ -158,7 +163,7 @@ func TestReplayMovesMoneyOnce(t *testing.T) {
 		t.Fatalf("replay: %d %q", resp.StatusCode, why)
 	}
 	// Same hold id again re-signs the same nonce with a new window: still one transfer.
-	p2, _ := r.w.Pay(context.Background(), r.allowed(), "hold-replay", res, req)
+	p2, _ := r.w.Pay(context.Background(), r.allowed("hold-replay"), "hold-replay", res, req)
 	if resp, _, _ := r.send(p2); resp.StatusCode != 402 {
 		t.Fatalf("re-signed replay: %d", resp.StatusCode)
 	}
@@ -291,7 +296,7 @@ func TestWalletRefusals(t *testing.T) {
 func TestWalletBindsPayeeAndAmountToWhatPolicyApproved(t *testing.T) {
 	r := newRig(t)
 	req, res := r.challenge()
-	a := r.allowed()
+	a := r.allowed("h")
 	evil := req
 	evil.PayTo = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
 	if _, err := r.w.Pay(context.Background(), a, "h", res, evil); err == nil {
@@ -312,7 +317,7 @@ func TestAuthLookupThreeOutcomes(t *testing.T) {
 	req, res := r.challenge()
 	ctx := context.Background()
 	// Prepared and signed, not yet sent.
-	pend, err := r.w.Prepare(ctx, r.allowed(), "hold-lookup", res, req)
+	pend, err := r.w.Prepare(ctx, r.allowed("hold-lookup"), "hold-lookup", res, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +356,7 @@ func TestRemoteChainReader(t *testing.T) {
 	defer srv.Close()
 	rc := &x402.RemoteChain{BaseURL: srv.URL}
 	req, res := r.challenge()
-	pend, _ := r.w.Prepare(context.Background(), r.allowed(), "hold-remote", res, req)
+	pend, _ := r.w.Prepare(context.Background(), r.allowed("hold-remote"), "hold-remote", res, req)
 	ref, _ := x402.DecodeAuthRef(pend.Ref())
 	used, err := rc.AuthorizationUsed(context.Background(), ref.Token, ref.From, ref.Nonce)
 	if err != nil || used {
@@ -369,14 +374,32 @@ func TestWalletRefusesOverflowingAmount(t *testing.T) {
 	r := newRig(t)
 	req, res := r.challenge()
 	req.Amount = "9223372036854775807" // MaxInt64 atomic units
-	a, d := r.policy.Check(policy.Request{AccountID: "acct-1", AgentID: "a", Payee: r.payTo.Hex(), Amount: money.Nanos(1), Network: x402.NetworkLocal})
-	if d != nil {
-		t.Fatal(d)
-	}
+	a := r.allowedFor("h", money.Nanos(1))
 	if _, err := r.w.Prepare(context.Background(), a, "h", res, req); err == nil {
 		t.Fatal("overflowing amount accepted")
 	}
 	if r.w.SignCount() != 0 {
 		t.Fatal("signed")
+	}
+}
+
+// I10: an Allowed is for one hold and one signature. A second Prepare with the
+// same Allowed, or with another hold id, is refused, and a Prepare that fails a
+// check does not use the approval up.
+func TestAllowedIsSingleUseAndTiedToItsHold(t *testing.T) {
+	r := newRig(t)
+	req, res := r.challenge()
+	a := r.allowed("hold-A")
+	if _, err := r.w.Prepare(context.Background(), a, "hold-B", res, req); err == nil {
+		t.Fatal("prepared for a hold the approval was not granted for")
+	}
+	if _, err := r.w.Prepare(context.Background(), a, "hold-A", res, req); err != nil {
+		t.Fatalf("first prepare for the right hold: %v", err)
+	}
+	if _, err := r.w.Prepare(context.Background(), a, "hold-A", res, req); err == nil {
+		t.Fatal("one approval prepared twice")
+	}
+	if r.w.SignCount() != 0 {
+		t.Fatal("signed during prepare")
 	}
 }

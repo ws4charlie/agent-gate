@@ -463,7 +463,7 @@ func TestAuth(t *testing.T) {
 func TestKeyStoredAsHashOnly_I9(t *testing.T) {
 	e := newEnv(t, 0, nil)
 	var h []byte
-	if err := e.pool.QueryRow(context.Background(), `SELECT key_hash FROM api_keys`).Scan(&h); err != nil {
+	if err := e.pool.QueryRow(context.Background(), `SELECT key_hash FROM agents`).Scan(&h); err != nil {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256([]byte(e.secret))
@@ -471,7 +471,7 @@ func TestKeyStoredAsHashOnly_I9(t *testing.T) {
 		t.Fatal("stored value is not SHA-256 of the secret")
 	}
 	var dump string
-	e.pool.QueryRow(context.Background(), `SELECT t::text FROM api_keys t`).Scan(&dump)
+	e.pool.QueryRow(context.Background(), `SELECT t::text FROM agents t`).Scan(&dump)
 	if strings.Contains(dump, e.secret) {
 		t.Fatal("secret found in table row")
 	}

@@ -4,10 +4,10 @@ An agent pays for a tool call with USDC through the x402 flow. The gateway puts 
 
 ## Model in one minute
 
-1. The agent calls `POST /v1/payments {tool, agent_id}`. Tool names map to URLs in config; clients never supply URLs.
+1. The agent calls `POST /v1/payments {tool, input}` with its credential; the credential names the agent (a body `agent_id` is optional and must agree). Tool names map to URLs in config; clients never supply URLs.
 2. The gateway sends the tool request **unpaid** and gets `402` with a `PAYMENT-REQUIRED` header: amount, `payTo`, token, network, and the token's EIP-712 name/version.
 3. It reserves a hold (`kind=payment`) for that amount ([`pay`](../../internal/server/payments.go)).
-4. `policy.Check` approves or refuses. The agent must belong to the authenticated account. A refusal releases the hold and stops. Nothing was signed.
+4. `policy.Evaluate` allows, refuses or queues the payment for approval (see [policy](policy.md)): the tool and payee must be in the agent's scope and the budget and velocity limits must hold. A refusal releases the hold and stops. Nothing was signed.
 5. `wallet.Prepare` builds the authorization (nonce from the hold id). The gateway records it on the hold (`AttachUpstream("x402", ref)`) **before** `wallet.Sign` runs. If the record cannot be written, nothing is signed.
 6. The gateway retries with a `PAYMENT-SIGNATURE` header, on a context the client cannot cancel. The tool's x402 server verifies, runs the tool, submits `transferWithAuthorization`, and answers `200` with `PAYMENT-RESPONSE`.
 7. The gateway settles the hold. If the answer was a definite "no", it releases the hold. Anything else leaves the hold for the reconciler (next section).
@@ -16,7 +16,7 @@ Wire format (x402 v2, HTTP transport): headers `PAYMENT-REQUIRED`, `PAYMENT-SIGN
 
 ## Screen before sign (I10)
 
-[`policy.Allowed`](../../internal/policy/policy.go) has only unexported fields. Outside package `policy`, `policy.Allowed{}` compiles to the zero value (which reports `Valid() == false` and makes `wallet.Pay` refuse), and a literal such as `policy.Allowed{req: ...}` or `policy.Allowed{ok: true}` does **not compile**: "cannot refer to unexported field ok in struct literal". The only way to get a valid one is `Policy.Check`. So signing without screening is a compile error, not a code-review item.
+[`policy.Allowed`](../../internal/policy/policy.go) has only unexported fields. Outside package `policy`, `policy.Allowed{}` compiles to the zero value (which reports `Valid() == false` and makes `wallet.Pay` refuse), and a literal such as `policy.Allowed{req: ...}` or `policy.Allowed{ok: true}` does **not compile**: "cannot refer to unexported field ok in struct literal". The only way to get a valid one is an Allow decision from `policy.Evaluate`. An `Allowed` is also tied to its hold id and single use: `wallet.Prepare` spends it with `Allowed.Use(holdID)`, so a second Prepare, or a Prepare for another hold, is refused. So signing without screening is a compile error, and screening once but signing twice is a runtime refusal.
 
 `wallet.Prepare` also checks that the payee, amount and network it is asked to sign are the ones the `Allowed` approved, so a server that changes its price between the 402 and the retry gets a refusal, not a signature.
 
@@ -41,7 +41,7 @@ Before the signature, the gateway decides. After it, the token contract decides 
 
 - The hold carries a **ref** (`x402.AuthRef`: payer, nonce, value, `validBefore`, token), written before signing.
 - **Release only on a definite no**: the tool answered 402 from *verification* (nothing was accepted or sent), or settlement reported a revert / a send the node rejected (`invalid_transaction_state`). The same `Idempotency-Key` is then spent; a new key retries cleanly.
-- **Everything else is "settlement pending"**: a transport error, a 5xx, an unparsable answer, `unexpected_settle_error`, or a ledger failure after the chain succeeded. The gateway answers 202, audits `settlement_pending`, and leaves the hold and the agent's policy budget as they are.
+- **Everything else is "settlement pending"**: a transport error, a 5xx, an unparsable answer, `unexpected_settle_error`, or a ledger failure after the chain succeeded. The gateway answers 202, audits `settlement_pending`, and leaves the hold and the agent's budget charge as they are; the reconciler closes both from the chain fact (policy budgets are persisted, see [policy](policy.md)).
 - The **reconciler** (`serve` loop and `agentgate reconcile --payments FILE`) closes such holds after expiry through `x402.AuthLookup`, which asks `authorizationState(from, nonce)`:
 
 | Chain says | Window (`validBefore` + 2 min margin) | Reconciler |
@@ -94,7 +94,7 @@ Other failure modes:
 4. **Who pays gas, and why can't they steal funds?** The tool's server. The signature fixes amount, payee and window.
 5. **How is the nonce chosen and why?** Hash of the hold id, so one hold can authorize one transfer.
 6. **Three replay defences?** Idempotency key claim, in-flight nonce set, token contract nonce state.
-7. **What happens on a reverted transaction?** Definite no: hold released, budget refunded, audit `payment_failed`; same key is spent, a new key retries.
+7. **What happens on a reverted transaction?** Definite no: hold released, budget charge closed at zero, audit `payment_failed`; same key is spent, a new key retries.
 8. **Why is a lost connection after the paid retry not released?** The transfer may have happened; the hold stays and the reconciler asks the chain.
 13. **When does the reconciler release a payment hold?** Only when the authorization is unused on chain and its window (plus margin) has closed.
 14. **Why record the ref before signing?** After the signature exists, only the chain knows if money moved; without the ref the reconciler could not ask.

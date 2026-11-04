@@ -61,7 +61,6 @@ say "ledger: account with \$1"
 "$AG" migrate
 ACCT="$("$AG" account create --name agent-demo)"
 "$AG" account deposit --account "$ACCT" --amount 1
-KEY="$("$AG" key create --account "$ACCT" --label demo 2>/dev/null)"
 
 say "wallet and paid tool"
 if [ "$NETWORK" = sim ]; then
@@ -79,15 +78,15 @@ for _ in $(seq 100); do curl -sf "http://127.0.0.1:$TOOLPORT/healthz" >/dev/null
 curl -sf "http://127.0.0.1:$TOOLPORT/healthz" >/dev/null || { cat "$WORK/tool.log"; exit 1; }
 head -n1 "$WORK/tool.log"
 
-# Policy: agent-1 belongs to this account only, may spend $0.30 in total
-# (300,000,000 Nanos), and only to PAYEE. chain_query_url (sim only) is how the
-# reconciler asks the simulated chain whether a signed payment executed.
+# The agent's credential carries its scope: it may use the echo and premium
+# tools, pay only PAYEE, and spend at most $0.30 a UTC day. chain_query_url (sim
+# only) is how the reconciler asks the simulated chain whether a signed payment executed.
+KEY="$("$AG" agent create --account "$ACCT" --name agent-1 --models '*' --tools echo,premium --payees "$PAYEE" --daily 0.30 2>/dev/null)"
 cat > "$WORK/payments.json" <<JSON
 {
   "network": "$NETWORK",
   "tools": {"echo": "http://127.0.0.1:$TOOLPORT/echo", "premium": "http://127.0.0.1:$TOOLPORT/premium"},
-  "chain_query_url": "http://127.0.0.1:$TOOLPORT",
-  "policy": {"agents": {"agent-1": {"account_id": "$ACCT", "budget_nanos": 300000000}}, "payees": ["$PAYEE"]}
+  "chain_query_url": "http://127.0.0.1:$TOOLPORT"
 }
 JSON
 say "gateway"
@@ -98,14 +97,14 @@ curl -sf "$GW/healthz" >/dev/null || { cat "$WORK/gw.log"; exit 1; }
 
 pay() { # pay <tool> <idempotency-key>
   curl -sS -w '\nHTTP %{http_code}\n' -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-    -H "Idempotency-Key: $2" -d "{\"tool\":\"$1\",\"agent_id\":\"agent-1\",\"input\":{\"text\":\"hello\"}}" "$GW/v1/payments"
+    -H "Idempotency-Key: $2" -d "{\"tool\":\"$1\",\"input\":{\"text\":\"hello\"}}" "$GW/v1/payments"
 }
 
 say "1. echo (\$0.01): inside policy -> signed -> settled on chain -> charged"
 pay echo demo-1
 "$AG" account balance --account "$ACCT"
 
-say "2. premium (\$0.50): over the \$0.30 budget -> refused before signing"
+say "2. premium (\$0.50): over the \$0.30 daily budget -> refused before signing"
 pay premium demo-2
 "$AG" account balance --account "$ACCT"
 

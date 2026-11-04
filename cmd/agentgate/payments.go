@@ -23,7 +23,6 @@ import (
 
 	"github.com/ws4charlie/agent-gate/internal/ledger"
 	"github.com/ws4charlie/agent-gate/internal/paidtool"
-	"github.com/ws4charlie/agent-gate/internal/policy"
 	"github.com/ws4charlie/agent-gate/internal/server"
 	"github.com/ws4charlie/agent-gate/internal/wallet"
 	"github.com/ws4charlie/agent-gate/internal/x402"
@@ -37,8 +36,7 @@ type PaymentsFile struct {
 	// ChainQueryURL (sim only): base URL of the paid tool, which hosts the
 	// simulated chain; the reconciler asks it whether an authorization was used.
 	// On base-sepolia the reconciler uses $AG_RPC_URL instead.
-	ChainQueryURL string        `json:"chain_query_url"`
-	Policy        policy.Config `json:"policy"`
+	ChainQueryURL string `json:"chain_query_url"`
 }
 
 func readPaymentsFile(path string) (PaymentsFile, error) {
@@ -68,7 +66,7 @@ func loadPayments(f PaymentsFile) (*server.Payments, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &server.Payments{Policy: policy.New(f.Policy), Wallet: w, Tools: f.Tools}, nil
+	return &server.Payments{Wallet: w, Tools: f.Tools}, nil
 }
 
 // paymentsLookup builds the reconciler's view of the chain for payment holds.
