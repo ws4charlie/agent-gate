@@ -11,7 +11,7 @@ Read from modelcontextprotocol.io on 2026-11-03; the session notes in the plan w
 - Old clients are told, not served: a server that supports only this revision should name its versions in the error it returns to `initialize`. That is what [`mcp.Check`](../../internal/mcp/jsonrpc.go) does.
 - Error codes `-32020..-32099` belong to the spec, so the gateway's own refusals use `40201/40202/40301/40302/40901/50201`.
 
-The gateway targets this one revision. It is stateless because the protocol is: there is nothing to remember between requests, so a gateway restart loses no MCP state.
+The gateway targets this one revision, so an older client or server is refused. Checked once against `@modelcontextprotocol/server-everything` 2.1.0; everything else runs against the in-repo fake. It is stateless because the protocol is: there is nothing to remember between requests, so a gateway restart loses no MCP state.
 
 ## The flow of `tools/call`
 
@@ -59,7 +59,7 @@ Kill by run (I12): `agentgate run kill` writes `status='killed'`. The next reque
 ## Failure modes
 
 - **Upstream down or non-2xx:** the hold is released, the client gets `50201`, the upstream's error body is not relayed (it is text from outside).
-- **Gateway dies between reserve and settle:** the hold expires and the reconciler closes it (I6), like any hold. Its kind is `tool`; with no usage to look up it is released and marked unmetered.
+- **Gateway dies between reserve and settle:** the hold expires and the reconciler closes it (I6), like any hold. Its kind is `tool`; with no usage to look up it is released and marked unmetered. The reconciler's audit row carries the hold's own kind (`mcp` for a tool hold, read from the `holds` row; `TestDeadToolHoldIsReleasedByReconciler_I6`).
 - **Screen judge down (when enabled):** the content is blocked (`judge_unavailable`), not passed.
 - **SSE stream ends without a result:** released, an error event ends the stream.
 

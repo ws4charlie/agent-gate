@@ -57,7 +57,7 @@ func TestCrashedHoldReconciledFromGenerationHeader(t *testing.T) {
 	if err := e.led.AttachUpstream(context.Background(), h.ID, "fakeoa", resp.Header.Get("X-Generation-Id")); err != nil {
 		t.Fatal(err)
 	}
-	rep, err := server.Reconcile(context.Background(), e.led, (&provider_lookup{e}).l(), e.audit, e.srv.Agents, time.Now().Add(time.Hour))
+	rep, err := server.Reconcile(context.Background(), e.pool, e.led, (&provider_lookup{e}).l(), e.audit, e.srv.Agents, time.Now().Add(time.Hour))
 	if err != nil || rep.Settled != 1 || rep.Errors != 0 {
 		t.Fatalf("%+v %v", rep, err)
 	}
@@ -76,7 +76,7 @@ func TestLookup400ReleasesAndAuditsUnmetered(t *testing.T) {
 	if err := e.led.AttachUpstream(context.Background(), h.ID, "fakeoa", "msg_old"); err != nil {
 		t.Fatal(err)
 	}
-	rep, err := server.Reconcile(context.Background(), e.led, (&provider_lookup{e}).l(), e.audit, e.srv.Agents, time.Now().Add(time.Hour))
+	rep, err := server.Reconcile(context.Background(), e.pool, e.led, (&provider_lookup{e}).l(), e.audit, e.srv.Agents, time.Now().Add(time.Hour))
 	if err != nil || rep.Errors != 0 || rep.Released != 1 {
 		t.Fatalf("%+v %v", rep, err)
 	}
@@ -166,7 +166,7 @@ func TestSettlePricingErrorDoesNotTouchResponse(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("hold should stay active for the reconciler, %d active", n)
 	}
-	rep, err := server.Reconcile(context.Background(), e.led, noLookup{}, e.audit, e.srv.Agents, time.Now().Add(time.Hour))
+	rep, err := server.Reconcile(context.Background(), e.pool, e.led, noLookup{}, e.audit, e.srv.Agents, time.Now().Add(time.Hour))
 	if err != nil || rep.Released != 1 {
 		t.Fatalf("%+v %v", rep, err)
 	}

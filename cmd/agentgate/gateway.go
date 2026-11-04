@@ -159,7 +159,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 				} else if n > 0 {
 					log.Info("approvals expired", "count", n)
 				}
-				if rep, err := server.Reconcile(ctx, led, lookup, srv.Audit, srv.Agents, time.Now()); err != nil {
+				if rep, err := server.Reconcile(ctx, pool, led, lookup, srv.Audit, srv.Agents, time.Now()); err != nil {
 					log.Error("reconcile", "err", err)
 				} else if rep.Settled+rep.Released+rep.Errors > 0 {
 					log.Info("reconcile", "settled", rep.Settled, "released", rep.Released, "errors", rep.Errors)
@@ -329,7 +329,7 @@ func reconcileCmd(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 	}
-	rep, err := server.Reconcile(ctx, ledger.New(pool), rl, audit.NewStore(pool), agents.NewStore(pool), time.Now())
+	rep, err := server.Reconcile(ctx, pool, ledger.New(pool), rl, audit.NewStore(pool), agents.NewStore(pool), time.Now())
 	if err != nil {
 		return err
 	}

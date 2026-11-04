@@ -675,13 +675,16 @@ func TestDeadToolHoldIsReleasedByReconciler_I6(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rep, err := server.Reconcile(context.Background(), e.led, noLookup{}, e.audit, e.srv.Agents, time.Now().Add(time.Hour))
+	rep, err := server.Reconcile(context.Background(), e.pool, e.led, noLookup{}, e.audit, e.srv.Agents, time.Now().Add(time.Hour))
 	if err != nil || rep.Released != 1 {
 		t.Fatalf("%+v %v", rep, err)
 	}
 	if b := e.balance(); b.Balance != 10*usd || b.Held != 0 {
 		t.Fatalf("%+v", b)
 	}
-	_ = h
+	rows, err := e.audit.ByRequest(context.Background(), "reconcile:"+h.ID)
+	if err != nil || len(rows) != 1 || rows[0].Kind != "mcp" || rows[0].Status != "reconciled_unmetered" {
+		t.Fatalf("a closed tool hold is audited as kind mcp: %+v %v", rows, err)
+	}
 	e.noActiveHolds()
 }

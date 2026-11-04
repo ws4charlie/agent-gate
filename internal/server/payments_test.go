@@ -217,7 +217,7 @@ func (p *payEnv) reconcile(now, chainNow time.Time) ledger.Report {
 		Payments: &x402.AuthLookup{Chain: p.sim.Chain, Now: func() time.Time { return chainNow }},
 		Default:  &provider.GenerationLookup{Providers: map[string]provider.ProviderCfg{}},
 	}
-	rep, err := server.Reconcile(context.Background(), p.env.led, lookup, p.audit, p.env.srv.Agents, now)
+	rep, err := server.Reconcile(context.Background(), p.env.pool, p.env.led, lookup, p.audit, p.env.srv.Agents, now)
 	if err != nil {
 		p.t.Fatal(err)
 	}
