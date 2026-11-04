@@ -146,7 +146,14 @@ func (c *EthChain) Settle(ctx context.Context, token common.Address, a Auth, sig
 		return common.Hash{}, err
 	}
 	if err := c.Client.SendTransaction(ctx, tx); err != nil {
-		return common.Hash{}, err // not broadcast: a plain failure
+		// A send error does not prove the node never got the transaction (a
+		// timeout can lose only the reply). Only the node's standard rejection
+		// messages are definite; anything else is "pending" so the caller keeps
+		// the hold and asks the chain later. The hash is the signed tx's own.
+		if rejectedBySend(err) {
+			return tx.Hash(), fmt.Errorf("%w: send rejected: %v", ErrReverted, err)
+		}
+		return tx.Hash(), &PendingError{Tx: tx.Hash(), Err: err}
 	}
 	if c.AfterSend != nil {
 		c.AfterSend()
@@ -212,4 +219,17 @@ func (c *EthChain) wait(ctx context.Context, h common.Hash) (*types.Receipt, err
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
+}
+
+// rejectedBySend matches the standard node errors that prove the transaction
+// was refused before entering the pool. "already known" is deliberately absent:
+// it means the node HAS the transaction.
+func rejectedBySend(err error) bool {
+	m := strings.ToLower(err.Error())
+	for _, k := range []string{"nonce too low", "underpriced", "insufficient funds", "intrinsic gas too low", "exceeds block gas limit", "invalid sender", "max fee per gas less than block base fee"} {
+		if strings.Contains(m, k) {
+			return true
+		}
+	}
+	return false
 }

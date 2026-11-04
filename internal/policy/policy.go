@@ -19,10 +19,11 @@ import (
 
 // Request is one payment someone wants to make.
 type Request struct {
-	AgentID string
-	Payee   string // 0x address
-	Amount  money.Nanos
-	Network string
+	AccountID string // the authenticated account asking; must own the agent
+	AgentID   string
+	Payee     string // 0x address
+	Amount    money.Nanos
+	Network   string
 }
 
 // Allowed is proof that Check approved a Request. Zero value is not a proof:
@@ -45,6 +46,10 @@ func (d *Denied) Error() string { return d.Reason + ": " + d.Detail }
 
 // AgentRule is one agent's limits.
 type AgentRule struct {
+	// Account is the one gateway account allowed to spend as this agent. The
+	// agent id comes from the request body, so without this binding any key
+	// could spend under the agent with the biggest budget.
+	Account string `json:"account_id"`
 	// Budget is the most this agent may spend in total, in Nanos. Hardcoded
 	// from config for now; T4 makes it a windowed, persisted rule.
 	Budget money.Nanos `json:"budget_nanos"`
@@ -79,8 +84,9 @@ func (p *Policy) Check(r Request) (Allowed, *Denied) {
 		return Allowed{}, &Denied{"invalid_request", "agent, payee and a positive amount are required"}
 	}
 	rule, ok := p.cfg.Agents[r.AgentID]
-	if !ok {
-		return Allowed{}, &Denied{"unknown_agent", fmt.Sprintf("agent %q has no payment rule", r.AgentID)}
+	if !ok || rule.Account == "" || rule.Account != r.AccountID {
+		// Same answer for "no such agent" and "not yours": do not reveal which agents exist.
+		return Allowed{}, &Denied{"unknown_agent", fmt.Sprintf("agent %q has no payment rule for this account", r.AgentID)}
 	}
 	if !p.payees[strings.ToLower(r.Payee)] {
 		return Allowed{}, &Denied{"payee_not_allowed", fmt.Sprintf("payee %s is not on the allowlist", r.Payee)}

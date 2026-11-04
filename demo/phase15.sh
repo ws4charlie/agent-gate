@@ -79,12 +79,15 @@ for _ in $(seq 100); do curl -sf "http://127.0.0.1:$TOOLPORT/healthz" >/dev/null
 curl -sf "http://127.0.0.1:$TOOLPORT/healthz" >/dev/null || { cat "$WORK/tool.log"; exit 1; }
 head -n1 "$WORK/tool.log"
 
-# Policy: agent-1 may spend $0.30 in total (300,000,000 Nanos), only to PAYEE.
+# Policy: agent-1 belongs to this account only, may spend $0.30 in total
+# (300,000,000 Nanos), and only to PAYEE. chain_query_url (sim only) is how the
+# reconciler asks the simulated chain whether a signed payment executed.
 cat > "$WORK/payments.json" <<JSON
 {
   "network": "$NETWORK",
   "tools": {"echo": "http://127.0.0.1:$TOOLPORT/echo", "premium": "http://127.0.0.1:$TOOLPORT/premium"},
-  "policy": {"agents": {"agent-1": {"budget_nanos": 300000000}}, "payees": ["$PAYEE"]}
+  "chain_query_url": "http://127.0.0.1:$TOOLPORT",
+  "policy": {"agents": {"agent-1": {"account_id": "$ACCT", "budget_nanos": 300000000}}, "payees": ["$PAYEE"]}
 }
 JSON
 say "gateway"
@@ -115,3 +118,6 @@ psql -h "$PGHOST" -d "$DB" -c "select e.kind, h.kind as hold_kind, e.amount_nano
 say "audit rows (the refusal is recorded; it has a hold but no cost)"
 psql -h "$PGHOST" -d "$DB" -c "select kind, agent_id, model as tool, status, err, cost_nanos, left(upstream_id, 14) as tx from audit_events order by id"
 
+
+say "reconcile: nothing is pending, so nothing changes (a payment whose outcome is unknown is resolved from the chain here)"
+"$AG" reconcile --payments "$WORK/payments.json"

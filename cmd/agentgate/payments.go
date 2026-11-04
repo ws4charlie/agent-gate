@@ -21,6 +21,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
+	"github.com/ws4charlie/agent-gate/internal/ledger"
 	"github.com/ws4charlie/agent-gate/internal/paidtool"
 	"github.com/ws4charlie/agent-gate/internal/policy"
 	"github.com/ws4charlie/agent-gate/internal/server"
@@ -33,20 +34,28 @@ import (
 type PaymentsFile struct {
 	Network string            `json:"network"` // sim | base-sepolia
 	Tools   map[string]string `json:"tools"`   // tool name -> URL
-	Policy  policy.Config     `json:"policy"`
+	// ChainQueryURL (sim only): base URL of the paid tool, which hosts the
+	// simulated chain; the reconciler asks it whether an authorization was used.
+	// On base-sepolia the reconciler uses $AG_RPC_URL instead.
+	ChainQueryURL string        `json:"chain_query_url"`
+	Policy        policy.Config `json:"policy"`
 }
 
-func loadPayments(path string) (*server.Payments, error) {
+func readPaymentsFile(path string) (PaymentsFile, error) {
+	var f PaymentsFile
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("payments config: %w", err)
+		return f, fmt.Errorf("payments config: %w", err)
 	}
-	var f PaymentsFile
 	dec := json.NewDecoder(strings.NewReader(string(b)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&f); err != nil {
-		return nil, fmt.Errorf("payments config: %w", err)
+		return f, fmt.Errorf("payments config: %w", err)
 	}
+	return f, nil
+}
+
+func loadPayments(f PaymentsFile) (*server.Payments, error) {
 	chainID, err := chainIDFor(f.Network)
 	if err != nil {
 		return nil, err
@@ -60,6 +69,40 @@ func loadPayments(path string) (*server.Payments, error) {
 		return nil, err
 	}
 	return &server.Payments{Policy: policy.New(f.Policy), Wallet: w, Tools: f.Tools}, nil
+}
+
+// paymentsLookup builds the reconciler's view of the chain for payment holds.
+// After signing, the chain is the source of truth, so a gateway that has
+// payments configured must be able to read it.
+func paymentsLookup(ctx context.Context, f PaymentsFile) (ledger.UsageLookup, error) {
+	var r x402.AuthReader
+	switch f.Network {
+	case "sim", "":
+		if f.ChainQueryURL == "" {
+			return nil, errors.New("payments config: sim needs chain_query_url (the paid tool's base URL)")
+		}
+		r = &x402.RemoteChain{BaseURL: strings.TrimRight(f.ChainQueryURL, "/")}
+	case "base-sepolia":
+		rpc := os.Getenv("AG_RPC_URL")
+		if rpc == "" {
+			return nil, errors.New("payments config: base-sepolia needs AG_RPC_URL for the reconciler")
+		}
+		cl, err := ethclient.DialContext(ctx, rpc)
+		if err != nil {
+			return nil, err
+		}
+		id, err := cl.ChainID(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if id.Uint64() != x402.BaseSepoliaChainID {
+			return nil, fmt.Errorf("payments config: RPC reports chain id %s, want %d", id, x402.BaseSepoliaChainID)
+		}
+		r = &x402.EthChain{Client: cl} // read-only use: no facilitator key
+	default:
+		return nil, fmt.Errorf("unknown network %q", f.Network)
+	}
+	return &x402.AuthLookup{Chain: r}, nil
 }
 
 func chainIDFor(network string) (uint64, error) {

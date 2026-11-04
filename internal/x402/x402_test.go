@@ -3,6 +3,7 @@ package x402_test
 import (
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -57,7 +58,7 @@ func newRig(t *testing.T) *rig {
 	})))
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	p := policy.New(policy.Config{Agents: map[string]policy.AgentRule{"a": {Budget: 1_000_000_000}}, Payees: []string{payTo.Hex()}})
+	p := policy.New(policy.Config{Agents: map[string]policy.AgentRule{"a": {Account: "acct-1", Budget: 1_000_000_000}}, Payees: []string{payTo.Hex()}})
 	return &rig{t: t, sim: sim, ver: v, srv: srv, key: key, w: w, payTo: payTo, policy: p}
 }
 
@@ -117,7 +118,7 @@ func (r *rig) send(p x402.PaymentPayload) (*http.Response, x402.SettleResponse, 
 }
 
 func (r *rig) allowed() policy.Allowed {
-	a, d := r.policy.Check(policy.Request{AgentID: "a", Payee: r.payTo.Hex(), Amount: price * 1000, Network: x402.NetworkLocal})
+	a, d := r.policy.Check(policy.Request{AccountID: "acct-1", AgentID: "a", Payee: r.payTo.Hex(), Amount: price * 1000, Network: x402.NetworkLocal})
 	if d != nil {
 		r.t.Fatal(d)
 	}
@@ -303,5 +304,79 @@ func TestWalletBindsPayeeAndAmountToWhatPolicyApproved(t *testing.T) {
 	}
 	if r.w.SignCount() != 0 {
 		t.Fatal("sign counter moved")
+	}
+}
+
+func TestAuthLookupThreeOutcomes(t *testing.T) {
+	r := newRig(t)
+	req, res := r.challenge()
+	ctx := context.Background()
+	// Prepared and signed, not yet sent.
+	pend, err := r.w.Prepare(ctx, r.allowed(), "hold-lookup", res, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := pend.Ref()
+	now := time.Now()
+	open := &x402.AuthLookup{Chain: r.sim.Chain, Now: func() time.Time { return now }}
+	closed := &x402.AuthLookup{Chain: r.sim.Chain, Now: func() time.Time { return now.Add(10 * time.Minute) }}
+
+	if _, _, err := open.Lookup(ctx, "x402", ref); !errors.Is(err, x402.ErrWindowOpen) {
+		t.Fatalf("unused + window open must be an error, got %v", err)
+	}
+	if _, found, err := closed.Lookup(ctx, "x402", ref); err != nil || found {
+		t.Fatalf("unused + window closed must be not-found: %v %v", found, err)
+	}
+	// Send it for real.
+	p, _ := r.w.Sign(pend)
+	if resp, _, _ := r.send(p); resp.StatusCode != 200 {
+		t.Fatalf("settle: %d", resp.StatusCode)
+	}
+	for _, l := range []*x402.AuthLookup{open, closed} {
+		u, found, err := l.Lookup(ctx, "x402", ref)
+		if err != nil || !found || u.Cost != price*1000 || u.Source != "chain" {
+			t.Fatalf("used: %+v %v %v", u, found, err)
+		}
+	}
+	if _, _, err := open.Lookup(ctx, "x402", "not json"); err == nil {
+		t.Fatal("an unreadable ref must be an error, never a release")
+	}
+}
+
+// The simulated chain lives inside the paid-tool process, so the gateway asks
+// it over HTTP.
+func TestRemoteChainReader(t *testing.T) {
+	r := newRig(t)
+	srv := httptest.NewServer(x402.AuthStateHandler(r.sim.Chain))
+	defer srv.Close()
+	rc := &x402.RemoteChain{BaseURL: srv.URL}
+	req, res := r.challenge()
+	pend, _ := r.w.Prepare(context.Background(), r.allowed(), "hold-remote", res, req)
+	ref, _ := x402.DecodeAuthRef(pend.Ref())
+	used, err := rc.AuthorizationUsed(context.Background(), ref.Token, ref.From, ref.Nonce)
+	if err != nil || used {
+		t.Fatalf("before: %v %v", used, err)
+	}
+	p, _ := r.w.Sign(pend)
+	r.send(p)
+	if used, err = rc.AuthorizationUsed(context.Background(), ref.Token, ref.From, ref.Nonce); err != nil || !used {
+		t.Fatalf("after: %v %v", used, err)
+	}
+}
+
+// The wallet converts with a checked helper: a value that overflows Nanos is refused.
+func TestWalletRefusesOverflowingAmount(t *testing.T) {
+	r := newRig(t)
+	req, res := r.challenge()
+	req.Amount = "9223372036854775807" // MaxInt64 atomic units
+	a, d := r.policy.Check(policy.Request{AccountID: "acct-1", AgentID: "a", Payee: r.payTo.Hex(), Amount: money.Nanos(1), Network: x402.NetworkLocal})
+	if d != nil {
+		t.Fatal(d)
+	}
+	if _, err := r.w.Prepare(context.Background(), a, "h", res, req); err == nil {
+		t.Fatal("overflowing amount accepted")
+	}
+	if r.w.SignCount() != 0 {
+		t.Fatal("signed")
 	}
 }

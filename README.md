@@ -114,7 +114,9 @@ sequenceDiagram
         G-->>A: 403 policy_denied (no signature, no tx)
     else allowed
         P-->>G: Allowed
-        G->>W: Pay(Allowed, hold id)
+        G->>W: Prepare(Allowed, hold id)
+        G->>L: record the authorization on the hold
+        G->>W: Sign
         W-->>G: signed EIP-3009 authorization
         G->>T: retry + PAYMENT-SIGNATURE
         T->>T: verify signature, amount, payee, window, network
@@ -139,7 +141,8 @@ What this is and is not:
 - The offline run uses a mock token with Circle USDC's EIP-3009 interface, so it proves the protocol logic, not Base Sepolia behaviour.
 - A run on Base Sepolia (`demo/phase15.sh --network base-sepolia`, needing an RPC URL, a gas-funded facilitator key and a USDC-funded wallet from the environment) is built but **separate and not part of the offline demo or CI**. The USDC address used there is Circle's [documented](https://developers.circle.com/stablecoins/usdc-contract-addresses) Base Sepolia one.
 - The wallet refuses to start for any chain id except 84532 and the local simulated chain. `agentgate wallet new` writes a testnet key to a gitignored `0600` file and prints only the address.
-- Policy here is a per-agent total budget and a payee allowlist read from a JSON file. The real policy engine comes next; the wallet hardening (velocity, key handling) after that.
+- After signing, the chain is the source of truth. The authorization is recorded on the ledger hold before it is signed. A definite refusal (verification failed, or the transaction reverted) releases the hold. Any other outcome (lost connection, tool 5xx, a ledger failure after the transfer) leaves the hold for the reconciler, which asks the token contract: used, so it settles the authorized amount; unused with the window still open, so it waits; unused with the window closed, so it releases. A failed tool call therefore returns money after about three minutes, not at once.
+- Policy here is a per-agent total budget and a payee allowlist read from a JSON file; each agent is bound to the one gateway account that may spend as it (`demo/payments.example.json`). The real policy engine comes next; the wallet hardening (velocity, key handling) after that.
 
 ## Security and threat model
 

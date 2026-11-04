@@ -23,6 +23,7 @@ func Handler(v *x402.Verifier) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("POST /echo", v.Protect(EchoPrice, "Echo the input back", tool("echo", strings.ToUpper)))
 	mux.Handle("POST /premium", v.Protect(PremiumPrice, "Premium analysis", tool("premium", func(s string) string { return "analysis of: " + s })))
+	mux.Handle("GET "+x402.AuthStatePath, x402.AuthStateHandler(v.Chain)) // read-only: lets the gateway's reconciler ask the chain
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok\n") })
 	return mux
 }

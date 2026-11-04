@@ -8,7 +8,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"math"
 	"math/big"
 	"os"
 	"strconv"
@@ -29,8 +28,6 @@ const (
 	EnvKeyFile = "AG_WALLET_KEY_FILE" // path to a gitignored file holding it
 	// DefaultKeyFile is under data/, which is gitignored; *.key is too.
 	DefaultKeyFile = "data/wallet.key"
-
-	nanosPerAtomic = 1000 // 1 micro-USDC (6 decimals) = 1000 Nanos (1e-9 USD)
 )
 
 // ErrRefusedChain: the wallet only signs for Base Sepolia or the local simulated chain.
@@ -64,30 +61,48 @@ func (w *Wallet) Network() string         { return "eip155:" + strconv.FormatUin
 // SignCount is how many signatures this wallet ever produced.
 func (w *Wallet) SignCount() int64 { return w.signs.Load() }
 
-// Pay signs an EIP-3009 authorization for the requirement, if and only if the
-// policy approved exactly this payee, amount and network (I10). The nonce is
-// derived from the ledger hold id (I11).
-func (w *Wallet) Pay(ctx context.Context, allowed policy.Allowed, holdID string, res x402.Resource, req x402.Requirements) (x402.PaymentPayload, error) {
-	var zero x402.PaymentPayload
+// Pending is an authorization that has been built and approved but not signed.
+// Splitting Prepare from Sign lets the gateway record the authorization on the
+// ledger hold BEFORE any signature exists: once signed, the chain decides
+// whether money moved, and the reconciler needs the handle to ask it. Its
+// fields are unexported, so a Pending only comes from Prepare (which needs an
+// Allowed), keeping I10.
+type Pending struct {
+	auth x402.Auth
+	dom  x402.Domain
+	req  x402.Requirements
+	res  x402.Resource
+}
+
+// Ref is the opaque string to store on the hold before signing.
+func (p *Pending) Ref() string { return x402.NewAuthRef(p.auth, p.dom.Contract).Encode() }
+
+// Prepare checks the request against what policy approved (payee, amount,
+// network) and builds the authorization, with the nonce derived from the hold
+// id (I11). It does not sign.
+func (w *Wallet) Prepare(ctx context.Context, allowed policy.Allowed, holdID string, res x402.Resource, req x402.Requirements) (*Pending, error) {
 	if err := ctx.Err(); err != nil {
-		return zero, err
+		return nil, err
 	}
 	if !allowed.Valid() {
-		return zero, errors.New("wallet: payment was not approved by policy")
+		return nil, errors.New("wallet: payment was not approved by policy")
 	}
 	ar := allowed.Request()
 	if req.Network != w.Network() || ar.Network != req.Network {
-		return zero, fmt.Errorf("wallet: network %q is not this wallet's %q", req.Network, w.Network())
+		return nil, fmt.Errorf("wallet: network %q is not this wallet's %q", req.Network, w.Network())
 	}
 	if !common.IsHexAddress(req.PayTo) || !strings.EqualFold(ar.Payee, req.PayTo) {
-		return zero, errors.New("wallet: payee differs from the one policy approved")
+		return nil, errors.New("wallet: payee differs from the one policy approved")
 	}
 	amt, ok := new(big.Int).SetString(req.Amount, 10)
-	if !ok || amt.Sign() <= 0 || !amt.IsInt64() || money.Nanos(amt.Int64())*nanosPerAtomic != ar.Amount {
-		return zero, errors.New("wallet: amount differs from the one policy approved")
+	if !ok || amt.Sign() <= 0 {
+		return nil, errors.New("wallet: bad amount")
+	}
+	if n, ok := x402.NanosFromAtomic(amt); !ok || n != ar.Amount { // checked: no overflow
+		return nil, errors.New("wallet: amount differs from the one policy approved")
 	}
 	if !common.IsHexAddress(req.Asset) || holdID == "" {
-		return zero, errors.New("wallet: bad asset or hold id")
+		return nil, errors.New("wallet: bad asset or hold id")
 	}
 	now := w.now().Unix()
 	a := x402.Auth{From: w.Address(), To: common.HexToAddress(req.PayTo), Value: amt,
@@ -95,31 +110,40 @@ func (w *Wallet) Pay(ctx context.Context, allowed policy.Allowed, holdID string,
 		Nonce: x402.PaymentNonce(holdID)}
 	dom := x402.Domain{Name: req.Extra.Name, Version: req.Extra.Version, ChainID: new(big.Int).SetUint64(w.chainID),
 		Contract: common.HexToAddress(req.Asset)}
+	return &Pending{auth: a, dom: dom, req: req, res: res}, nil
+}
+
+// Sign signs exactly the values Prepare built and Ref reported.
+func (w *Wallet) Sign(p *Pending) (x402.PaymentPayload, error) {
+	var zero x402.PaymentPayload
+	if p == nil {
+		return zero, errors.New("wallet: nothing prepared")
+	}
 	w.signs.Add(1)
-	sig, err := x402.Sign(w.key, x402.Digest(dom, a))
+	sig, err := x402.Sign(w.key, x402.Digest(p.dom, p.auth))
 	if err != nil {
 		return zero, err
 	}
-	r := res
-	return x402.PaymentPayload{X402Version: x402.Version, Resource: &r, Accepted: req,
-		Payload: x402.Payload{Signature: "0x" + common.Bytes2Hex(sig), Authorization: a.Wire()}}, nil
+	r := p.res
+	return x402.PaymentPayload{X402Version: x402.Version, Resource: &r, Accepted: p.req,
+		Payload: x402.Payload{Signature: "0x" + common.Bytes2Hex(sig), Authorization: p.auth.Wire()}}, nil
+}
+
+// Pay is Prepare then Sign, for callers that do not need to record the
+// authorization first.
+func (w *Wallet) Pay(ctx context.Context, allowed policy.Allowed, holdID string, res x402.Resource, req x402.Requirements) (x402.PaymentPayload, error) {
+	p, err := w.Prepare(ctx, allowed, holdID, res, req)
+	if err != nil {
+		return x402.PaymentPayload{}, err
+	}
+	return w.Sign(p)
 }
 
 // Atomic converts Nanos to USDC atomic units, rejecting fractions of a micro-USDC.
-func Atomic(n money.Nanos) (*big.Int, bool) {
-	if n%nanosPerAtomic != 0 {
-		return nil, false
-	}
-	return big.NewInt(int64(n / nanosPerAtomic)), true
-}
+func Atomic(n money.Nanos) (*big.Int, bool) { return x402.AtomicFromNanos(n) }
 
-// Nanos converts USDC atomic units to Nanos.
-func Nanos(atomic *big.Int) (money.Nanos, bool) {
-	if !atomic.IsInt64() || atomic.Sign() < 0 || atomic.Int64() > math.MaxInt64/nanosPerAtomic {
-		return 0, false
-	}
-	return money.Nanos(atomic.Int64()) * nanosPerAtomic, true
-}
+// Nanos converts USDC atomic units to Nanos (overflow checked).
+func Nanos(atomic *big.Int) (money.Nanos, bool) { return x402.NanosFromAtomic(atomic) }
 
 // LoadKey reads the key from $AG_WALLET_KEY, else the file named by
 // $AG_WALLET_KEY_FILE (default data/wallet.key).

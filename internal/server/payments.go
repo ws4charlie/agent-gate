@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -158,7 +159,7 @@ func (c *call) pay() {
 	c.ext.HoldID = hold.ID
 
 	// 4. Screen before sign (I10). A refusal never reaches the wallet.
-	allowed, denied := p.Policy.Check(policy.Request{AgentID: in.AgentID, Payee: req.PayTo, Amount: amount, Network: req.Network})
+	allowed, denied := p.Policy.Check(policy.Request{AccountID: acct, AgentID: in.AgentID, Payee: req.PayTo, Amount: amount, Network: req.Network})
 	if denied != nil {
 		c.release(hold, "policy: "+denied.Reason)
 		c.ev.Err = denied.Reason
@@ -168,8 +169,24 @@ func (c *call) pay() {
 		return
 	}
 
-	// 5. Sign. Only now does the key get used.
-	payload, err := p.Wallet.Pay(c.ctx, allowed, hold.ID, ch.Required.Resource, req)
+	// 5. Build the authorization, record it on the hold, THEN sign. After a
+	// signature exists the chain, not this process, decides whether money
+	// moved; the recorded ref is how the reconciler asks it later. If the
+	// record cannot be written, nothing is signed.
+	pending, err := p.Wallet.Prepare(c.ctx, allowed, hold.ID, ch.Required.Resource, req)
+	if err == nil {
+		actx, cancel := context.WithTimeout(context.WithoutCancel(c.ctx), 5*time.Second)
+		err = s.Ledger.AttachUpstream(actx, hold.ID, x402.Provider, pending.Ref())
+		cancel()
+	}
+	if err != nil {
+		p.Policy.Refund(allowed)
+		c.release(hold, "prepare failed")
+		s.Log.Error("prepare", "request_id", c.ev.RequestID, "err", err)
+		c.fail(http.StatusInternalServerError, StatusPaymentFailed, "sign_failed", "could not prepare the payment", nil)
+		return
+	}
+	payload, err := p.Wallet.Sign(pending)
 	if err != nil {
 		p.Policy.Refund(allowed)
 		c.release(hold, "sign failed")
@@ -178,63 +195,89 @@ func (c *call) pay() {
 		return
 	}
 
-	// 6. Paid retry. The tool's server verifies, runs the tool, settles on chain.
-	resp, err := p.Fetcher.Pay(c.ctx, http.MethodPost, url, input, payload)
+	// 6. Paid retry and everything after it run detached from the client: a
+	// dropped connection must not abort a settlement that may already be on
+	// chain. Bounded by the authorization window plus slack.
+	pctx, pcancel := context.WithTimeout(context.WithoutCancel(c.ctx), time.Duration(req.MaxTimeoutSeconds)*time.Second+30*time.Second)
+	defer pcancel()
+
+	resp, err := p.Fetcher.Pay(pctx, http.MethodPost, url, input, payload)
 	if err != nil {
-		// The request may have reached the server: do not release. The hold stays
-		// active; funds are only returned by the reconciler after expiry, flagged.
-		s.Log.Error("paid retry", "request_id", c.ev.RequestID, "err", err)
-		c.ev.Err = "settlement_unknown"
-		c.writeJSON(http.StatusBadGateway, map[string]any{"error": map[string]any{"type": "settlement_unknown", "code": "settlement_unknown",
-			"message": "the payment may or may not have settled", "request_id": c.ev.RequestID}})
-		c.finish(StatusSettlementPending)
+		c.unknown("transport_error", "")
 		return
 	}
 	defer resp.Body.Close()
 	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	var sr x402.SettleResponse
-	_ = x402.DecodeHeader(resp.Header.Get(x402.HeaderResponse), &sr)
+	hasSettle := x402.DecodeHeader(resp.Header.Get(x402.HeaderResponse), &sr) == nil
+
+	// Only a definite "no" releases the hold:
+	//   - the tool answered 402 from verification (no signature was accepted, nothing was sent), or
+	//   - the settlement reported a revert / rejected send (ReasonTxState).
+	// Everything else (5xx, unparsable, unexpected_settle_error, pending) may
+	// hide a transfer that happened, so the hold stays and the chain decides.
+	definiteNo := (resp.StatusCode == http.StatusPaymentRequired && !hasSettle && resp.Header.Get(x402.HeaderRequired) != "") ||
+		(hasSettle && !sr.Success && sr.ErrorReason == x402.ReasonTxState)
 
 	switch {
-	case resp.StatusCode == http.StatusOK && sr.Success:
-		c.attach(hold, "x402", sr.Transaction)
+	case resp.StatusCode == http.StatusOK && hasSettle && sr.Success:
 		c.ev.Usage.UpstreamID = sr.Transaction
-		st, err := s.Ledger.Settle(context.WithoutCancel(c.ctx), ledger.SettleReq{HoldID: hold.ID, Actual: amount,
+		st, err := s.Ledger.Settle(pctx, ledger.SettleReq{HoldID: hold.ID, Actual: amount,
 			IdemKey: "settle:" + hold.ID, Memo: "payment " + in.Tool + " tx " + sr.Transaction})
-		if err != nil {
-			// Money moved on chain but the ledger write failed: the loudest failure there is.
+		switch {
+		case errors.Is(err, ledger.ErrHoldNotActive):
+			// The reconciler got there first and read the same chain fact.
+			c.ev.Cost, c.ev.CostSource, c.ev.Err = amount, "chain", "settled_by_reconciler"
+		case err != nil:
+			// Money moved on chain but the ledger write failed. The hold stays,
+			// and the reconciler settles it from the chain.
 			s.Log.Error("settle ledger after chain settle", "request_id", c.ev.RequestID, "tx", sr.Transaction, "err", err)
-			c.ev.Err = "ledger_settle_failed_after_chain"
-			c.fail(http.StatusInternalServerError, audit.StatusInternal, "internal_error", "internal error", nil)
+			c.unknown("ledger_settle_failed_after_chain", sr.Transaction)
 			return
+		default:
+			c.ev.Cost, c.ev.CostSource = st.Charged, "chain"
 		}
-		c.ev.Cost, c.ev.CostSource = st.Charged, "chain"
 		var result json.RawMessage = out
 		if !json.Valid(out) {
 			result, _ = json.Marshal(string(out))
 		}
-		c.writeJSON(http.StatusOK, map[string]any{"request_id": c.ev.RequestID, "tool": in.Tool, "charged": st.Charged.String(),
+		c.writeJSON(http.StatusOK, map[string]any{"request_id": c.ev.RequestID, "tool": in.Tool, "charged": c.ev.Cost.String(),
 			"transaction": sr.Transaction, "network": sr.Network, "result": result})
 		c.finish(audit.StatusOK)
-	case sr.ErrorReason == x402.ReasonPending || resp.StatusCode == http.StatusAccepted:
-		c.attach(hold, "x402", sr.Transaction)
-		c.ev.Usage.UpstreamID, c.ev.Err = sr.Transaction, "settlement_pending"
-		c.writeJSON(http.StatusAccepted, map[string]any{"request_id": c.ev.RequestID, "status": "settlement_pending", "transaction": sr.Transaction})
-		c.finish(StatusSettlementPending)
-	default:
-		// The chain or the server refused: nothing moved. Release the hold,
-		// return the budget, and say so in the audit log.
+	case definiteNo:
 		p.Policy.Refund(allowed)
 		c.release(hold, "payment failed")
 		reason := sr.ErrorReason
 		if reason == "" {
-			reason = "http_" + http.StatusText(resp.StatusCode)
+			reason = "payment_rejected"
 		}
 		c.ev.Err = reason
 		c.writeJSON(http.StatusBadGateway, map[string]any{"error": map[string]any{"type": "payment_failed", "code": reason,
 			"message": "payment was not settled; nothing was charged", "request_id": c.ev.RequestID}})
 		c.finish(StatusPaymentFailed)
+	default:
+		reason := sr.ErrorReason
+		if reason == "" {
+			reason = "http_" + strconv.Itoa(resp.StatusCode)
+		}
+		c.unknown(reason, sr.Transaction)
 	}
+}
+
+// unknown is the "signed, outcome not known" exit: the hold and the policy
+// budget stay as they are, the client gets 202, and the reconciler decides
+// from the chain once the authorization window has closed. Trade-off: a tool
+// failure before settlement lands here too, so that money is held until the
+// window closes (about a minute plus the reconciler's margin) instead of
+// being returned at once.
+func (c *call) unknown(reason, tx string) {
+	c.ev.Err = reason
+	if tx != "" {
+		c.ev.Usage.UpstreamID = tx
+	}
+	c.writeJSON(http.StatusAccepted, map[string]any{"request_id": c.ev.RequestID, "status": "settlement_pending", "reason": reason,
+		"message": "the payment may have settled; the ledger will resolve it from the chain"})
+	c.finish(StatusSettlementPending)
 }
 
 func (c *call) writeJSON(status int, v any) {

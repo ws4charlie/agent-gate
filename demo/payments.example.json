@@ -1,0 +1,14 @@
+{
+  "network": "sim",
+  "tools": {
+    "echo": "http://127.0.0.1:9402/echo",
+    "premium": "http://127.0.0.1:9402/premium"
+  },
+  "chain_query_url": "http://127.0.0.1:9402",
+  "policy": {
+    "agents": {
+      "agent-1": {"account_id": "<gateway account id that owns this agent>", "budget_nanos": 300000000}
+    },
+    "payees": ["0x70997970C51812dc3A010C7d01b50e0d17dc79C8"]
+  }
+}

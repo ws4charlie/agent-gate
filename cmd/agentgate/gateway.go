@@ -99,18 +99,29 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		Keys: config.ProviderKey, Tracer: tracer, Log: log, MaxHold: cfg.MaxHoldNanos,
 		DefaultMaxTokens: cfg.DefaultMaxTokens, StoreBodies: *storeBodies}
 
+	// Always routed: a payment hold must never fall through to the model lookup,
+	// whose "not found" would release money that may have moved.
+	lookup := &server.RouteLookup{Default: &provider.GenerationLookup{Client: http.DefaultClient, Providers: pc.Providers, Key: config.ProviderKey}}
 	if *paymentsPath != "" {
-		pay, err := loadPayments(*paymentsPath)
+		pf, err := readPaymentsFile(*paymentsPath)
 		if err != nil {
 			return err
 		}
+		pay, err := loadPayments(pf)
+		if err != nil {
+			return err
+		}
+		pl, err := paymentsLookup(ctx, pf)
+		if err != nil {
+			return err
+		}
+		lookup.Payments = pl
 		srv.Payments = pay
 		log.Info("payments enabled", "wallet", pay.Wallet.Address().Hex(), "network", pay.Wallet.Network())
 	}
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	lookup := &provider.GenerationLookup{Client: http.DefaultClient, Providers: pc.Providers, Key: config.ProviderKey}
 	go func() { // I6: close holds whose process died
 		t := time.NewTicker(*reconcileEvery)
 		defer t.Stop()
@@ -268,6 +279,7 @@ func parseSince(s string, now time.Time) (time.Time, error) {
 
 func reconcileCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	c := newCommon("reconcile")
+	paymentsPath := c.fs.String("payments", os.Getenv("AG_PAYMENTS"), "payments config JSON: needed to close payment holds from the chain")
 	_, pool, err := c.open(ctx, args)
 	if err != nil {
 		return err
@@ -277,8 +289,18 @@ func reconcileCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	lookup := &provider.GenerationLookup{Client: http.DefaultClient, Providers: pc.Providers, Key: config.ProviderKey}
-	rep, err := server.Reconcile(ctx, ledger.New(pool), lookup, audit.NewStore(pool), time.Now())
+	var lookup ledger.UsageLookup = &provider.GenerationLookup{Client: http.DefaultClient, Providers: pc.Providers, Key: config.ProviderKey}
+	rl := &server.RouteLookup{Default: lookup} // without chain access payment holds stay active (counted as errors)
+	if *paymentsPath != "" {
+		pf, err := readPaymentsFile(*paymentsPath)
+		if err != nil {
+			return err
+		}
+		if rl.Payments, err = paymentsLookup(ctx, pf); err != nil {
+			return err
+		}
+	}
+	rep, err := server.Reconcile(ctx, ledger.New(pool), rl, audit.NewStore(pool), time.Now())
 	if err != nil {
 		return err
 	}

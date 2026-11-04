@@ -6,11 +6,11 @@ An agent pays for a tool call with USDC through the x402 flow. The gateway puts 
 
 1. The agent calls `POST /v1/payments {tool, agent_id}`. Tool names map to URLs in config; clients never supply URLs.
 2. The gateway sends the tool request **unpaid** and gets `402` with a `PAYMENT-REQUIRED` header: amount, `payTo`, token, network, and the token's EIP-712 name/version.
-3. It reserves a hold (`kind=payment`) for that amount ([`pay`](../../internal/server/payments.go) line 62).
-4. `policy.Check` approves or refuses (line 161). A refusal releases the hold and stops. Nothing was signed.
-5. `wallet.Pay` signs an EIP-3009 authorization (line 172) and the gateway retries with a `PAYMENT-SIGNATURE` header.
-6. The tool's x402 server verifies, runs the tool, submits `transferWithAuthorization` to the chain, and answers `200` with `PAYMENT-RESPONSE`.
-7. The gateway settles the hold. If the chain refused, it releases the hold instead.
+3. It reserves a hold (`kind=payment`) for that amount ([`pay`](../../internal/server/payments.go)).
+4. `policy.Check` approves or refuses. The agent must belong to the authenticated account. A refusal releases the hold and stops. Nothing was signed.
+5. `wallet.Prepare` builds the authorization (nonce from the hold id). The gateway records it on the hold (`AttachUpstream("x402", ref)`) **before** `wallet.Sign` runs. If the record cannot be written, nothing is signed.
+6. The gateway retries with a `PAYMENT-SIGNATURE` header, on a context the client cannot cancel. The tool's x402 server verifies, runs the tool, submits `transferWithAuthorization`, and answers `200` with `PAYMENT-RESPONSE`.
+7. The gateway settles the hold. If the answer was a definite "no", it releases the hold. Anything else leaves the hold for the reconciler (next section).
 
 Wire format (x402 v2, HTTP transport): headers `PAYMENT-REQUIRED`, `PAYMENT-SIGNATURE`, `PAYMENT-RESPONSE`, each base64 JSON. Payload fields: `x402Version`, `resource`, `accepted` (the requirements), `payload.signature`, `payload.authorization{from,to,value,validAfter,validBefore,nonce}`. Network is CAIP-2 (`eip155:84532`).
 
@@ -18,7 +18,7 @@ Wire format (x402 v2, HTTP transport): headers `PAYMENT-REQUIRED`, `PAYMENT-SIGN
 
 [`policy.Allowed`](../../internal/policy/policy.go) has only unexported fields. Outside package `policy`, `policy.Allowed{}` compiles to the zero value (which reports `Valid() == false` and makes `wallet.Pay` refuse), and a literal such as `policy.Allowed{req: ...}` or `policy.Allowed{ok: true}` does **not compile**: "cannot refer to unexported field ok in struct literal". The only way to get a valid one is `Policy.Check`. So signing without screening is a compile error, not a code-review item.
 
-`wallet.Pay` also checks that the payee, amount and network it is asked to sign are the ones the `Allowed` approved, so a server that changes its price between the 402 and the retry gets a refusal, not a signature.
+`wallet.Prepare` also checks that the payee, amount and network it is asked to sign are the ones the `Allowed` approved, so a server that changes its price between the 402 and the retry gets a refusal, not a signature.
 
 ## EIP-3009 versus approve / transferFrom
 
@@ -35,21 +35,46 @@ Wire format (x402 v2, HTTP transport): headers `PAYMENT-REQUIRED`, `PAYMENT-SIGN
 
 `PaymentNonce(holdID) = keccak256("agentgate/x402/nonce/v1:" + holdID)`. One hold, one nonce. Three layers stop a double payment: the gateway's `Idempotency-Key` claim (409), the server's in-flight nonce set, and the token contract's `authorizationState` (a second transfer reverts). The test `TestReplayMovesMoneyOnce` wipes the server's memory and still sees one transfer.
 
-## Failure modes
+## After signing, the chain is the source of truth
+
+Before the signature, the gateway decides. After it, the token contract decides whether money moved, and the gateway may not learn the answer (a dropped connection, a tool server that crashed after settling, a ledger write that failed). So the gateway never guesses "it failed":
+
+- The hold carries a **ref** (`x402.AuthRef`: payer, nonce, value, `validBefore`, token), written before signing.
+- **Release only on a definite no**: the tool answered 402 from *verification* (nothing was accepted or sent), or settlement reported a revert / a send the node rejected (`invalid_transaction_state`). The same `Idempotency-Key` is then spent; a new key retries cleanly.
+- **Everything else is "settlement pending"**: a transport error, a 5xx, an unparsable answer, `unexpected_settle_error`, or a ledger failure after the chain succeeded. The gateway answers 202, audits `settlement_pending`, and leaves the hold and the agent's policy budget as they are.
+- The **reconciler** (`serve` loop and `agentgate reconcile --payments FILE`) closes such holds after expiry through `x402.AuthLookup`, which asks `authorizationState(from, nonce)`:
+
+| Chain says | Window (`validBefore` + 2 min margin) | Reconciler |
+|---|---|---|
+| authorization used | any | **settles** the full authorized value (`Source=chain`) |
+| unused | still open | **error**: hold stays active, next pass asks again |
+| unused | closed | **releases** (`reconciled_unmetered`): it can never execute |
+
+The wait is sound because the hold TTL (5 min) is longer than the 60 s window plus margin, and because the contract checks `block.timestamp < validBefore`: after that no one can submit the signature.
+
+**Trade-off.** A tool-side 4xx/5xx *before* settlement also lands in "pending", because the gateway cannot tell it from a 5xx after settlement. The agent's money is held until the window closes (about three minutes), not returned at once. That is the price of never refunding a transfer that happened. A payment hold must never reach a model-provider lookup, whose "not found" would release it: `RouteLookup` sends provider `x402` to the chain, and with no chain access it errors instead of releasing.
+
+Where the chain is: against Base Sepolia the gateway reads it over `AG_RPC_URL`; the simulated chain lives inside the paid-tool process, so the gateway asks it over HTTP (`chain_query_url`, read-only `GET /chain/authorization-state`).
+
+Other failure modes:
 
 - **Policy refuses.** Hold released; audit `policy_denied`; signer count stays 0.
-- **Chain/verification refuses after signing.** Hold released, budget refunded, audit `payment_failed` with the x402 reason. The same `Idempotency-Key` is spent (409); a new key retries cleanly. Money never moved, so there is no double charge.
-- **Settlement pending / connection lost after the retry was sent.** The money may have moved. The gateway does **not** release; it audits `settlement_pending` and leaves the hold active. Resolution is manual or reconciler-driven; T7 hardens this. Known limit.
-- **Ledger write fails after the chain settled.** Logged loudly with the tx hash; audit `internal_error`. Also left for T7.
+- **`SendTransaction` errors.** A timeout can lose only the reply, so any send error is "pending" unless the node's standard rejection text proves refusal (nonce too low, underpriced, insufficient funds). `already known` means the node has it.
+- **Client disconnects mid-settlement.** The paid retry and everything after it run on a detached context bounded by `maxTimeoutSeconds + 30 s`; the ledger still settles once.
+- **Reorgs** after a receipt are not handled (a testnet slice).
 
 ## Invariants and the test that proves each
 
 | Invariant | Test |
 |---|---|
-| I10 refused payment: signer count zero, no chain tx, ledger and audit rows | `TestRefusedPaymentNeverSigns` (server); `TestWalletBindsPayee...`, `TestWalletRefusals` (x402) |
+| After signing the chain decides: response lost / tool 500 / ledger failure all end in a settle for what moved | `TestResponseLostAfterChainSettle`, `TestTool500AfterSettleIsNotRefunded`, `TestLedgerSettleFailsAfterChainSuccess` |
+| Unused authorization: held while the window is open, released when closed | `TestSignedButNeverSent`, `TestAuthLookupThreeOutcomes` |
+| Reverted transaction releases at once | `TestChainRevertReleasesAtOnce` |
+| A client hang-up does not abort settlement | `TestClientDisconnectDuringSettlement` |
+| An agent belongs to one account | `TestAgentBoundToAccount`, `TestAgentBelongsToOneAccount` |
+| I10 refused payment: signer count zero, no chain tx, ledger and audit rows | `TestRefusedPaymentNeverSigns` (server); `TestWalletBindsPayee...`, `TestWalletRefusals`, `TestWalletRefusesOverflowingAmount` (x402) |
 | I11 replay: one transfer, one charge | `TestReplayMovesMoneyOnce` (x402); `TestPaymentReplayChargesOnce` (server) |
 | Tampered signature / wrong payee / wrong amount / expired / wrong network rejected | `TestServerRejects` |
-| Chain failure after signing: released, audited, no double charge | `TestChainFailureAfterSigningReleases` |
 | I1, I2 after every gateway test | `noActiveHolds()` runs `ledger.Audit` |
 
 ## Gotchas hit
@@ -69,8 +94,11 @@ Wire format (x402 v2, HTTP transport): headers `PAYMENT-REQUIRED`, `PAYMENT-SIGN
 4. **Who pays gas, and why can't they steal funds?** The tool's server. The signature fixes amount, payee and window.
 5. **How is the nonce chosen and why?** Hash of the hold id, so one hold can authorize one transfer.
 6. **Three replay defences?** Idempotency key claim, in-flight nonce set, token contract nonce state.
-7. **What happens on a chain failure after signing?** Hold released, budget refunded, audit `payment_failed`; same key is spent, a new key retries.
-8. **Why is a lost connection after the paid retry not released?** The transfer may have happened; releasing could give the money back while the tool was paid.
+7. **What happens on a reverted transaction?** Definite no: hold released, budget refunded, audit `payment_failed`; same key is spent, a new key retries.
+8. **Why is a lost connection after the paid retry not released?** The transfer may have happened; the hold stays and the reconciler asks the chain.
+13. **When does the reconciler release a payment hold?** Only when the authorization is unused on chain and its window (plus margin) has closed.
+14. **Why record the ref before signing?** After the signature exists, only the chain knows if money moved; without the ref the reconciler could not ask.
+15. **Why must an agent be bound to an account?** The agent id comes from the request body; without the binding any key could spend under the richest agent.
 9. **EIP-3009 versus approve?** One signed transfer with no owner gas, versus a standing allowance that costs an extra transaction.
 10. **Why does the offline run prove less than a Base Sepolia run?** It uses a mock token and a simulated chain; real USDC, RPC and fee behaviour are untested.
 11. **Which chain ids may the wallet start with?** 84532 and the local simulated chain (1337).

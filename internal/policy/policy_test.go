@@ -10,13 +10,13 @@ import (
 
 func newPolicy() *policy.Policy {
 	return policy.New(policy.Config{
-		Agents: map[string]policy.AgentRule{"a": {Budget: 100}},
+		Agents: map[string]policy.AgentRule{"a": {Account: "acct-1", Budget: 100}},
 		Payees: []string{"0xAbC0000000000000000000000000000000000001"},
 	})
 }
 
 func req(agent, payee string, amt money.Nanos) policy.Request {
-	return policy.Request{AgentID: agent, Payee: payee, Amount: amt, Network: "eip155:1337"}
+	return policy.Request{AccountID: "acct-1", AgentID: agent, Payee: payee, Amount: amt, Network: "eip155:1337"}
 }
 
 const good = "0xabc0000000000000000000000000000000000001" // case differs from config on purpose
@@ -82,5 +82,23 @@ func TestConcurrentChecksRespectBudget(t *testing.T) {
 	wg.Wait()
 	if ok != 1 {
 		t.Fatalf("%d payments approved, want 1", ok)
+	}
+}
+
+func TestAgentBelongsToOneAccount(t *testing.T) {
+	p := newPolicy()
+	r := req("a", good, 1)
+	r.AccountID = "acct-2"
+	if _, d := p.Check(r); d == nil || d.Reason != "unknown_agent" {
+		t.Fatalf("another account spent as the agent: %v", d)
+	}
+	// A rule with no account never matches anyone.
+	p2 := policy.New(policy.Config{Agents: map[string]policy.AgentRule{"a": {Budget: 100}}, Payees: []string{good}})
+	if _, d := p2.Check(r); d == nil {
+		t.Fatal("rule without an account must deny")
+	}
+	r.AccountID = ""
+	if _, d := p2.Check(r); d == nil {
+		t.Fatal("empty account must deny")
 	}
 }

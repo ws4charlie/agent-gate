@@ -18,6 +18,9 @@ func Reconcile(ctx context.Context, led *ledger.Postgres, lookup ledger.UsageLoo
 	for _, o := range rep.Outcomes {
 		ev := audit.Event{RequestID: "reconcile:" + o.HoldID, AccountID: o.AccountID, Kind: "model", At: now}
 		x := audit.Extra{HoldID: o.HoldID}
+		if o.Source == "chain" {
+			ev.Kind = "payment" // settled from an on-chain fact (x402)
+		}
 		if o.Result == "settled" {
 			ev.Status, ev.Cost, ev.CostSource = audit.StatusReconciledSettled, o.Amount, o.Source
 		} else {
