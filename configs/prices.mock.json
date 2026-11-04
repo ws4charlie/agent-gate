@@ -1,0 +1,8 @@
+{
+  "models": {
+    "mock/chat-small":  { "input": 1000000000, "output": 2000000000,  "cache_read": 100000000, "cache_write": 1250000000 },
+    "mock/messages-m":  { "input": 3000000000, "output": 15000000000, "cache_read": 300000000, "cache_write": 3750000000 },
+    "mock/code-agent":  { "input": 3000000000, "output": 15000000000, "cache_read": 300000000, "cache_write": 3750000000 },
+    "mock/judge-tiny":  { "input": 100000000,  "output": 400000000,   "cache_read": 10000000,  "cache_write": 12500000 }
+  }
+}

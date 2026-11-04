@@ -1,0 +1,19 @@
+{
+  "id": "msg-cache-read",
+  "match": {
+    "model": "mock/messages-m",
+    "prompt": "Using the same style guide, rewrite this title: Notes On Things We Did."
+  },
+  "response": {
+    "text": "What We Did"
+  },
+  "usage": {
+    "input": 22,
+    "output": 9,
+    "cache_read": 2048,
+    "cache_write": 0,
+    "cost_inline": false
+  },
+  "cost": 0.000815400,
+  "upstream_id": "gen-fx-09-msg-cache-read"
+}

@@ -1,0 +1,23 @@
+{
+  "id": "agent-3-test",
+  "match": {
+    "model": "mock/code-agent",
+    "prompt": "edit applied to calc.go"
+  },
+  "response": {
+    "tool_calls": [
+      {
+        "name": "run_tests",
+        "arguments": {}
+      }
+    ]
+  },
+  "usage": {
+    "input": 40,
+    "output": 19,
+    "cache_read": 1620,
+    "cache_write": 0
+  },
+  "cost": 0.000980100,
+  "upstream_id": "gen-fx-12-agent-3-test"
+}

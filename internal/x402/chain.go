@@ -169,6 +169,11 @@ func (c *EthChain) Settle(ctx context.Context, token common.Address, a Auth, sig
 }
 
 func (c *EthChain) build(ctx context.Context, from, to common.Address, data []byte) (*types.Transaction, error) {
+	return c.buildTo(ctx, from, &to, data)
+}
+
+// buildTo is build with a nil-able recipient: nil is a contract deployment.
+func (c *EthChain) buildTo(ctx context.Context, from common.Address, to *common.Address, data []byte) (*types.Transaction, error) {
 	nonce, err := c.Client.PendingNonceAt(ctx, from)
 	if err != nil {
 		return nil, err
@@ -185,7 +190,7 @@ func (c *EthChain) build(ctx context.Context, from, to common.Address, data []by
 	if base == nil {
 		base = new(big.Int)
 	}
-	gas, err := c.Client.EstimateGas(ctx, ethereum.CallMsg{From: from, To: &to, Data: data})
+	gas, err := c.Client.EstimateGas(ctx, ethereum.CallMsg{From: from, To: to, Data: data})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrReverted, err)
 	}
@@ -194,7 +199,7 @@ func (c *EthChain) build(ctx context.Context, from, to common.Address, data []by
 		return nil, err
 	}
 	tx := types.NewTx(&types.DynamicFeeTx{ChainID: chainID, Nonce: nonce, GasTipCap: tip,
-		GasFeeCap: new(big.Int).Add(new(big.Int).Mul(base, big.NewInt(2)), tip), Gas: gas + gas/5, To: &to, Data: data})
+		GasFeeCap: new(big.Int).Add(new(big.Int).Mul(base, big.NewInt(2)), tip), Gas: gas + gas/5, To: to, Data: data})
 	return types.SignTx(tx, types.LatestSignerForChainID(chainID), c.Facilitator)
 }
 

@@ -90,3 +90,74 @@ jobs:
         run: pip install "./sdk/python[test]"
       - name: pytest
         run: python -m pytest sdk/python/tests -q
+
+  # Full end to end with no secrets and no network beyond loopback.
+  #  - Payments: a real local anvil node (chain id 84532, the testnet's) over real JSON-RPC, with a mock USDC.
+  #  - Model traffic: recorded prompt fixtures (testdata/llm) replayed over real HTTP and SSE.
+  # Proves the RPC, fee and receipt path and the gateway's accounting. It does not prove Circle's real
+  # USDC contract or any provider's behaviour. See docs/learn/local-e2e.md.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AG_REQUIRE_DB: "1"
+      AG_REQUIRE_ANVIL: "1"
+      AG_ANVIL_URL: http://127.0.0.1:8545
+      AG_RPC_URL: http://127.0.0.1:8545
+      DATABASE_URL: postgres://postgres@localhost:5432/postgres?sslmode=disable
+      PGHOST: localhost
+      PGUSER: postgres
+      # A placeholder, not a secret: it cannot authenticate anywhere. Every provider base URL in
+      # configs/providers.mock.json is on 127.0.0.1, so an outbound call has nowhere to go.
+      OPENROUTER_API_KEY: mock
+      ANTHROPIC_API_KEY: mock
+    steps:
+      - uses: actions/checkout@v4
+      - name: no secret is configured in any workflow
+        run: |
+          if grep -nE 'secrets\.|secrets\[' .github/workflows/*.yml | grep -v 'grep -nE'; then
+            echo "a workflow references a secret"; exit 1
+          fi
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Pinned action commit (v1.9.2) and a pinned Foundry release.
+      - uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf
+        with:
+          version: v1.9.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: install the SDK and pytest
+        run: pip install "./sdk/python[test]"
+      - name: start anvil (chain id 84532)
+        run: |
+          anvil --chain-id 84532 --silent > anvil.log 2>&1 &
+          for i in $(seq 1 50); do
+            curl -sf -X POST -H 'Content-Type: application/json' \
+              --data '{"jsonrpc":"2.0","id":1,"method":"web3_clientVersion","params":[]}' "$AG_ANVIL_URL" && echo && exit 0
+            sleep 0.2
+          done
+          cat anvil.log; exit 1
+      - name: e2e tests (anvil payments, fixture LLM traffic)
+        run: go test -count=1 -p 1 -timeout 20m -v ./e2e/...
+      - name: demo, phase 1.5, anvil
+        run: demo/phase15.sh --network anvil
+      - name: demo, phase 3, anvil
+        run: demo/phase3.sh --network anvil
+      - name: Python agents on fixtures
+        run: python -m pytest sdk/python/tests -q -k fixtures
+      - name: anvil log
+        if: failure()
+        run: cat anvil.log

@@ -1,0 +1,26 @@
+{
+  "id": "agent-1-read",
+  "match": {
+    "model": "mock/code-agent",
+    "prompt": "Fix the failing test in calc_test.go."
+  },
+  "response": {
+    "text": "I will read the implementation first.",
+    "tool_calls": [
+      {
+        "name": "read_file",
+        "arguments": {
+          "path": "calc.go"
+        }
+      }
+    ]
+  },
+  "usage": {
+    "input": 180,
+    "output": 34,
+    "cache_read": 0,
+    "cache_write": 1500
+  },
+  "cost": 0.007342500,
+  "upstream_id": "gen-fx-10-agent-1-read"
+}

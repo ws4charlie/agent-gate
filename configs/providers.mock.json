@@ -1,0 +1,10 @@
+{
+  "providers": {
+    "openrouter": { "kind": "openai-compatible", "base_url": "http://127.0.0.1:18999/v1" },
+    "anthropic":  { "kind": "anthropic",         "base_url": "http://127.0.0.1:18999/v1" }
+  },
+  "routes": [
+    { "prefix": "anthropic-direct/", "provider": "anthropic",  "strip": true },
+    { "prefix": "",                  "provider": "openrouter" }
+  ]
+}

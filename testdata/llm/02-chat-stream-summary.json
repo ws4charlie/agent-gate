@@ -1,0 +1,18 @@
+{
+  "id": "chat-stream-summary",
+  "match": {
+    "model": "mock/chat-small",
+    "prompt": "Summarize in one line: the gateway keeps a ledger of credits and settles each request from real usage."
+  },
+  "response": {
+    "text": "The gateway tracks credits in a ledger and charges each request for the usage it actually consumed."
+  },
+  "usage": {
+    "input": 31,
+    "output": 22,
+    "cache_read": 0,
+    "cache_write": 0
+  },
+  "cost": 0.000082500,
+  "upstream_id": "gen-fx-02-chat-stream-summary"
+}

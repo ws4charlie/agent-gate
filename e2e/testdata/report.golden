@@ -1,0 +1,8 @@
+model                             reqs  spend USD  input  output  cache read  cache write  hit rate  est. savings USD
+mock/code-agent                   5     0.0134673  542    174     6440        1620         74.9%     0.017388
+anthropic-direct/mock/messages-m  5     0.0105114  184    111     2048        2048         47.9%     0.0055296
+mock/chat-small                   4     0.000308   150    65      0           0            0.0%      0
+TOTAL                             14    0.0242867  876    350     8488        3668         65.1%     0.0229176
+
+cost source:  price_table=5 reqs / 0.0105114 USD  provider=9 reqs / 0.0137753 USD
+unmetered: 0 holds released with no usage found, 0 USD returned

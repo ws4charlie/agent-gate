@@ -1,0 +1,18 @@
+{
+  "id": "agent-4-done",
+  "match": {
+    "model": "mock/code-agent",
+    "prompt": "ok  calc 0.004s: 3 tests passed"
+  },
+  "response": {
+    "text": "Fixed: Add used subtraction instead of addition. All three tests pass now."
+  },
+  "usage": {
+    "input": 48,
+    "output": 31,
+    "cache_read": 1660,
+    "cache_write": 0
+  },
+  "cost": 0.001217700,
+  "upstream_id": "gen-fx-13-agent-4-done"
+}

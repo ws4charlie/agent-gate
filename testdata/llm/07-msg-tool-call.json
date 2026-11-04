@@ -1,0 +1,26 @@
+{
+  "id": "msg-tool-call",
+  "match": {
+    "model": "mock/messages-m",
+    "prompt": "List the files in the project root."
+  },
+  "response": {
+    "tool_calls": [
+      {
+        "name": "list_dir",
+        "arguments": {
+          "path": "."
+        }
+      }
+    ]
+  },
+  "usage": {
+    "input": 38,
+    "output": 21,
+    "cache_read": 0,
+    "cache_write": 0,
+    "cost_inline": false
+  },
+  "cost": 0.000429000,
+  "upstream_id": "gen-fx-07-msg-tool-call"
+}
