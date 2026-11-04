@@ -6,7 +6,7 @@ A custody-grade gateway for AI agents: every model call, tool call and payment i
 
 An agent that can spend money is closer to a bank client than to an API user. A bare key with a budget is not enough: the thing holding it can be hijacked by text in a tool result. So AgentGate treats an agent as a **scoped identity** in front of a **ledger**, and puts one decision point, `policy.Evaluate`, in front of everything that costs money: model calls, MCP tool calls and on-chain payments. The two rules that carry the design:
 
-- **Reserve before you spend.** Every cost is held in a append-only ledger first (one conditional `UPDATE`, so parallel requests cannot overspend), then settled to the real amount or released. Retries, crashes and races leave the books balanced, and a function recomputes that from the append-only entries.
+- **Reserve before you spend.** Every cost is held in an append-only ledger first (one conditional `UPDATE`, so parallel requests cannot overspend), then settled to the real amount or released. Retries, crashes and races leave the books balanced, and a function recomputes that from the append-only entries.
 - **Screen before you sign.** The wallet's signing path takes a value only the policy package can construct, so a refused payment never reaches the key, and the wallet adds its own cap as an independent second check.
 
 ## Architecture
@@ -389,7 +389,7 @@ Public gateway designs (LiteLLM, Portkey, Bifrost, OpenRouter) share a shape: an
 | Borrowed | Where it came from | What is different here |
 |---|---|---|
 | OpenAI-compatible endpoint, model-prefix routing, per-key budgets | the public gateways | The budget check is one conditional `UPDATE` in Postgres, enforced by `CHECK` constraints, not an application counter. |
-| Spend logs | the public gateways | An append-only audit table plus a append-only ledger that a function can re-audit (I1, I2). |
+| Spend logs | the public gateways | An append-only audit table plus an append-only ledger that a function can re-audit (I1, I2). |
 | Authorize, then capture or void | card networks | Every cost is a hold with a lease; a dead process's hold is found and closed by a reconciler (I6). |
 | Idempotency keys | payment APIs | A key replay changes nothing and returns the first result; the same key with other parameters is an error (I4). |
 | Generation lookup for real cost | OpenRouter | Used as the usage source when a process died before settling. |
