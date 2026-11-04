@@ -171,6 +171,16 @@ func (c *EthChain) DeployMockUSDC(ctx context.Context) (common.Address, error) {
 	return rc.ContractAddress, nil
 }
 
+// Decimals reads decimals() from the deployed token, so a test checks the
+// unit conversion against the contract and not against a constant.
+func (c *EthChain) Decimals(ctx context.Context, token common.Address) (uint8, error) {
+	r, err := c.call(ctx, token, "decimals")
+	if err != nil {
+		return 0, err
+	}
+	return r[0].(uint8), nil
+}
+
 // Mint gives who `amount` atomic units of the mock token (anyone may mint it).
 func (c *EthChain) Mint(ctx context.Context, token, who common.Address, amount *big.Int) error {
 	data, err := tokenABI.Pack("mint", who, amount)

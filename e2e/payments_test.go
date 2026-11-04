@@ -287,8 +287,17 @@ func TestAnvilPaymentSettles(t *testing.T) {
 	if raw.To() == nil || *raw.To() != r.token {
 		t.Fatalf("transaction went to %v, not the token", raw.To())
 	}
-	if got := r.tokenBalance(r.payTo); got != echoAtomic {
-		t.Fatalf("payee has %d", got)
+	// Decimals: read from the deployed token, then one conversion end to end.
+	// $0.01 is 10000 atomic units on chain (6 decimals) and 10000000 Nanos in the ledger.
+	if d, err := r.chain.Decimals(ctx, r.token); err != nil || d != 6 {
+		t.Fatalf("decimals() = %d, %v; want 6", d, err)
+	}
+	if got := r.tokenBalance(r.payTo); got != 10000 {
+		t.Fatalf("payee has %d atomic units, want exactly 10000", got)
+	}
+	var settled money.Nanos
+	if err := r.pool.QueryRow(ctx, `SELECT amount_nanos FROM ledger_entries WHERE account_id=$1 AND kind='settle'`, r.acct).Scan(&settled); err != nil || settled != 10000000 {
+		t.Fatalf("ledger settled %d nanos, %v; want exactly 10000000", settled, err)
 	}
 	moved, _ := x402.NanosFromAtomic(big.NewInt(r.tokenBalance(r.payTo)))
 	if b := r.balance(); b.Balance != 10*usd-moved || b.Held != 0 || moved != echoNanos {
