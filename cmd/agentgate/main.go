@@ -30,6 +30,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "agentgate", version)
 	case "migrate":
 		err = migrate(ctx, args[1:], stdout)
+	case "serve":
+		err = serve(ctx, args[1:], stdout)
+	case "account":
+		err = account(ctx, args[1:], stdout)
+	case "key":
+		err = keyCmd(ctx, args[1:], stdout)
+	case "report":
+		err = report(ctx, args[1:], stdout)
+	case "reconcile":
+		err = reconcileCmd(ctx, args[1:], stdout)
+	case "prices":
+		err = prices(ctx, args[1:], stdout)
 	case "help", "-h", "--help":
 		usage(stdout)
 	default:
@@ -45,7 +57,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: agentgate <command>\n\ncommands:\n  version   print the version\n  migrate   apply database migrations")
+	fmt.Fprintln(w, `usage: agentgate <command>
+
+commands:
+  version     print the version
+  migrate     apply database migrations
+  serve       run the gateway (and the background reconciler)
+  account     create | deposit | balance
+  key         create --account ID: print a client key once
+  report      --since 24h --by model|account
+  reconcile   close expired holds once
+  prices      sync: refresh configs/prices.json from OpenRouter`)
 }
 
 func migrate(ctx context.Context, args []string, stdout io.Writer) error {

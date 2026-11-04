@@ -23,8 +23,8 @@ func TestLoadDefaultsAndFile(t *testing.T) {
 	if err != nil || c.Listen != "127.0.0.1:8080" {
 		t.Fatalf("defaults: %+v %v", c, err)
 	}
-	c, err = Load(write(t, `{"listen":":9","providers":{"openrouter":{"base_url":"https://x/v1"}}}`))
-	if err != nil || c.Listen != ":9" || c.Providers["openrouter"].BaseURL != "https://x/v1" || c.DefaultMaxTokens != 1024 {
+	c, err = Load(write(t, `{"listen":":9"}`))
+	if err != nil || c.Listen != ":9" || c.DefaultMaxTokens != 1024 {
 		t.Fatalf("file: %+v %v", c, err)
 	}
 }
@@ -39,7 +39,7 @@ func TestEnvOverrides(t *testing.T) {
 }
 
 func TestRejectsKeysInFile(t *testing.T) {
-	_, err := Load(write(t, `{"providers":{"openrouter":{"api_key":"sk-x"}}}`))
+	_, err := Load(write(t, `{"api_key":"sk-x"}`))
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("want unknown field error, got %v", err)
 	}

@@ -1,0 +1,6 @@
+{
+  "models": {
+    "example/model-a": { "input": 3000000000, "output": 15000000000, "cache_read": 300000000, "cache_write": 3750000000 },
+    "example/model-b": { "input": 250000000, "output": 1000000000 }
+  }
+}

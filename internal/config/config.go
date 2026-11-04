@@ -14,15 +14,10 @@ import (
 )
 
 type Config struct {
-	Listen           string              `json:"listen"`
-	DatabaseURL      string              `json:"database_url"`
-	MaxHoldNanos     money.Nanos         `json:"max_hold_nanos"`
-	DefaultMaxTokens int64               `json:"default_max_tokens"`
-	Providers        map[string]Provider `json:"providers"`
-}
-
-type Provider struct {
-	BaseURL string `json:"base_url"`
+	Listen           string      `json:"listen"`
+	DatabaseURL      string      `json:"database_url"`
+	MaxHoldNanos     money.Nanos `json:"max_hold_nanos"`
+	DefaultMaxTokens int64       `json:"default_max_tokens"`
 }
 
 // Env var names. AG_* override the file; DATABASE_URL is the conventional name.
@@ -37,7 +32,6 @@ func defaults() Config {
 		Listen:           "127.0.0.1:8080",
 		MaxHoldNanos:     5_000_000_000, // $5
 		DefaultMaxTokens: 1024,
-		Providers:        map[string]Provider{},
 	}
 }
 
