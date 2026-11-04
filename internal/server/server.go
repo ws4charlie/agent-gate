@@ -58,7 +58,8 @@ type Server struct {
 	DefaultMaxTokens int64
 	HoldTTL          time.Duration
 	ExtendEvery      time.Duration
-	StoreBodies      bool // opt-in; bodies are redacted before storage (I9)
+	StoreBodies      bool      // opt-in; bodies are redacted before storage (I9)
+	Payments         *Payments // nil disables POST /v1/payments (T3)
 }
 
 func (s *Server) defaults() {
@@ -91,6 +92,9 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/chat/completions", s.handle(provider.FormatOpenAI))
 	mux.HandleFunc("POST /v1/messages", s.handle(provider.FormatAnthropic))
+	if s.Payments != nil {
+		mux.HandleFunc("POST /v1/payments", s.handlePayment)
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok\n") })
 	return mux
 }

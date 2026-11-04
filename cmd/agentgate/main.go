@@ -42,6 +42,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = reconcileCmd(ctx, args[1:], stdout)
 	case "prices":
 		err = prices(ctx, args[1:], stdout)
+	case "wallet":
+		err = walletCmd(args[1:], stdout)
+	case "paidtool":
+		err = paidtoolCmd(ctx, args[1:], stdout)
 	case "help", "-h", "--help":
 		usage(stdout)
 	default:
@@ -67,7 +71,9 @@ commands:
   key         create --account ID: print a client key once
   report      --since 24h --by model|account
   reconcile   close expired holds once
-  prices      sync: refresh configs/prices.json from OpenRouter`)
+  prices      sync: refresh configs/prices.json from OpenRouter
+  wallet      new | address: the agent wallet key (testnet only)
+  paidtool    run the paid x402 endpoint (--network sim | base-sepolia)`)
 }
 
 func migrate(ctx context.Context, args []string, stdout io.Writer) error {
