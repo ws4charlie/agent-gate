@@ -104,6 +104,12 @@ func (w *Wallet) Prepare(ctx context.Context, allowed policy.Allowed, holdID str
 	if !common.IsHexAddress(req.Asset) || holdID == "" {
 		return nil, errors.New("wallet: bad asset or hold id")
 	}
+	// Last check, so a Prepare that failed above does not burn the approval:
+	// spend it, tied to this hold. A second Prepare with the same Allowed, or
+	// with another hold id, stops here (I10).
+	if err := allowed.Use(holdID); err != nil {
+		return nil, fmt.Errorf("wallet: %w", err)
+	}
 	now := w.now().Unix()
 	a := x402.Auth{From: w.Address(), To: common.HexToAddress(req.PayTo), Value: amt,
 		ValidAfter: big.NewInt(now - 10), ValidBefore: big.NewInt(now + int64(req.MaxTimeoutSeconds)),

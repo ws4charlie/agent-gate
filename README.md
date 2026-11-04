@@ -4,7 +4,7 @@ A custody-grade gateway for AI agents: every model call and every payment is aut
 
 ## Status
 
-Early work. Foundations, the Postgres ledger, the gateway (OpenAI-compatible and native Anthropic endpoints, streaming, audit, report) and a first payments slice (a thin policy check, an agent wallet and x402 payments on a simulated chain). The full policy engine and the later layers land in further pull requests.
+Early work. Foundations, the Postgres ledger, the gateway (OpenAI-compatible and native Anthropic endpoints, streaming, audit, report), x402 payments on a simulated chain, and the policy engine (scoped agent credentials, budgets, velocity limits, an approval queue, a kill switch). The later layers land in further pull requests.
 
 ## Build and test
 
@@ -65,7 +65,7 @@ flowchart LR
 ```bash
 agentgate account create --name me                         # prints the account id
 agentgate account deposit --account ID --amount 5
-agentgate key create --account ID                          # prints the secret once
+agentgate key create --account ID                          # prints the secret once (an agent with the default scope)
 AG_PROVIDERS=configs/providers.json AG_PRICES=configs/prices.json OPENROUTER_API_KEY=... agentgate serve
 agentgate report --since 7d --by model
 agentgate reconcile                                        # one-shot; `serve` also runs it every 30s
@@ -99,17 +99,17 @@ sequenceDiagram
     participant A as agent
     participant G as gateway
     participant L as ledger
-    participant P as policy
+    participant P as policy engine
     participant W as wallet (key)
     participant T as paid tool + x402 server
     participant C as chain
-    A->>G: POST /v1/payments {tool, agent_id}
+    A->>G: POST /v1/payments {tool, input} + agent credential
     G->>T: request, unpaid
     T-->>G: 402 + PAYMENT-REQUIRED (amount, payTo, asset)
     G->>L: Reserve(kind payment)
-    G->>P: Check(agent, payee, amount)
+    G->>P: Evaluate(agent scope, payee, amount)
     alt refused
-        P-->>G: Denied
+        P-->>G: Deny + rule id
         G->>L: Release (hold + release rows)
         G-->>A: 403 policy_denied (no signature, no tx)
     else allowed
@@ -142,11 +142,64 @@ What this is and is not:
 - A run on Base Sepolia (`demo/phase15.sh --network base-sepolia`, needing an RPC URL, a gas-funded facilitator key and a USDC-funded wallet from the environment) is built but **separate and not part of the offline demo or CI**. The USDC address used there is Circle's [documented](https://developers.circle.com/stablecoins/usdc-contract-addresses) Base Sepolia one.
 - The wallet refuses to start for any chain id except 84532 and the local simulated chain. `agentgate wallet new` writes a testnet key to a gitignored `0600` file and prints only the address.
 - After signing, the chain is the source of truth. The authorization is recorded on the ledger hold before it is signed. A definite refusal (verification failed, or the transaction reverted) releases the hold. Any other outcome (lost connection, tool 5xx, a ledger failure after the transfer) leaves the hold for the reconciler, which asks the token contract: used, so it settles the authorized amount; unused with the window still open, so it waits; unused with the window closed, so it releases. A failed tool call therefore returns money after about three minutes, not at once.
-- Policy here is a per-agent total budget and a payee allowlist read from a JSON file; each agent is bound to the one gateway account that may spend as it (`demo/payments.example.json`). The real policy engine comes next; the wallet hardening (velocity, key handling) after that.
+- Who may pay whom is part of the agent's scope: its tool and payee allowlists, its daily and per-task budgets, its velocity limit and approval threshold (see [Policy](#policy)). The payments config file only lists tools and the network (`demo/payments.example.json`).
+
+## Policy
+
+Custody for agents: an agent is not "an API key with a budget", it is a **scoped identity**. Each agent has one credential, one ledger account, and a scope that says what it may use and how fast it may spend. One pure function, `policy.Evaluate(Request, Snapshot) Decision`, sits in front of model calls, tool calls and payments and answers `Allow`, `Deny` or `RequireApproval` with a rule id. Every decision, allow included, is written to an append-only `policy_decisions` table.
+
+| What a custodian does | What AgentGate does | Rule id |
+|---|---|---|
+| Opens an account for one named client | `agent create`: one agent, one credential (SHA-256 stored), one ledger account | |
+| Writes down what the client may hold or touch | Scope allowlists: models, tools, payees (default deny; a trailing `*` is a prefix) | `scope_model`, `scope_tool`, `scope_payee` |
+| Sets a daily limit | Daily budget per UTC day, one conditional `UPDATE`, so parallel requests cannot exceed it | `budget_daily` |
+| Limits what a single job may cost | Per-task budget, keyed by the `X-AgentGate-Task` header | `budget_task` |
+| Limits how fast money may leave | Velocity: spend in a sliding 60 s window, in Postgres | `velocity` |
+| Asks a second person above a limit | Approval queue: over-threshold requests wait with their money held; `approve allow` releases them once | `approval_threshold` |
+| Freezes an account in an emergency | Kill switch: next request refused, in-flight streams cancelled within a second, usage received is settled | `agent_killed` |
+| Closes an account | `agent revoke`: permanent, refused at once | `agent_revoked` |
+| Keeps a ledger of every decision | `policy_decisions` rows with the rule id, joined to `audit_events` by request id | |
+
+The rule order is fixed, and the first rule that fires decides: kill/revoke, then scope, then budget, then velocity, then approval. A request that breaks two rules always reports the earlier one, so a dead credential learns nothing else about the policy, and a human is only asked about requests that are otherwise allowed.
+
+```mermaid
+flowchart LR
+    R[request: model, tool or payment] --> A[authenticate agent]
+    A --> E{policy.Evaluate}
+    E -->|Deny + rule id| D[refuse: 403 or 429, no hold]
+    E -->|RequireApproval| Q[reserve hold, park in approval queue: 202]
+    E -->|Allow| H[ledger.Reserve]
+    Q -->|agentgate approve allow| RP[replay, same Idempotency-Key]
+    RP --> E
+    H --> C[budget + velocity charge, one conditional statement]
+    C -->|window full| X[release hold, refuse]
+    C --> U[upstream or wallet]
+    U --> S[settle real cost, correct the budget windows]
+    K[agentgate kill] -.cancel in flight.-> U
+```
+
+```bash
+agentgate agent create --account ID --name researcher --models 'claude-*' --tools echo \
+    --payees 0x7099... --daily 5 --task 1 --velocity 0.5 --approval-over 0.25    # prints the secret once
+agentgate agent list
+agentgate approve list                      # requests waiting for a human
+agentgate approve allow ID --by alice       # the agent replays the request once, same Idempotency-Key
+agentgate approve deny ID                   # releases the hold
+agentgate kill --agent researcher           # and --resume to undo; `agent revoke` is permanent
+```
+
+- **Budgets count spend, not guesses.** A request is counted at its worst-case estimate when it is admitted and corrected to the real cost when it settles or is released. The reconciler does the same for a hold whose process died, so a crash does not leak budget.
+- **Which limits are hard.** The daily budget and velocity bind a hostile agent. The per-task budget does not: the caller chooses `X-AgentGate-Task`, so a new value per call starts a fresh window; it limits a cooperative client.
+- **Approvals are exact.** An approval pins the request (kind, model or tool, payee, amount, network, task, body); replaying the same `Idempotency-Key` with anything different is refused (422), the replay runs once (a second is 409), and an unused approval expires (default 15 minutes) and releases its hold. An approval lifts the approval threshold only: a budget or scope that no longer fits still refuses it. The approver's name is recorded.
+- **No self-approval.** There is no HTTP route that approves, changes an agent or kills one. The CLI needs direct database access, which an agent credential never has.
+- **T2 API keys keep working.** A migration turns every existing key into an agent with the default scope (any model, any tool, no limits, no payees), so existing clients are unaffected and cannot pay until a payee is listed.
+- **Single gateway process.** The kill switch registry and the velocity window are simple because there is one process; the CLI kills through the database and the gateway notices within 250 ms.
+
+Offline demo (burn a budget, trip velocity, queue and approve a request, refuse an out-of-scope model, kill a stream mid-flight): `demo/phase2-policy.sh`. Study guide: [docs/learn/policy.md](docs/learn/policy.md).
 
 ## Security and threat model
 
-The gateway's job is to keep a provider key and an account's money out of reach of the thing calling it: provider keys live only in the gateway's environment and are never logged, put in a span, or relayed (the client never sees upstream headers: only an allowlist is copied back); client credentials are 256-bit random secrets stored only as SHA-256; a request can spend only what its account holds, because the budget check is one atomic `UPDATE` in Postgres, not application code; prompts and responses are not stored unless an operator turns that on, and then bearer tokens and `sk-` patterns are redacted. It does not defend against a compromised gateway host (which holds the provider key and the database), a malicious operator, or secrets that appear in prompts in forms the redactor does not recognise (redaction is best effort, which is why storage is off by default). Single process, no TLS termination, no rate limiting yet: put it behind a reverse proxy on a trusted network. Per-agent policy and kill switches are the next layer.
+The gateway's job is to keep a provider key and an account's money out of reach of the thing calling it: provider keys live only in the gateway's environment and are never logged, put in a span, or relayed (the client never sees upstream headers: only an allowlist is copied back); client credentials are 256-bit random secrets stored only as SHA-256; a request can spend only what its account holds, because the budget check is one atomic `UPDATE` in Postgres, not application code; prompts and responses are not stored unless an operator turns that on, and then bearer tokens and `sk-` patterns are redacted. It does not defend against a compromised gateway host (which holds the provider key and the database), a malicious operator, or secrets that appear in prompts in forms the redactor does not recognise (redaction is best effort, which is why storage is off by default). Per-agent scopes, budgets, approvals and a kill switch limit what a credential can do (see [Policy](#policy)). Single process, no TLS termination, no request rate limiting: put it behind a reverse proxy on a trusted network.
 
 ## Learn
 
@@ -154,6 +207,7 @@ The gateway's job is to keep a provider key and an account's money out of reach 
 - [Ledger](docs/learn/ledger.md)
 - [Gateway](docs/learn/gateway.md)
 - [Payments](docs/learn/payments.md)
+- [Policy](docs/learn/policy.md)
 
 ## License
 

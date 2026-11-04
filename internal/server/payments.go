@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/ws4charlie/agent-gate/internal/approval"
 	"github.com/ws4charlie/agent-gate/internal/audit"
 	"github.com/ws4charlie/agent-gate/internal/ledger"
 	"github.com/ws4charlie/agent-gate/internal/policy"
@@ -36,8 +37,10 @@ const (
 // Why POST /v1/payments and not a tool-call path: the MCP tool gateway is T5.
 // Until then a payment is its own verb with its own audit kind, and T5 can
 // call the same function from tools/call.
+//
+// Who may pay whom is not here any more: the payee allowlist and the budgets
+// are part of each agent's scope (internal/agents), checked by policy.Evaluate.
 type Payments struct {
-	Policy  *policy.Policy
 	Wallet  *wallet.Wallet
 	Tools   map[string]string // tool name -> URL. Clients name tools; they never supply URLs (no SSRF).
 	Fetcher x402.Fetcher
@@ -45,7 +48,7 @@ type Payments struct {
 
 type payReq struct {
 	Tool    string          `json:"tool"`
-	AgentID string          `json:"agent_id"`
+	AgentID string          `json:"agent_id"` // optional: the credential already names the agent
 	Input   json.RawMessage `json:"input"`
 }
 
@@ -63,7 +66,7 @@ func (s *Server) handlePayment(w http.ResponseWriter, r *http.Request) {
 func (c *call) pay() {
 	s, p := c.s, c.s.Payments
 
-	acct, err := authenticate(c.ctx, s.Pool, c.r)
+	agent, err := s.authenticate(c.ctx, c.r)
 	if err != nil {
 		if errors.Is(err, errUnauthorized) {
 			c.fail(http.StatusUnauthorized, audit.StatusUnauthorized, "unauthorized", "missing or invalid API key", nil)
@@ -73,15 +76,27 @@ func (c *call) pay() {
 		}
 		return
 	}
-	c.ev.AccountID = acct
+	c.agent = agent
+	acct := agent.AccountID
+	c.ev.AccountID, c.ev.AgentID = acct, agent.ID
+	if c.refuseInactive(policy.KindPayment) { // rule 1, before anything else (I12)
+		return
+	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(c.w, c.r.Body, 1<<20))
 	var in payReq
-	if err != nil || json.Unmarshal(body, &in) != nil || in.Tool == "" || in.AgentID == "" {
-		c.fail(http.StatusBadRequest, audit.StatusBadRequest, "bad_request", "need JSON {tool, agent_id, input}", nil)
+	if err != nil || json.Unmarshal(body, &in) != nil || in.Tool == "" {
+		c.fail(http.StatusBadRequest, audit.StatusBadRequest, "bad_request", "need JSON {tool, input}", nil)
 		return
 	}
-	c.ev.Model, c.ev.AgentID = in.Tool, in.AgentID
+	// The credential is the identity. A body that names another agent is a
+	// confused or malicious caller, not a way to spend under someone else's scope.
+	if in.AgentID != "" && in.AgentID != agent.ID && in.AgentID != agent.Name {
+		c.fail(http.StatusForbidden, StatusPolicyDenied, policy.RuleUnknownAgent, "this credential belongs to a different agent",
+			map[string]any{"type": "policy_denied", "rule": policy.RuleUnknownAgent, "request_id": c.ev.RequestID})
+		return
+	}
+	c.ev.Model = in.Tool
 	url, ok := p.Tools[in.Tool]
 	if !ok {
 		c.fail(http.StatusNotFound, StatusUnknownTool, "unknown_tool", "no such paid tool", nil)
@@ -116,35 +131,50 @@ func (c *call) pay() {
 	amount := atomic
 	c.ev.Cost = 0
 
-	// 2. Claim the idempotency key (same mechanism as model calls).
-	idem := strings.TrimSpace(c.r.Header.Get("Idempotency-Key"))
-	if idem == "" {
-		idem = "gen-" + c.ev.RequestID
-	}
-	if len(idem) > 255 {
-		c.fail(http.StatusBadRequest, audit.StatusBadRequest, "bad_request", "Idempotency-Key too long", nil)
+	// 2. Idempotency key, task, and any approval already queued for this request.
+	task, ok := c.taskID()
+	if !ok {
 		return
 	}
-	tag, err := s.Pool.Exec(c.ctx, `INSERT INTO gateway_requests (account_id, idem_key, request_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
-		acct, idem, c.ev.RequestID)
-	if err != nil {
-		s.Log.Error("claim", "err", err)
-		c.fail(http.StatusInternalServerError, audit.StatusInternal, "internal_error", "internal error", nil)
+	idem, ok := c.idemKey()
+	if !ok {
 		return
 	}
-	if tag.RowsAffected() == 0 {
-		var orig string
-		_ = s.Pool.QueryRow(c.ctx, `SELECT request_id FROM gateway_requests WHERE account_id=$1 AND idem_key=$2`, acct, idem).Scan(&orig)
-		c.fail(http.StatusConflict, audit.StatusDuplicate, "duplicate_request", "this Idempotency-Key was already used",
-			map[string]any{"original_request_id": orig})
+	// The fingerprint pins what a human approves: the tool, the payee, the
+	// amount and network the tool asked for, the task and the tool input.
+	fp := approval.Fingerprint("payment", in.Tool, strings.ToLower(req.PayTo), itoa(int64(amount)), req.Network, task, bodyHash(input))
+	approved, approvalID, stop := c.checkApproval(idem, fp)
+	if stop {
 		return
 	}
 
+	// Claim the key (same mechanism as model calls). An approved replay already
+	// holds the claim and the hold from when it was queued.
+	if !approved {
+		tag, err := s.Pool.Exec(c.ctx, `INSERT INTO gateway_requests (account_id, idem_key, request_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+			acct, idem, c.ev.RequestID)
+		if err != nil {
+			s.Log.Error("claim", "err", err)
+			c.fail(http.StatusInternalServerError, audit.StatusInternal, "internal_error", "internal error", nil)
+			return
+		}
+		if tag.RowsAffected() == 0 {
+			var orig string
+			_ = s.Pool.QueryRow(c.ctx, `SELECT request_id FROM gateway_requests WHERE account_id=$1 AND idem_key=$2`, acct, idem).Scan(&orig)
+			c.fail(http.StatusConflict, audit.StatusDuplicate, "duplicate_request", "this Idempotency-Key was already used",
+				map[string]any{"original_request_id": orig})
+			return
+		}
+	}
+
 	// 3. Reserve (kind payment). Refusals below also leave ledger rows: hold, then release.
+	// The hold id is needed before the policy decision: the Allowed is tied to it (I10).
 	hold, err := s.Ledger.Reserve(c.ctx, ledger.ReserveReq{AccountID: acct, Amount: amount, IdemKey: idem,
 		Kind: ledger.KindPayment, TTL: s.HoldTTL, Memo: "payment " + in.Tool})
 	if err != nil {
-		_, _ = s.Pool.Exec(context.WithoutCancel(c.ctx), `DELETE FROM gateway_requests WHERE account_id=$1 AND idem_key=$2 AND request_id=$3`, acct, idem, c.ev.RequestID)
+		if !approved {
+			_, _ = s.Pool.Exec(context.WithoutCancel(c.ctx), `DELETE FROM gateway_requests WHERE account_id=$1 AND idem_key=$2 AND request_id=$3`, acct, idem, c.ev.RequestID)
+		}
 		switch {
 		case errors.Is(err, ledger.ErrInsufficientFunds):
 			c.fail(http.StatusPaymentRequired, audit.StatusInsufficientFunds, "insufficient_funds", "insufficient funds", nil)
@@ -159,13 +189,24 @@ func (c *call) pay() {
 	c.ext.HoldID = hold.ID
 
 	// 4. Screen before sign (I10). A refusal never reaches the wallet.
-	allowed, denied := p.Policy.Check(policy.Request{AccountID: acct, AgentID: in.AgentID, Payee: req.PayTo, Amount: amount, Network: req.Network})
-	if denied != nil {
-		c.release(hold, "policy: "+denied.Reason)
-		c.ev.Err = denied.Reason
-		c.writeJSON(http.StatusForbidden, map[string]any{"error": map[string]any{"type": "policy_denied", "code": denied.Reason,
-			"message": denied.Detail, "request_id": c.ev.RequestID}})
-		c.finish(StatusPolicyDenied)
+	preq := policy.Request{AgentID: agent.ID, Kind: policy.KindPayment, Tool: in.Tool, Payee: req.PayTo, Network: req.Network,
+		Amount: amount, TaskID: task, HoldID: hold.ID, Approved: approved}
+	d, ok := c.evaluate(preq, approvalID)
+	if !ok {
+		c.release(hold, "policy unavailable")
+		return
+	}
+	switch d.Verdict {
+	case policy.Deny:
+		c.release(hold, "policy: "+d.Rule)
+		c.denyResponse(d)
+		return
+	case policy.RequireApproval:
+		c.queueApproval(hold, preq, idem, fp, d) // the hold stays; nothing is signed
+		return
+	}
+	allowed, _ := d.Allowed()
+	if !c.charge(hold, preq) {
 		return
 	}
 
@@ -180,7 +221,6 @@ func (c *call) pay() {
 		cancel()
 	}
 	if err != nil {
-		p.Policy.Refund(allowed)
 		c.release(hold, "prepare failed")
 		s.Log.Error("prepare", "request_id", c.ev.RequestID, "err", err)
 		c.fail(http.StatusInternalServerError, StatusPaymentFailed, "sign_failed", "could not prepare the payment", nil)
@@ -188,7 +228,6 @@ func (c *call) pay() {
 	}
 	payload, err := p.Wallet.Sign(pending)
 	if err != nil {
-		p.Policy.Refund(allowed)
 		c.release(hold, "sign failed")
 		s.Log.Error("sign", "request_id", c.ev.RequestID, "err", err)
 		c.fail(http.StatusInternalServerError, StatusPaymentFailed, "sign_failed", "could not sign the payment", nil)
@@ -235,6 +274,7 @@ func (c *call) pay() {
 			c.unknown("ledger_settle_failed_after_chain", sr.Transaction)
 			return
 		default:
+			c.closeCharge(hold.ID, st.Charged)
 			c.ev.Cost, c.ev.CostSource = st.Charged, "chain"
 		}
 		var result json.RawMessage = out
@@ -245,7 +285,6 @@ func (c *call) pay() {
 			"transaction": sr.Transaction, "network": sr.Network, "result": result})
 		c.finish(audit.StatusOK)
 	case definiteNo:
-		p.Policy.Refund(allowed)
 		c.release(hold, "payment failed")
 		reason := sr.ErrorReason
 		if reason == "" {

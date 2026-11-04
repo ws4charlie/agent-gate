@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -90,10 +91,10 @@ type payEnv struct {
 	tool500 atomic.Bool // the tool answers 500 after it has settled
 	payTo   common.Address
 	key     *ecdsa.PrivateKey
-	pol     *policy.Policy
 }
 
-const agent = "agent-1"
+// The credential names the agent; the body field is optional and, when present, must agree.
+const agent = ""
 
 // $0.30 budget: the $0.01 echo fits, the $0.50 premium never does.
 func newPayEnv(t *testing.T) *payEnv { return newPayEnvFunded(t, 10*usd) }
@@ -129,25 +130,18 @@ func newPayEnvFunded(t *testing.T, deposit money.Nanos) *payEnv {
 	}))
 	t.Cleanup(tool.Close)
 
-	pe.pol = policy.New(policy.Config{Agents: map[string]policy.AgentRule{}, Payees: []string{payTo.Hex()}})
 	pe.env = newEnv(t, deposit, func(s *server.Server) {
 		pe.led = &failSettleLedger{Ledger: s.Ledger}
 		s.Ledger = pe.led
 		s.Payments = &server.Payments{
-			Policy:  pe.pol,
 			Wallet:  w,
 			Tools:   map[string]string{"echo": tool.URL + "/echo", "premium": tool.URL + "/premium"},
 			Fetcher: x402.Fetcher{HTTP: &http.Client{Transport: pe.net}},
 		}
 	})
-	// The rule needs the account id, which exists only now.
-	pe.setPolicy(agent, pe.acct, usd*3/10)
+	// The agent behind the test key may pay the one payee, up to $0.30 a day.
+	pe.setScope(func(sc *policy.Scope) { sc.Payees = []string{payTo.Hex()}; sc.DailyBudget = usd * 3 / 10 })
 	return pe
-}
-
-func (p *payEnv) setPolicy(agentID, account string, budget money.Nanos) {
-	*p.pol = *policy.New(policy.Config{Agents: map[string]policy.AgentRule{agentID: {Account: account, Budget: budget}},
-		Payees: []string{p.payTo.Hex()}})
 }
 
 func (p *payEnv) pay(tool, idem string) (int, map[string]any, string) {
@@ -157,7 +151,11 @@ func (p *payEnv) pay(tool, idem string) (int, map[string]any, string) {
 
 func (p *payEnv) payAs(secret, agentID, tool, idem string) (int, map[string]any, string) {
 	p.t.Helper()
-	resp, b := p.do("/v1/payments", `{"tool":"`+tool+`","agent_id":"`+agentID+`","input":{"text":"hello"}}`,
+	named := ""
+	if agentID != "" {
+		named = `"agent_id":"` + agentID + `",`
+	}
+	resp, b := p.do("/v1/payments", `{"tool":"`+tool+`",`+named+`"input":{"text":"hello"}}`,
 		map[string]string{"Idempotency-Key": idem, "Authorization": "Bearer " + secret})
 	var m map[string]any
 	_ = json.Unmarshal(b, &m)
@@ -219,7 +217,7 @@ func (p *payEnv) reconcile(now, chainNow time.Time) ledger.Report {
 		Payments: &x402.AuthLookup{Chain: p.sim.Chain, Now: func() time.Time { return chainNow }},
 		Default:  &provider.GenerationLookup{Providers: map[string]provider.ProviderCfg{}},
 	}
-	rep, err := server.Reconcile(context.Background(), p.env.led, lookup, p.audit, now)
+	rep, err := server.Reconcile(context.Background(), p.env.led, lookup, p.audit, p.env.srv.Agents, now)
 	if err != nil {
 		p.t.Fatal(err)
 	}
@@ -263,7 +261,7 @@ func TestRefusedPaymentNeverSigns(t *testing.T) {
 	p := newPayEnv(t)
 	before := p.head()
 	code, m, rid := p.pay("premium", "pay-refuse")
-	if code != 403 {
+	if code != 429 { // budget_daily: not now, as opposed to a scope refusal (403)
 		t.Fatalf("%d %v", code, m)
 	}
 	if p.w.SignCount() != 0 {
@@ -276,7 +274,7 @@ func TestRefusedPaymentNeverSigns(t *testing.T) {
 		t.Fatalf("ledger entries %s", got)
 	}
 	row := p.auditRowID(rid)
-	if row.Status != server.StatusPolicyDenied || row.Err != "over_budget" || row.Cost != 0 || row.HoldID == "" {
+	if row.Status != server.StatusPolicyDenied || row.Err != "budget_daily" || row.Cost != 0 || row.HoldID == "" {
 		t.Fatalf("audit %+v", row)
 	}
 	if b := p.balance(); b.Balance != 10*usd || b.Held != 0 {
@@ -285,8 +283,9 @@ func TestRefusedPaymentNeverSigns(t *testing.T) {
 	p.noActiveHolds()
 }
 
-// An agent belongs to one account. Another account's key cannot spend as it.
-func TestAgentBoundToAccount(t *testing.T) {
+// The credential is the identity. Another account's key has its own scope (no
+// payees), and a body that names another agent is refused.
+func TestAgentBoundToCredential(t *testing.T) {
 	p := newPayEnv(t)
 	other, err := p.env.led.CreateAccount(context.Background(), "other")
 	if err != nil {
@@ -299,12 +298,21 @@ func TestAgentBoundToAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// B's key is a default-scope agent: no payees, so no payments.
 	code, m, rid := p.payAs(secretB, agent, "echo", "b-1")
-	if code != 403 || !strings.Contains(string(mustJSON(m)), "unknown_agent") {
+	if code != 403 || !strings.Contains(string(mustJSON(m)), "scope_payee") {
 		t.Fatalf("%d %v", code, m)
 	}
 	if p.w.SignCount() != 0 || p.chainBal(p.payTo) != 0 {
-		t.Fatal("B spent as A's agent")
+		t.Fatal("B paid")
+	}
+	if row := p.auditRowID(rid); row.Status != server.StatusPolicyDenied || row.Err != "scope_payee" {
+		t.Fatalf("audit %+v", row)
+	}
+	// Naming another agent in the body does not borrow its scope.
+	code, m, rid = p.payAs(p.secret, "someone-else", "echo", "a-1")
+	if code != 403 || !strings.Contains(string(mustJSON(m)), "unknown_agent") {
+		t.Fatalf("%d %v", code, m)
 	}
 	if row := p.auditRowID(rid); row.Status != server.StatusPolicyDenied || row.Err != "unknown_agent" {
 		t.Fatalf("audit %+v", row)
@@ -471,7 +479,7 @@ func TestClientDisconnectDuringSettlement(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		resp, err := p.doCtx(ctx, "/v1/payments", `{"tool":"echo","agent_id":"agent-1","input":{}}`, map[string]string{"Idempotency-Key": "hangup"})
+		resp, err := p.doCtx(ctx, "/v1/payments", `{"tool":"echo","input":{}}`, map[string]string{"Idempotency-Key": "hangup"})
 		if err == nil {
 			resp.Body.Close()
 		}
@@ -526,3 +534,144 @@ func TestPaymentUnknownToolAndAuth(t *testing.T) {
 }
 
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }
+
+// ---- T4: the policy engine in front of payments ----
+
+// I10 through the engine: a payee that is not in the agent's scope is refused
+// before signing, and the signer never runs.
+func TestPayeeOutsideScopeNeverSigns(t *testing.T) {
+	p := newPayEnv(t)
+	p.setScope(func(s *policy.Scope) {
+		s.Payees = []string{"0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"}
+		s.DailyBudget = usd
+	})
+	before := p.head()
+	code, m, rid := p.pay("echo", "scope-1")
+	if code != 403 || !strings.Contains(string(mustJSON(m)), "scope_payee") {
+		t.Fatalf("%d %v", code, m)
+	}
+	if p.w.SignCount() != 0 || p.head() != before {
+		t.Fatal("a refused payment reached signing or the chain")
+	}
+	if row := p.auditRowID(rid); row.Status != server.StatusPolicyDenied || row.Err != "scope_payee" || row.HoldID == "" {
+		t.Fatalf("audit %+v", row)
+	}
+	if d, _ := p.srv.Agents.Decisions(context.Background(), rid); len(d) != 1 || d[0].Rule != "scope_payee" || d[0].Payee == "" {
+		t.Fatalf("decisions %+v", d)
+	}
+	p.noActiveHolds()
+}
+
+func TestPaymentToolOutsideScopeNeverSigns(t *testing.T) {
+	p := newPayEnv(t)
+	p.setScope(func(s *policy.Scope) { s.Tools = []string{"premium"}; s.Payees = []string{p.payTo.Hex()} })
+	code, m, _ := p.pay("echo", "scope-2")
+	if code != 403 || !strings.Contains(string(mustJSON(m)), "scope_tool") || p.w.SignCount() != 0 {
+		t.Fatalf("%d %v signs=%d", code, m, p.w.SignCount())
+	}
+}
+
+func TestPaymentBudgetFreedWhenPaymentSettlesAndFailures(t *testing.T) {
+	p := newPayEnv(t)
+	// $0.30 a day: the $0.01 echo fits many times, and each settles for exactly its price.
+	for i := 0; i < 3; i++ {
+		if code, m, _ := p.pay("echo", fmt.Sprint("b-", i)); code != 200 {
+			t.Fatalf("%d %v", code, m)
+		}
+	}
+	if s := p.snapshot(""); s.DailySpent != 30_000_000 {
+		t.Fatalf("daily spent %d", s.DailySpent)
+	}
+	// A refused premium payment (over budget) leaves the window alone.
+	if code, _, _ := p.pay("premium", "b-x"); code != 429 {
+		t.Fatalf("%d", code)
+	}
+	if s := p.snapshot(""); s.DailySpent != 30_000_000 {
+		t.Fatalf("daily spent %d after a refusal", s.DailySpent)
+	}
+}
+
+// Over the threshold: queued, nothing signed, the money held. After approval
+// the replay pays once; a replay of the replay is a duplicate; and approving
+// "echo" never lets the same key pay for something else.
+func TestPaymentApprovalFlow(t *testing.T) {
+	p := newPayEnv(t)
+	p.setScope(func(s *policy.Scope) {
+		s.Payees = []string{p.payTo.Hex()}
+		s.ApprovalThreshold = 5_000_000 // $0.005: the $0.01 echo needs a human
+	})
+	code, m, rid := p.pay("echo", "appr-1")
+	if code != 202 || m["status"] != "approval_required" || m["approval_id"] == "" {
+		t.Fatalf("%d %v", code, m)
+	}
+	id := m["approval_id"].(string)
+	if p.w.SignCount() != 0 || p.chainBal(p.payTo) != 0 {
+		t.Fatal("signed before approval")
+	}
+	if b := p.balance(); b.Held != 10_000_000 {
+		t.Fatalf("held %d: the money must be locked while waiting", b.Held)
+	}
+	if row := p.auditRowID(rid); row.Status != server.StatusApprovalRequired || row.Kind != "payment" || row.HoldID == "" {
+		t.Fatalf("audit %+v", row)
+	}
+
+	// The same key asking for another tool is not covered by this approval.
+	if _, err := p.srv.Approvals.Allow(context.Background(), id, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	code, m, _ = p.pay("premium", "appr-1")
+	if code != 422 || !strings.Contains(string(mustJSON(m)), "approval_mismatch") || p.w.SignCount() != 0 {
+		t.Fatalf("%d %v signs=%d", code, m, p.w.SignCount())
+	}
+
+	code, m, _ = p.pay("echo", "appr-1")
+	if code != 200 || m["transaction"] == "" {
+		t.Fatalf("replay after approval: %d %v", code, m)
+	}
+	if p.w.SignCount() != 1 || p.chainBal(p.payTo) != 10_000 {
+		t.Fatalf("signs=%d payee=%d", p.w.SignCount(), p.chainBal(p.payTo))
+	}
+	if code, _, _ = p.pay("echo", "appr-1"); code != 409 || p.w.SignCount() != 1 {
+		t.Fatalf("second replay: %d signs=%d", code, p.w.SignCount())
+	}
+	if got := strings.Join(p.entryKinds(), ","); got != "hold,settle" {
+		t.Fatalf("ledger entries %s", got)
+	}
+	if s := p.snapshot(""); s.DailySpent != 10_000_000 {
+		t.Fatalf("daily spent %d", s.DailySpent)
+	}
+	p.noActiveHolds()
+}
+
+func TestPaymentApprovalDenyReleasesHold(t *testing.T) {
+	p := newPayEnv(t)
+	p.setScope(func(s *policy.Scope) { s.Payees = []string{p.payTo.Hex()}; s.ApprovalThreshold = 5_000_000 })
+	_, m, _ := p.pay("echo", "appr-2")
+	id := m["approval_id"].(string)
+	if _, err := p.srv.Approvals.Deny(context.Background(), id, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if b := p.balance(); b.Held != 0 || b.Balance != 10*usd {
+		t.Fatalf("balance %+v", b)
+	}
+	if code, m, _ := p.pay("echo", "appr-2"); code != 403 || !strings.Contains(string(mustJSON(m)), "approval_denied") {
+		t.Fatalf("%d %v", code, m)
+	}
+	if p.w.SignCount() != 0 {
+		t.Fatal("signed a denied payment")
+	}
+	p.noActiveHolds()
+}
+
+func TestRevokedAgentCannotPay(t *testing.T) {
+	p := newPayEnv(t)
+	var id string
+	_ = p.pool.QueryRow(context.Background(), `SELECT id FROM agents WHERE account_id=$1`, p.acct).Scan(&id)
+	if _, err := p.srv.Agents.Revoke(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	code, m, _ := p.pay("echo", "rv-1")
+	if code != 403 || !strings.Contains(string(mustJSON(m)), "agent_revoked") || p.w.SignCount() != 0 {
+		t.Fatalf("%d %v", code, m)
+	}
+}

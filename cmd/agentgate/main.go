@@ -42,6 +42,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = reconcileCmd(ctx, args[1:], stdout)
 	case "prices":
 		err = prices(ctx, args[1:], stdout)
+	case "agent":
+		err = agentCmd(ctx, args[1:], stdout)
+	case "approve":
+		err = approveCmd(ctx, args[1:], stdout)
+	case "kill":
+		err = killCmd(ctx, args[1:], stdout)
 	case "wallet":
 		err = walletCmd(args[1:], stdout)
 	case "paidtool":
@@ -68,7 +74,10 @@ commands:
   migrate     apply database migrations
   serve       run the gateway (and the background reconciler)
   account     create | deposit | balance
-  key         create --account ID: print a client key once
+  key         create --account ID: print a client key once (an agent with the default scope)
+  agent       create | list | revoke: scoped credentials (models, tools, payees, budgets)
+  approve     list | allow ID | deny ID: the approval queue
+  kill        --agent X [--resume]: the kill switch
   report      --since 24h --by model|account
   reconcile   close expired holds once
   prices      sync: refresh configs/prices.json from OpenRouter

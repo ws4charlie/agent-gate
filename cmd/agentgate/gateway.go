@@ -16,6 +16,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ws4charlie/agent-gate/internal/agents"
+	"github.com/ws4charlie/agent-gate/internal/approval"
 	"github.com/ws4charlie/agent-gate/internal/audit"
 	"github.com/ws4charlie/agent-gate/internal/config"
 	"github.com/ws4charlie/agent-gate/internal/db"
@@ -97,7 +99,8 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	led := ledger.New(pool)
 	srv := &server.Server{Pool: pool, Ledger: led, Audit: audit.NewStore(pool), Providers: pc, Prices: prices,
 		Keys: config.ProviderKey, Tracer: tracer, Log: log, MaxHold: cfg.MaxHoldNanos,
-		DefaultMaxTokens: cfg.DefaultMaxTokens, StoreBodies: *storeBodies}
+		DefaultMaxTokens: cfg.DefaultMaxTokens, StoreBodies: *storeBodies,
+		Agents: agents.NewStore(pool), Approvals: &approval.Queue{Store: approval.NewStore(pool), Ledger: led}}
 
 	// Always routed: a payment hold must never fall through to the model lookup,
 	// whose "not found" would release money that may have moved.
@@ -122,7 +125,8 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	go func() { // I6: close holds whose process died
+	go srv.WatchKills(ctx) // I12: cancel in-flight calls of killed or revoked agents
+	go func() {            // I6: close holds whose process died
 		t := time.NewTicker(*reconcileEvery)
 		defer t.Stop()
 		for {
@@ -130,7 +134,12 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if rep, err := server.Reconcile(ctx, led, lookup, srv.Audit, time.Now()); err != nil {
+				if n, err := srv.Approvals.Sweep(ctx); err != nil {
+					log.Error("approval sweep", "err", err)
+				} else if n > 0 {
+					log.Info("approvals expired", "count", n)
+				}
+				if rep, err := server.Reconcile(ctx, led, lookup, srv.Audit, srv.Agents, time.Now()); err != nil {
 					log.Error("reconcile", "err", err)
 				} else if rep.Settled+rep.Released+rep.Errors > 0 {
 					log.Info("reconcile", "settled", rep.Settled, "released", rep.Released, "errors", rep.Errors)
@@ -300,7 +309,7 @@ func reconcileCmd(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 	}
-	rep, err := server.Reconcile(ctx, ledger.New(pool), rl, audit.NewStore(pool), time.Now())
+	rep, err := server.Reconcile(ctx, ledger.New(pool), rl, audit.NewStore(pool), agents.NewStore(pool), time.Now())
 	if err != nil {
 		return err
 	}
