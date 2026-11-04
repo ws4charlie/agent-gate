@@ -49,6 +49,10 @@ cleanup() {
 }
 trap cleanup EXIT
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
+fail() { echo "FAIL: $*" >&2; exit 1; }
+expect() { # expect <what> <needle> <haystack>
+  case "$3" in *"$2"*) echo "   ok: $1" ;; *) echo "   output was: $3" >&2; fail "$1 (wanted: $2)" ;; esac
+}
 
 say "build"
 go build -o "$WORK/agentgate" ./cmd/agentgate
@@ -105,11 +109,15 @@ pay() { # pay <tool> <idempotency-key>
 }
 
 say "1. echo (\$0.01): inside policy -> signed -> settled on chain -> charged"
-pay echo demo-1
+r="$(pay echo demo-1)"; echo "$r"
+expect "the payment returned HTTP 200" 'HTTP 200' "$r"
+expect "it carries a transaction hash" '"transaction":"0x' "$r"
 "$AG" account balance --account "$ACCT"
 
 say "2. premium (\$0.50): over the \$0.30 daily budget -> refused before signing"
-pay premium demo-2
+r="$(pay premium demo-2)"; echo "$r"
+expect "refused by the budget rule" 'budget_daily' "$r"
+expect "with HTTP 429" 'HTTP 429' "$r"
 "$AG" account balance --account "$ACCT"
 
 say "3. the same Idempotency-Key again: 409, nothing signed, nothing charged"
