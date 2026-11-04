@@ -6,7 +6,7 @@ A custody-grade gateway for AI agents: every model call, tool call and payment i
 
 An agent that can spend money is closer to a bank client than to an API user. A bare key with a budget is not enough: the thing holding it can be hijacked by text in a tool result. So AgentGate treats an agent as a **scoped identity** in front of a **ledger**, and puts one decision point, `policy.Evaluate`, in front of everything that costs money: model calls, MCP tool calls and on-chain payments. The two rules that carry the design:
 
-- **Reserve before you spend.** Every cost is held in a double-entry ledger first (one conditional `UPDATE`, so parallel requests cannot overspend), then settled to the real amount or released. Retries, crashes and races leave the books balanced, and a function recomputes that from the append-only entries.
+- **Reserve before you spend.** Every cost is held in a append-only ledger first (one conditional `UPDATE`, so parallel requests cannot overspend), then settled to the real amount or released. Retries, crashes and races leave the books balanced, and a function recomputes that from the append-only entries.
 - **Screen before you sign.** The wallet's signing path takes a value only the policy package can construct, so a refused payment never reaches the key, and the wallet adds its own cap as an independent second check.
 
 ## Architecture
@@ -265,7 +265,7 @@ agentgate kill --agent researcher           # and --resume to undo; `agent revok
 - **Approvals are exact.** An approval pins the request (kind, model or tool, payee, amount, network, task, body); replaying the same `Idempotency-Key` with anything different is refused (422), the replay runs once (a second is 409), and an unused approval expires (default 15 minutes) and releases its hold. An approval lifts the approval threshold only: a budget or scope that no longer fits still refuses it. The approver's name is recorded.
 - **No self-approval.** There is no HTTP route that approves, changes an agent or kills one. The CLI needs direct database access, which an agent credential never has.
 - **T2 API keys keep working.** A migration turns every existing key into an agent with the default scope (any model, any tool, no limits, no payees), so existing clients are unaffected and cannot pay until a payee is listed.
-- **Single gateway process.** The kill switch registry and the velocity window are simple because there is one process; the CLI kills through the database and the gateway notices within 250 ms.
+- **Single gateway process.** The registry of in-flight calls is in process; the velocity window is in Postgres. The CLI kills through the database and the gateway notices within 250 ms.
 
 Offline demo (burn a budget, trip velocity, queue and approve a request, refuse an out-of-scope model, kill a stream mid-flight): `demo/phase2-policy.sh`. Study guide: [docs/learn/policy.md](docs/learn/policy.md).
 
@@ -384,12 +384,12 @@ The gateway's job is to keep a provider key and an account's money out of reach 
 
 ## What I borrowed and what I did differently
 
-Public gateway designs (LiteLLM, Portkey, Bifrost, OpenRouter) share a shape: an OpenAI-compatible front, virtual keys with budgets, routing by model name, spend logs, and guardrail hooks. I read their public documentation, not their code, and wrote everything here from scratch.
+Public gateway designs (LiteLLM, Portkey, Bifrost, OpenRouter) share a shape: an OpenAI-compatible front, virtual keys with budgets, routing by model name, spend logs, and guardrail hooks. This section compares against their public documentation. No code was copied, and everything here was written from scratch.
 
 | Borrowed | Where it came from | What is different here |
 |---|---|---|
 | OpenAI-compatible endpoint, model-prefix routing, per-key budgets | the public gateways | The budget check is one conditional `UPDATE` in Postgres, enforced by `CHECK` constraints, not an application counter. |
-| Spend logs | the public gateways | An append-only audit table plus a double-entry ledger that a function can re-audit (I1, I2). |
+| Spend logs | the public gateways | An append-only audit table plus a append-only ledger that a function can re-audit (I1, I2). |
 | Authorize, then capture or void | card networks | Every cost is a hold with a lease; a dead process's hold is found and closed by a reconciler (I6). |
 | Idempotency keys | payment APIs | A key replay changes nothing and returns the first result; the same key with other parameters is an error (I4). |
 | Generation lookup for real cost | OpenRouter | Used as the usage source when a process died before settling. |
@@ -402,7 +402,7 @@ Not here: provider fallback, load balancing, a dashboard, multi-tenant managemen
 
 ## Limits
 
-- **Single gateway process.** The kill-switch registry and the velocity window are in one process. The ledger itself is safe with several.
+- **Single gateway process.** Only the registry of in-flight calls (what the kill switch cancels) is in process, so a second gateway would not see a kill for its own streams until its own watcher polled the database. The velocity window is in Postgres under an advisory lock, and the ledger is safe with several processes.
 - **Testnet only.** The wallet refuses every chain but Base Sepolia (84532) and the local simulated one. No mainnet, ever, in this code.
 - **Offline proof is not live proof.** The simulated chain uses a mock token with USDC's EIP-3009 interface. Base Sepolia behaviour (fees, RPC, real USDC) is untested until the live run.
 - **Reorgs** after a receipt are not handled.
