@@ -1,0 +1,1 @@
+Image: https://cdn.example.com/photos/2026/cat.png?w=640&h=480 (see ![cat](https://cdn.example.com/cat.png))

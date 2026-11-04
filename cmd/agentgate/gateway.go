@@ -22,9 +22,11 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/config"
 	"github.com/ws4charlie/agent-gate/internal/db"
 	"github.com/ws4charlie/agent-gate/internal/ledger"
+	"github.com/ws4charlie/agent-gate/internal/mcp"
 	"github.com/ws4charlie/agent-gate/internal/money"
 	"github.com/ws4charlie/agent-gate/internal/pricing"
 	"github.com/ws4charlie/agent-gate/internal/provider"
+	"github.com/ws4charlie/agent-gate/internal/screen"
 	"github.com/ws4charlie/agent-gate/internal/server"
 	"github.com/ws4charlie/agent-gate/internal/telemetry"
 )
@@ -72,6 +74,9 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	c := newCommon("serve")
 	storeBodies := c.fs.Bool("store-bodies", false, "store redacted request/response bodies in the audit log (default off)")
 	paymentsPath := c.fs.String("payments", os.Getenv("AG_PAYMENTS"), "payments config JSON (default $AG_PAYMENTS; empty: POST /v1/payments is off)")
+	mcpPath := c.fs.String("mcp", os.Getenv("AG_MCP"), "MCP upstream servers JSON (default $AG_MCP; empty: /mcp/{server} is off)")
+	noScreen := c.fs.Bool("no-screen", false, "do not screen tool output (default: screen it with the built-in rules)")
+	judgeModel := c.fs.String("screen-judge-model", "", "also ask this model (a routable name) about each tool result; off by default, costs provider calls")
 	reconcileEvery := c.fs.Duration("reconcile-every", 30*time.Second, "background reconcile interval")
 	cfg, pool, err := c.open(ctx, args)
 	if err != nil {
@@ -101,6 +106,21 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		Keys: config.ProviderKey, Tracer: tracer, Log: log, MaxHold: cfg.MaxHoldNanos,
 		DefaultMaxTokens: cfg.DefaultMaxTokens, StoreBodies: *storeBodies,
 		Agents: agents.NewStore(pool), Approvals: &approval.Queue{Store: approval.NewStore(pool), Ledger: led}}
+
+	if *mcpPath != "" {
+		mc, err := mcp.LoadConfig(*mcpPath)
+		if err != nil {
+			return err
+		}
+		srv.MCP = &mc
+		if !*noScreen {
+			srv.Screen = &screen.Screener{}
+			if *judgeModel != "" {
+				srv.Screen.Judge = &server.ProviderJudge{S: srv, Model: *judgeModel}
+			}
+		}
+		log.Info("mcp gateway enabled", "servers", len(mc.Servers), "screening", srv.Screen != nil, "judge", *judgeModel != "")
+	}
 
 	// Always routed: a payment hold must never fall through to the model lookup,
 	// whose "not found" would release money that may have moved.
@@ -139,7 +159,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 				} else if n > 0 {
 					log.Info("approvals expired", "count", n)
 				}
-				if rep, err := server.Reconcile(ctx, led, lookup, srv.Audit, srv.Agents, time.Now()); err != nil {
+				if rep, err := server.Reconcile(ctx, pool, led, lookup, srv.Audit, srv.Agents, time.Now()); err != nil {
 					log.Error("reconcile", "err", err)
 				} else if rep.Settled+rep.Released+rep.Errors > 0 {
 					log.Info("reconcile", "settled", rep.Settled, "released", rep.Released, "errors", rep.Errors)
@@ -309,7 +329,7 @@ func reconcileCmd(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 	}
-	rep, err := server.Reconcile(ctx, ledger.New(pool), rl, audit.NewStore(pool), agents.NewStore(pool), time.Now())
+	rep, err := server.Reconcile(ctx, pool, ledger.New(pool), rl, audit.NewStore(pool), agents.NewStore(pool), time.Now())
 	if err != nil {
 		return err
 	}

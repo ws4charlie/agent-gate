@@ -20,6 +20,7 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/ledger"
 	"github.com/ws4charlie/agent-gate/internal/policy"
 	"github.com/ws4charlie/agent-gate/internal/provider"
+	"github.com/ws4charlie/agent-gate/internal/run"
 	"github.com/ws4charlie/agent-gate/internal/wallet"
 	"github.com/ws4charlie/agent-gate/internal/x402"
 )
@@ -80,6 +81,9 @@ func (c *call) pay() {
 	acct := agent.AccountID
 	c.ev.AccountID, c.ev.AgentID = acct, agent.ID
 	if c.refuseInactive(policy.KindPayment) { // rule 1, before anything else (I12)
+		return
+	}
+	if !c.beginRun(run.KindPayment) {
 		return
 	}
 

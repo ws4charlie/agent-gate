@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -25,10 +26,13 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/approval"
 	"github.com/ws4charlie/agent-gate/internal/audit"
 	"github.com/ws4charlie/agent-gate/internal/ledger"
+	"github.com/ws4charlie/agent-gate/internal/mcp"
 	"github.com/ws4charlie/agent-gate/internal/money"
 	"github.com/ws4charlie/agent-gate/internal/policy"
 	"github.com/ws4charlie/agent-gate/internal/pricing"
 	"github.com/ws4charlie/agent-gate/internal/provider"
+	"github.com/ws4charlie/agent-gate/internal/run"
+	"github.com/ws4charlie/agent-gate/internal/screen"
 )
 
 // Hold lease. The initial TTL and the extend tick are chosen together:
@@ -69,6 +73,15 @@ type Server struct {
 	Approvals   *approval.Queue
 	Registry    *agents.Registry // in-flight calls by agent, for the kill switch (I12)
 	ApprovalTTL time.Duration    // how long a queued request waits for a human (default 15m)
+
+	// T5. MCP nil disables /mcp/{server}. Screen nil means tool output is not
+	// screened (an explicit choice; `serve` always sets one). Runs and
+	// RunRegistry default to working instances.
+	MCP         *mcp.Config
+	Screen      *screen.Screener
+	Runs        *run.Store
+	RunRegistry *agents.Registry    // in-flight calls by run id, for kill-by-run (I12)
+	Getenv      func(string) string // upstream MCP credentials come from here (I9); default os.Getenv
 }
 
 func (s *Server) defaults() {
@@ -103,6 +116,15 @@ func (s *Server) defaults() {
 	if s.Registry == nil {
 		s.Registry = &agents.Registry{}
 	}
+	if s.Runs == nil {
+		s.Runs = run.New(s.Pool)
+	}
+	if s.RunRegistry == nil {
+		s.RunRegistry = &agents.Registry{}
+	}
+	if s.Getenv == nil {
+		s.Getenv = os.Getenv
+	}
 	if s.ApprovalTTL == 0 {
 		s.ApprovalTTL = approval.DefaultTTL
 	}
@@ -116,6 +138,9 @@ func (s *Server) Handler() http.Handler {
 	if s.Payments != nil {
 		mux.HandleFunc("POST /v1/payments", s.handlePayment)
 	}
+	// Every method, so GET and DELETE get the 405 the 2026-07-28 spec asks for.
+	// With MCP nil the route answers 404: the gateway has no MCP servers.
+	mux.HandleFunc("/mcp/{server}", s.handleMCP)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok\n") })
 	return mux
 }
@@ -150,6 +175,10 @@ type call struct {
 	ext   audit.Extra
 	done  bool
 
+	rpc   bool            // answering in JSON-RPC (the /mcp route)
+	rpcID json.RawMessage // id of the JSON-RPC request being answered
+	runID string          // the run this request belongs to (T5)
+
 	agent  agents.Agent    // who is calling (T4: the credential's agent)
 	snap   policy.Snapshot // what the engine saw for this request
 	killed atomic.Bool     // set when the kill switch cancelled this call (I12)
@@ -162,6 +191,7 @@ func (c *call) finish(status string) {
 		return
 	}
 	c.done = true
+	c.endStep(status)
 	c.ev.Status = status
 	c.ev.LatencyMs = time.Since(c.start).Milliseconds()
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.ctx), 5*time.Second)
@@ -184,7 +214,11 @@ func (c *call) finish(status string) {
 
 func (c *call) fail(httpStatus int, status, code, msg string, extra map[string]any) {
 	c.ev.Err = code
-	writeErr(c.w, c.f, httpStatus, code, msg, extra)
+	if c.rpc && httpStatus != http.StatusUnauthorized {
+		c.writeRPCError(httpStatus, code, msg, extra)
+	} else {
+		writeErr(c.w, c.f, httpStatus, code, msg, extra)
+	}
 	c.finish(status)
 }
 
@@ -224,6 +258,9 @@ func (c *call) run() {
 	c.ev.AccountID, c.ev.AgentID = agent.AccountID, agent.ID
 	c.span.SetAttributes(attribute.String("account.id", agent.AccountID), attribute.String("agent.id", agent.ID))
 	if c.refuseInactive(policy.KindModel) { // rule 1, before anything else (I12)
+		return
+	}
+	if !c.beginRun(run.KindModel) { // a killed run is refused here
 		return
 	}
 
@@ -351,8 +388,8 @@ func (c *call) run() {
 		upSpan.End()
 		if c.killed.Load() {
 			c.release(hold, "agent killed")
-			c.ev.Err = policy.RuleKilled
-			c.fail(http.StatusForbidden, StatusKilled, policy.RuleKilled, "agent was killed", nil)
+			c.ev.Err = c.killRule()
+			c.fail(http.StatusForbidden, StatusKilled, c.killRule(), "agent was killed", nil)
 			return
 		}
 		c.release(hold, "upstream unreachable")
@@ -453,7 +490,7 @@ func (c *call) reserve(amount money.Nanos, idem string, claim bool, ttl time.Dur
 	}
 
 	hold, err := s.Ledger.Reserve(rctx, ledger.ReserveReq{AccountID: c.ev.AccountID, Amount: amount, IdemKey: idem,
-		Kind: ledger.KindModel, TTL: ttl, Memo: "model " + c.ev.Model})
+		Kind: c.holdKind(), TTL: ttl, Memo: string(c.holdKind()) + " " + c.ev.Model})
 	switch {
 	case err == nil && hold.Status != "active":
 		// Used key whose hold is already terminal: same answer as a duplicate (never call upstream).
@@ -557,7 +594,7 @@ func (c *call) unary(h ledger.Hold, resp *http.Response, up provider.Upstream, n
 		switch {
 		case res.clientGone:
 		case c.killed.Load():
-			writeErr(c.w, c.f, http.StatusForbidden, policy.RuleKilled, "agent was killed", nil)
+			writeErr(c.w, c.f, http.StatusForbidden, c.killRule(), "agent was killed", nil)
 		default:
 			writeErr(c.w, c.f, http.StatusBadGateway, "upstream_failed", "upstream response could not be read", nil)
 		}
@@ -722,7 +759,7 @@ func (c *call) settle(h ledger.Hold, price pricing.Price, reqBytes int, res outc
 		// I12: the kill switch cut the stream. Usage received so far is still
 		// settled below (I8); the rest of the hold is released.
 		status = StatusKilled
-		c.ev.Err = policy.RuleKilled
+		c.ev.Err = c.killRule()
 	case res.upstreamErr != nil:
 		status = audit.StatusUpstreamFailed
 		c.ev.Err = "upstream_stream_failed"

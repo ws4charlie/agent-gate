@@ -4,7 +4,7 @@ A custody-grade gateway for AI agents: every model call and every payment is aut
 
 ## Status
 
-Early work. Foundations, the Postgres ledger, the gateway (OpenAI-compatible and native Anthropic endpoints, streaming, audit, report), x402 payments on a simulated chain, and the policy engine (scoped agent credentials, budgets, velocity limits, an approval queue, a kill switch). The later layers land in further pull requests.
+Early work. Foundations, the Postgres ledger, the gateway (OpenAI-compatible and native Anthropic endpoints, streaming, audit, report), x402 payments on a simulated chain, the policy engine (scoped agent credentials, budgets, velocity limits, an approval queue, a kill switch), and the MCP tool gateway with tool-output screening and runs. The later layers land in further pull requests.
 
 ## Build and test
 
@@ -197,6 +197,58 @@ agentgate kill --agent researcher           # and --resume to undo; `agent revok
 
 Offline demo (burn a budget, trip velocity, queue and approve a request, refuse an out-of-scope model, kill a stream mid-flight): `demo/phase2-policy.sh`. Study guide: [docs/learn/policy.md](docs/learn/policy.md).
 
+## MCP gateway
+
+Tool calls go through the same gate as model calls. `POST /mcp/{server}` is an MCP **Streamable HTTP** proxy to an upstream server named in [demo/mcp.example.json](demo/mcp.example.json); the client names a server, never a URL. The gateway authenticates the agent, decides, meters, screens what comes back, and writes an audit row, so a tool call is as controlled as a model call.
+
+```mermaid
+flowchart LR
+    A[agent] -->|tools/call + Bearer ag_...| G[/mcp/server/]
+    G --> P{policy.Evaluate<br/>scope, budget, velocity, approval}
+    P -->|Deny / out of scope| E[JSON-RPC error, upstream never called]
+    P -->|Allow| H[ledger.Reserve kind tool]
+    H --> U[upstream MCP server<br/>gateway's own credential]
+    U --> S{screen}
+    S -->|hit| B[JSON-RPC error: rule id only<br/>hash logged, content dropped]
+    S -->|clean| T[ledger.Settle price]
+    T --> R[result to agent]
+    L[tools/list] -.filtered by allowlist.-> A
+```
+
+- **Protocol: 2026-07-28** (modelcontextprotocol.io, the current revision). It has no sessions and no `initialize` handshake: every POST carries its version and capabilities in `params._meta`, mirrored in `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name`. The gateway is stateless to match: it checks that the headers agree with the body (a mismatch is `400` / `-32020`), answers an unsupported version with `-32022` and the supported list, answers `initialize` (the old handshake) with an error that names the supported version, answers GET and DELETE with `405`, and ignores `Mcp-Session-Id`. The gateway speaks MCP 2026-07-28 only, so an older client or server is refused. It has been checked once against `@modelcontextprotocol/server-everything` 2.1.0 (`tools/list` and `tools/call` echo through the gateway); everything else is tested against the in-repo fake. It does not speak earlier revisions; an upstream that only does will be refused by the gateway's own requests and the failure shows as `upstream_error`.
+- **Responses** are JSON or SSE. SSE is screened event by event and forwarded as it arrives; the stream ends when the response ends.
+- **Upstream credentials stay on the server.** A server entry names an environment variable (`auth_env`) whose value is the full header; the client's own `Authorization` is never forwarded and the upstream's never reaches a client or a log (I9).
+- **`tools/list`** returns only the tools the agent's allowlist permits (names are `server/tool`, so `up/*` matches one server). **`tools/call`** is: policy, reserve (kind `tool`, price per call from config, default 0), forward, screen, settle, audit. A refused call is a JSON-RPC error with HTTP 200 (`40301` policy denied with `data.rule`, `40201` funds, `40202` approval needed with `data.approval_id`, `40302` screened, `40901` duplicate); only a bad credential (401) and a malformed request (400) are transport errors.
+- **Free tools** (price 0, the default) still get a decision: the same engine answers with the limits removed, so scope and agent status apply, nothing is reserved or charged, and the decision is logged with amount 0. `Evaluate` keeps refusing amount 0 for models and payments.
+- **Billing rule.** A priced call that returns a result is charged, including one the screen then blocks (the tool ran). A call that fails, is cancelled, or returns a JSON-RPC error is released.
+- **Everything else** (resources, prompts, discover, ping) is forwarded and logged, not inspected, not screened and not metered.
+
+### Screening tool output
+
+Tool output is text someone else wrote, and an agent may read it as an instruction. `internal/screen` runs deterministic rules first: instruction-override phrases, role markers and chat templates, invisible or direction-changing Unicode, base64/hex/percent-encoded text that decodes to one of those, and URLs that would carry data out. An optional judge (`serve --screen-judge-model`, off by default; a fake in tests, the real one has not been run) asks a small model for a second opinion; when it is on and fails, the content is blocked, not passed. A hit returns an error and logs the rule id and a SHA-256 of the content in `screen_events`: never the content.
+
+Measured on the committed corpus (`internal/screen/testdata`, 22 malicious and 13 benign samples): 0 missed, 0 false positives. **That number is not a security claim**: the rules and the corpus were written together, so it shows the rules do what they say, not how an adversary fares. What rule-based screening cannot do:
+
+- It misses what it has no phrase for: a paraphrase, another language, split words, look-alike letters, ROT13, or a plain request that reads like ordinary prose. `testdata/evasions` holds six such samples, and a test pins that they pass, so the limit is in the repository rather than in a hope.
+- It does not read images or audio, only text. It screens `tools/call` results, not `tools/list` descriptions (a poisoned tool description is not caught) and not resources or prompts.
+- Some benign text will trip it (a document about prompt injection, an invisible character in scraped text).
+
+So screening lowers the odds of the cheap attacks and gives an audit trail. The limits that hold against a hijacked agent are the ones that do not depend on reading text: tool scope, budgets, velocity, and approval.
+
+## Runs
+
+A **run** is one unit of agent work. Send `X-AgentGate-Run: <id>` (letters, digits, `. _ : -`, up to 64) or let the gateway create one; the id comes back in the response header and in every audit row. Model calls, tool calls and payments under one id are the run's **steps**, in order, each with kind, name, status, cost and times. A run is owned by the agent that first used its id.
+
+```bash
+agentgate run list                 # newest runs, each with its spend
+agentgate run show RUN_ID          # steps in order, spend, status
+agentgate run kill RUN_ID          # the run's next request is refused (run_killed), its in-flight calls are cancelled within a second
+```
+
+The spend of a run is summed from `ledger_entries` through the hold of each step, so it cannot disagree with `ledger.Audit`. Killing a run is the same mechanism as killing an agent (I12), keyed by run: the CLI writes the database, the gateway's kill watcher finds it and cancels. A killed tool call is released, a killed stream settles what arrived. A run that is refused still gets a step, with its refusal status. Single gateway process, as everywhere else.
+
+Offline demo (list, call a free and a priced tool, refuse an out-of-scope one, block an injected result, show a run, kill it mid-call): `demo/phase2-mcp.sh --offline`. Without `--offline` it uses `npx @modelcontextprotocol/server-everything` as the upstream. Study guide: [docs/learn/mcp-runs.md](docs/learn/mcp-runs.md).
+
 ## Security and threat model
 
 The gateway's job is to keep a provider key and an account's money out of reach of the thing calling it: provider keys live only in the gateway's environment and are never logged, put in a span, or relayed (the client never sees upstream headers: only an allowlist is copied back); client credentials are 256-bit random secrets stored only as SHA-256; a request can spend only what its account holds, because the budget check is one atomic `UPDATE` in Postgres, not application code; prompts and responses are not stored unless an operator turns that on, and then bearer tokens and `sk-` patterns are redacted. It does not defend against a compromised gateway host (which holds the provider key and the database), a malicious operator, or secrets that appear in prompts in forms the redactor does not recognise (redaction is best effort, which is why storage is off by default). Per-agent scopes, budgets, approvals and a kill switch limit what a credential can do (see [Policy](#policy)). Single process, no TLS termination, no request rate limiting: put it behind a reverse proxy on a trusted network.
@@ -208,6 +260,7 @@ The gateway's job is to keep a provider key and an account's money out of reach 
 - [Gateway](docs/learn/gateway.md)
 - [Payments](docs/learn/payments.md)
 - [Policy](docs/learn/policy.md)
+- [MCP gateway and runs](docs/learn/mcp-runs.md)
 
 ## License
 

@@ -250,6 +250,12 @@ func (c *call) queueApproval(h ledger.Hold, req policy.Request, idem, fp string,
 
 func (c *call) respondApprovalRequired(a approval.Approval) {
 	c.ev.Err = policy.RuleApprovalThreshold
+	if c.rpc { // a tool call: the answer is a JSON-RPC error carrying the approval id
+		c.writeRPCError(http.StatusAccepted, "approval_required", "a human must approve this tool call; replay it with the same Idempotency-Key after approval",
+			map[string]any{"approval_id": a.ID, "request_id": c.ev.RequestID, "amount": a.Amount.String(), "expires_at": a.ExpiresAt.UTC().Format(time.RFC3339)})
+		c.finish(StatusApprovalRequired)
+		return
+	}
 	c.writeJSON(http.StatusAccepted, map[string]any{"status": "approval_required", "approval_id": a.ID, "request_id": c.ev.RequestID,
 		"amount": a.Amount.String(), "expires_at": a.ExpiresAt.UTC().Format(time.RFC3339),
 		"message": "a human must approve this request; replay it with the same Idempotency-Key after approval"})
@@ -271,18 +277,27 @@ func (s *Server) WatchKills(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			ids := s.Registry.AgentIDs()
-			if len(ids) == 0 {
-				continue
+			if ids := s.Registry.AgentIDs(); len(ids) > 0 {
+				dead, err := s.Agents.NotActive(ctx, ids)
+				if err != nil {
+					s.Log.Warn("kill watch", "err", err)
+				}
+				for _, id := range dead {
+					if n := s.Registry.Cancel(id); n > 0 {
+						s.Log.Info("kill switch", "agent", id, "cancelled", n)
+					}
+				}
 			}
-			dead, err := s.Agents.NotActive(ctx, ids)
-			if err != nil {
-				s.Log.Warn("kill watch", "err", err)
-				continue
-			}
-			for _, id := range dead {
-				if n := s.Registry.Cancel(id); n > 0 {
-					s.Log.Info("kill switch", "agent", id, "cancelled", n)
+			// Kill by run (I12): same poll, same cancel, keyed by run id.
+			if ids := s.RunRegistry.AgentIDs(); len(ids) > 0 {
+				dead, err := s.Runs.NotActive(ctx, ids)
+				if err != nil {
+					s.Log.Warn("run kill watch", "err", err)
+				}
+				for _, id := range dead {
+					if n := s.RunRegistry.Cancel(id); n > 0 {
+						s.Log.Info("kill switch", "run", id, "cancelled", n)
+					}
 				}
 			}
 		}
@@ -305,7 +320,13 @@ func (s *Server) Kill(ctx context.Context, ref string) error {
 // cancel it. Cancelling the upstream context, not the client's, lets the
 // handler go on to settle what was actually received (I8, I12).
 func (c *call) trackInFlight(cancel context.CancelFunc) (remove func()) {
-	return c.s.Registry.Add(c.agent.ID, func() { c.killed.Store(true); cancel() })
+	f := func() { c.killed.Store(true); cancel() }
+	rmAgent := c.s.Registry.Add(c.agent.ID, f)
+	if c.runID == "" {
+		return rmAgent
+	}
+	rmRun := c.s.RunRegistry.Add(c.runID, f)
+	return func() { rmAgent(); rmRun() }
 }
 
 var errKilled = errors.New("agent killed")

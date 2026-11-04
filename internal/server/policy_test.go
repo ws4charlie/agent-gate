@@ -792,7 +792,7 @@ func TestReconcilerClosesBudgetCharge(t *testing.T) {
 	if before < est {
 		t.Fatalf("charge not counted: %d", before)
 	}
-	rep, err := server.Reconcile(ctx, e.led, noLookup{}, e.audit, e.srv.Agents, time.Now().Add(time.Hour))
+	rep, err := server.Reconcile(ctx, e.pool, e.led, noLookup{}, e.audit, e.srv.Agents, time.Now().Add(time.Hour))
 	if err != nil || rep.Released != 1 {
 		t.Fatalf("%+v %v", rep, err)
 	}

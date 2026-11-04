@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "tools": {
+      "url": "http://127.0.0.1:3001/mcp",
+      "auth_env": "TOOLS_MCP_AUTH",
+      "default_price_nanos": 0,
+      "prices": { "search": 2000000 }
+    }
+  },
+  "allowed_origins": []
+}
