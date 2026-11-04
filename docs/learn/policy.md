@@ -35,7 +35,7 @@ WHERE $4 = 0 OR budget_windows.spent_nanos + $3 <= $4  -- the row is only change
 RETURNING spent_nanos
 ```
 
-No row returned means "does not fit". Daily and task windows run in one transaction, so a refusal changes nothing. Velocity sums many rows, which a row-level condition cannot guard, so that insert runs under a per-agent advisory lock in the same transaction. The window keys are `day:2026-11-03` (UTC) and `task:<X-AgentGate-Task>`; a request without the header counts as the task `default`, so omitting it cannot dodge a task budget.
+No row returned means "does not fit". Daily and task windows run in one transaction, so a refusal changes nothing. Velocity sums many rows, which a row-level condition cannot guard, so that insert runs under a per-agent advisory lock in the same transaction. The window keys are `day:2026-11-03` (UTC) and `task:<X-AgentGate-Task>`; a request without the header counts as the task `default`, so omitting the header does not escape the budget. But the caller chooses the header value, and a new value per call opens a fresh window: **the task budget limits a cooperative client, not a hostile agent.** The hard limits against a hostile agent are the daily budget and velocity.
 
 `Evaluate` reads a snapshot that may be stale; `Charge` is what enforces. A request that loses the race after its hold exists releases the hold and is refused with the rule that ran out ([`call.charge`](../../internal/server/policy.go)).
 
@@ -87,7 +87,7 @@ Life of an entry: `pending` → `approved` → `consumed`, or `denied`, or `expi
 2. **If the engine already read the budget, why does `Charge` exist?** The read can be stale under concurrency. Only the conditional upsert guarantees N parallel requests cannot exceed the window.
 3. **A request breaks the scope and the budget. Which rule id is reported?** `scope_*`: scope is rule 2, budget rule 3, and the first rule that fires decides.
 4. **How does the daily window return to real spend?** `CloseCharge` replaces the estimate with the settled amount (0 for a release) once per hold, from the handler or the reconciler.
-5. **Why does a missing `X-AgentGate-Task` count as task `default`?** Otherwise omitting the header would escape the task budget.
+5. **Why does a missing `X-AgentGate-Task` count as task `default`, and is the task budget a hard limit?** Otherwise omitting the header would skip the budget. It is not a hard limit: the caller picks the header, so a new value per call starts a fresh window. It limits a cooperative client; only the daily budget and velocity bind a hostile agent.
 6. **What stops an approval from being used for a bigger request?** The fingerprint stored with the approval: any change to model, tool, payee, amount, network, task or body gives 422 and does not spend it.
 7. **Two replays of one approval arrive together. What happens?** `Consume` is `UPDATE ... WHERE status='approved'`; one gets a row, the other gets 409.
 8. **Does approval skip the budget?** No. It lifts only rule 5; the replay is evaluated and charged again.
