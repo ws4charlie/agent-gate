@@ -1,0 +1,80 @@
+[
+ {
+  "id": "budget-daily-single-call",
+  "category": "over-budget",
+  "description": "One call whose worst case ($0.23) exceeds a $0.10 daily budget.",
+  "setup": {
+   "models": [
+    "fake/chat"
+   ],
+   "daily": 0.1
+  },
+  "steps": [
+   {
+    "op": "chat",
+    "model": "fake/chat"
+   }
+  ],
+  "expected": "deny",
+  "rule": "budget_daily"
+ },
+ {
+  "id": "budget-daily-burn",
+  "category": "over-budget",
+  "description": "Six calls against $0.30 a day; the budget runs out.",
+  "setup": {
+   "models": [
+    "fake/chat"
+   ],
+   "daily": 0.3
+  },
+  "steps": [
+   {
+    "op": "chat",
+    "model": "fake/chat",
+    "repeat": 6
+   }
+  ],
+  "expected": "deny",
+  "rule": "budget_daily"
+ },
+ {
+  "id": "budget-task-single-call",
+  "category": "over-budget",
+  "description": "One call over a $0.10 task budget. The task id is chosen by the caller (not a hard limit).",
+  "setup": {
+   "models": [
+    "fake/chat"
+   ],
+   "task": 0.1
+  },
+  "steps": [
+   {
+    "op": "chat",
+    "model": "fake/chat",
+    "task": "job-1"
+   }
+  ],
+  "expected": "deny",
+  "rule": "budget_task"
+ },
+ {
+  "id": "budget-daily-priced-tool",
+  "category": "over-budget",
+  "description": "A $0.005 tool against a $0.004 daily budget.",
+  "setup": {
+   "tools": [
+    "up/paid"
+   ],
+   "daily": 0.004
+  },
+  "steps": [
+   {
+    "op": "tool",
+    "tool": "paid"
+   }
+  ],
+  "expected": "deny",
+  "rule": "budget_daily"
+ }
+]

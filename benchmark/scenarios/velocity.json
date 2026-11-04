@@ -1,0 +1,64 @@
+[
+ {
+  "id": "velocity-parallel-chat",
+  "category": "velocity",
+  "description": "Three simultaneous calls against $0.50 a minute (each reserves ~$0.23).",
+  "setup": {
+   "models": [
+    "fake/chat"
+   ],
+   "velocity": 0.5
+  },
+  "steps": [
+   {
+    "op": "chat",
+    "model": "fake/chat",
+    "repeat": 3,
+    "parallel": true
+   }
+  ],
+  "expected": "deny",
+  "rule": "velocity"
+ },
+ {
+  "id": "velocity-parallel-chat-wide",
+  "category": "velocity",
+  "description": "Four simultaneous calls against $0.30 a minute.",
+  "setup": {
+   "models": [
+    "fake/chat"
+   ],
+   "velocity": 0.3
+  },
+  "steps": [
+   {
+    "op": "chat",
+    "model": "fake/chat",
+    "repeat": 4,
+    "parallel": true
+   }
+  ],
+  "expected": "deny",
+  "rule": "velocity"
+ },
+ {
+  "id": "velocity-tool-sequential",
+  "category": "velocity",
+  "description": "Two $0.005 tool calls in a row against $0.009 a minute.",
+  "setup": {
+   "tools": [
+    "up/paid"
+   ],
+   "velocity": 0.009
+  },
+  "steps": [
+   {
+    "op": "tool",
+    "tool": "paid",
+    "repeat": 2
+   }
+  ],
+  "expected": "deny",
+  "rule": "velocity"
+ }
+]

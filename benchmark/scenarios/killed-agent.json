@@ -1,0 +1,96 @@
+[
+ {
+  "id": "killed-chat",
+  "category": "killed-agent",
+  "description": "A killed agent's next model call.",
+  "setup": {
+   "models": [
+    "fake/chat"
+   ]
+  },
+  "steps": [
+   {
+    "op": "kill"
+   },
+   {
+    "op": "chat",
+    "model": "fake/chat"
+   }
+  ],
+  "expected": "deny",
+  "rule": "agent_killed"
+ },
+ {
+  "id": "killed-tool",
+  "category": "killed-agent",
+  "description": "A killed agent's next tool call.",
+  "setup": {
+   "tools": [
+    "up/echo"
+   ]
+  },
+  "steps": [
+   {
+    "op": "kill"
+   },
+   {
+    "op": "tool",
+    "tool": "echo"
+   }
+  ],
+  "expected": "deny",
+  "rule": "agent_killed"
+ },
+ {
+  "id": "killed-payment",
+  "category": "killed-agent",
+  "description": "A killed agent's next payment.",
+  "setup": {
+   "tools": [
+    "echo"
+   ],
+   "payees": [
+    "@payee"
+   ]
+  },
+  "steps": [
+   {
+    "op": "kill"
+   },
+   {
+    "op": "pay",
+    "tool": "echo"
+   }
+  ],
+  "expected": "deny",
+  "rule": "agent_killed"
+ },
+ {
+  "id": "killed-run",
+  "category": "killed-agent",
+  "description": "A killed run: its next request is refused.",
+  "setup": {
+   "tools": [
+    "up/echo"
+   ]
+  },
+  "steps": [
+   {
+    "op": "tool",
+    "tool": "echo",
+    "run": "bench-run-kill"
+   },
+   {
+    "op": "kill_run",
+    "run": "bench-run-kill"
+   },
+   {
+    "op": "tool",
+    "tool": "echo",
+    "run": "bench-run-kill"
+   }
+  ],
+  "expected": "deny",
+  "rule": "run_killed"
+ }
+]

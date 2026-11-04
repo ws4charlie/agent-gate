@@ -1,0 +1,222 @@
+[
+ {
+  "id": "allow-chat-basic",
+  "category": "allow",
+  "description": "A plain call inside the scope.",
+  "setup": {
+   "models": [
+    "fake/chat"
+   ]
+  },
+  "steps": [
+   {
+    "op": "chat",
+    "model": "fake/chat"
+   }
+  ],
+  "expected": "allow",
+  "rule": "allow"
+ },
+ {
+  "id": "allow-model-prefix",
+  "category": "allow",
+  "description": "A trailing * matches a prefix.",
+  "setup": {
+   "models": [
+    "fake/*"
+   ]
+  },
+  "steps": [
+   {
+    "op": "chat",
+    "model": "fake/chat-big"
+   }
+  ],
+  "expected": "allow",
+  "rule": "allow"
+ },
+ {
+  "id": "allow-under-daily",
+  "category": "allow",
+  "description": "Three calls well inside a $1 daily budget.",
+  "setup": {
+   "models": [
+    "fake/chat"
+   ],
+   "daily": 1.0
+  },
+  "steps": [
+   {
+    "op": "chat",
+    "model": "fake/chat",
+    "repeat": 3
+   }
+  ],
+  "expected": "allow",
+  "rule": "allow"
+ },
+ {
+  "id": "allow-new-task-new-window",
+  "category": "allow",
+  "description": "The task budget is keyed by a header the caller chooses: after task t1 is exhausted, a new task value gets a fresh window. It limits a cooperative client, not a hostile one.",
+  "setup": {
+   "models": [
+    "fake/chat"
+   ],
+   "task": 0.3
+  },
+  "steps": [
+   {
+    "op": "chat",
+    "model": "fake/chat",
+    "task": "t1",
+    "repeat": 6
+   },
+   {
+    "op": "chat",
+    "model": "fake/chat",
+    "task": "t2"
+   }
+  ],
+  "expected": "allow",
+  "rule": "allow"
+ },
+ {
+  "id": "allow-free-tool",
+  "category": "allow",
+  "description": "A free tool in the allowlist.",
+  "setup": {
+   "tools": [
+    "up/echo"
+   ]
+  },
+  "steps": [
+   {
+    "op": "tool",
+    "tool": "echo"
+   }
+  ],
+  "expected": "allow",
+  "rule": "allow"
+ },
+ {
+  "id": "allow-priced-tool",
+  "category": "allow",
+  "description": "A priced tool ($0.005) inside a $1 budget.",
+  "setup": {
+   "tools": [
+    "up/paid"
+   ],
+   "daily": 1.0
+  },
+  "steps": [
+   {
+    "op": "tool",
+    "tool": "paid"
+   }
+  ],
+  "expected": "allow",
+  "rule": "allow"
+ },
+ {
+  "id": "allow-tool-glob",
+  "category": "allow",
+  "description": "up/* allows every tool of one server.",
+  "setup": {
+   "tools": [
+    "up/*"
+   ]
+  },
+  "steps": [
+   {
+    "op": "tool",
+    "tool": "echo"
+   }
+  ],
+  "expected": "allow",
+  "rule": "allow"
+ },
+ {
+  "id": "allow-tool-with-run",
+  "category": "allow",
+  "description": "A tool call that names a run.",
+  "setup": {
+   "tools": [
+    "up/echo"
+   ]
+  },
+  "steps": [
+   {
+    "op": "tool",
+    "tool": "echo",
+    "run": "bench-run-ok"
+   }
+  ],
+  "expected": "allow",
+  "rule": "allow"
+ },
+ {
+  "id": "allow-payment-in-policy",
+  "category": "allow",
+  "description": "A $0.01 payment to the listed payee, inside the daily budget.",
+  "setup": {
+   "tools": [
+    "echo"
+   ],
+   "payees": [
+    "@payee"
+   ],
+   "daily": 0.3
+  },
+  "steps": [
+   {
+    "op": "pay",
+    "tool": "echo"
+   }
+  ],
+  "expected": "allow",
+  "rule": "allow"
+ },
+ {
+  "id": "allow-approved-replay",
+  "category": "allow",
+  "description": "Over the approval threshold, a human approves, and the same request replayed with the same Idempotency-Key runs.",
+  "setup": {
+   "models": [
+    "fake/chat"
+   ],
+   "approval_over": 0.1
+  },
+  "steps": [
+   {
+    "op": "chat",
+    "model": "fake/chat",
+    "idem": "big-1"
+   },
+   {
+    "op": "approve"
+   },
+   {
+    "op": "chat",
+    "model": "fake/chat",
+    "idem": "big-1"
+   }
+  ],
+  "expected": "allow",
+  "rule": "allow"
+ },
+ {
+  "id": "allow-benign-tool-output",
+  "category": "allow",
+  "description": "A benign tool result passes the output screen.",
+  "setup": {},
+  "steps": [
+   {
+    "op": "screen",
+    "file": "benign/01.txt"
+   }
+  ],
+  "expected": "allow",
+  "rule": "allow"
+ }
+]

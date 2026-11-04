@@ -32,3 +32,61 @@ jobs:
         run: go vet ./...
       - name: test
         run: go test -race -count=1 ./...
+
+  # The policy benchmark: scored scenarios against the assembled gateway on fakes.
+  # Exits non-zero on any mismatch. It rewrites the README table and results.md, and the
+  # last step fails if the committed copies differ, so the numbers in the README are always current.
+  benchmark:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: run the benchmark
+        run: go run ./benchmark -readme README.md
+      - name: results.md and the README table are committed
+        run: git diff --exit-code -- README.md benchmark/results.md
+
+  # The Python SDK against a real gateway built from this commit (Go binaries, fakes, simulated chain).
+  sdk-python:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AG_REQUIRE_DB: "1"
+      DATABASE_URL: postgres://postgres@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: install the SDK and pytest
+        run: pip install "./sdk/python[test]"
+      - name: pytest
+        run: python -m pytest sdk/python/tests -q
