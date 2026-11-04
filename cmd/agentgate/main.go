@@ -48,6 +48,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = approveCmd(ctx, args[1:], stdout)
 	case "kill":
 		err = killCmd(ctx, args[1:], stdout)
+	case "run":
+		err = runCmd(ctx, args[1:], stdout)
 	case "wallet":
 		err = walletCmd(args[1:], stdout)
 	case "paidtool":
@@ -78,6 +80,7 @@ commands:
   agent       create | list | revoke: scoped credentials (models, tools, payees, budgets)
   approve     list | allow ID | deny ID: the approval queue
   kill        --agent X [--resume]: the kill switch
+  run         list | show ID | kill ID: runs (X-AgentGate-Run): steps, spend, kill as a unit
   report      --since 24h --by model|account
   reconcile   close expired holds once
   prices      sync: refresh configs/prices.json from OpenRouter

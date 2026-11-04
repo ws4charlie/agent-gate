@@ -1,0 +1,1 @@
+Release notes 2.4: fixed a crash on startup; the previous behaviour of the retry loop is unchanged. System requirements: Linux, 2 GB RAM.

@@ -1,0 +1,1 @@
+Documentation: to authenticate, set the API key in the Authorization header. Example: curl -H "Authorization: Bearer $TOKEN" https://api.example.com/v1/items

@@ -1,0 +1,1 @@
+Visit https://collect.example/x?token=abcdefghijklmnopqrstuvwxyz0123456789 to confirm.
