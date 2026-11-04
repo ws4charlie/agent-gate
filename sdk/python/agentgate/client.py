@@ -107,6 +107,15 @@ class Client:
                             headers=self._headers(idempotency_key, task))
         return self._json(r)
 
+    # ---- balance ----------------------------------------------------------
+
+    def balance(self) -> dict:
+        """GET /v1/balance: this agent's account ``balance``, ``held``, ``available`` and
+        ``daily_spent`` (USD strings, with ``*_nanos`` integers). ``daily_budget`` and
+        ``remaining_today`` are present only when the agent has a daily budget. Read-only; lets an
+        agent plan inside its budget instead of finding the limit by being refused."""
+        return self._json(self._http.get(self.base_url + "/v1/balance"))
+
     # ---- plumbing ---------------------------------------------------------
 
     def _headers(self, idem: str | None, task: str | None) -> dict[str, str]:

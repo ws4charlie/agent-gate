@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"os"
 	"strconv"
@@ -33,9 +34,19 @@ const (
 // ErrRefusedChain: the wallet only signs for Base Sepolia or the local simulated chain.
 var ErrRefusedChain = errors.New("wallet: refusing to start, chain id must be 84532 (Base Sepolia) or 1337 (local simulated chain)")
 
+// DefaultMaxTx is the wallet's own per-transaction cap, in Nanos ($1.00).
+// It is deliberately independent of policy (I10, defence in depth): if the
+// policy engine or its store were wrong, wrongly bypassed or replaced, the
+// signer still refuses a single payment above this number.
+const DefaultMaxTx = money.Nanos(1_000_000_000)
+
+// ErrOverTxCap: the payment is above the wallet's own per-transaction cap.
+var ErrOverTxCap = errors.New("wallet: amount is above the wallet's per-transaction cap")
+
 type Wallet struct {
 	key     *ecdsa.PrivateKey
 	chainID uint64
+	maxTx   money.Nanos
 	signs   atomic.Int64 // test hook for I10: how many signatures were produced
 	now     func() time.Time
 }
@@ -49,7 +60,27 @@ func New(key *ecdsa.PrivateKey, chainID uint64) (*Wallet, error) {
 	if key == nil {
 		return nil, errors.New("wallet: no key")
 	}
-	return &Wallet{key: key, chainID: chainID, now: time.Now}, nil
+	return &Wallet{key: key, chainID: chainID, maxTx: DefaultMaxTx, now: time.Now}, nil
+}
+
+// SetMaxTx sets the per-transaction cap. A value <= 0 is ignored: the cap
+// cannot be switched off, only moved.
+func (w *Wallet) SetMaxTx(n money.Nanos) {
+	if n > 0 {
+		w.maxTx = n
+	}
+}
+
+// MaxTx is the per-transaction cap.
+func (w *Wallet) MaxTx() money.Nanos { return w.maxTx }
+
+// The key must never reach a log line, a %v, a JSON body or a panic message.
+// Wallet holds it in an unexported field and these methods make the common
+// formatting paths print only the address.
+func (w *Wallet) String() string   { return "wallet(" + w.Address().Hex() + ")" }
+func (w *Wallet) GoString() string { return w.String() }
+func (w *Wallet) LogValue() slog.Value {
+	return slog.StringValue(w.String())
 }
 
 // SetClock is for tests.
@@ -107,6 +138,11 @@ func (w *Wallet) Prepare(ctx context.Context, allowed policy.Allowed, holdID str
 	// Last check, so a Prepare that failed above does not burn the approval:
 	// spend it, tied to this hold. A second Prepare with the same Allowed, or
 	// with another hold id, stops here (I10).
+	// Second, independent cap (I10): checked before the approval is spent, and
+	// on the wallet's own number, not on anything policy decided.
+	if n, _ := x402.NanosFromAtomic(amt); n > w.maxTx {
+		return nil, fmt.Errorf("%w (%s > %s)", ErrOverTxCap, n, w.maxTx)
+	}
 	if err := allowed.Use(holdID); err != nil {
 		return nil, fmt.Errorf("wallet: %w", err)
 	}

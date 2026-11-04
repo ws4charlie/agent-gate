@@ -4,5 +4,6 @@
     "echo": "http://127.0.0.1:9402/echo",
     "premium": "http://127.0.0.1:9402/premium"
   },
-  "chain_query_url": "http://127.0.0.1:9402"
+  "chain_query_url": "http://127.0.0.1:9402",
+  "max_tx_usd": "1"
 }

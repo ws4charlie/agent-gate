@@ -18,6 +18,7 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/approval"
 	"github.com/ws4charlie/agent-gate/internal/audit"
 	"github.com/ws4charlie/agent-gate/internal/ledger"
+	"github.com/ws4charlie/agent-gate/internal/money"
 	"github.com/ws4charlie/agent-gate/internal/policy"
 	"github.com/ws4charlie/agent-gate/internal/provider"
 	"github.com/ws4charlie/agent-gate/internal/run"
@@ -33,17 +34,18 @@ const (
 	StatusUnknownTool       = "unknown_tool"
 )
 
-// Payments wires the payments route. Nil Server.Payments disables it.
+// Payments wires the wallet into the gateway. Nil Server.Payments turns off
+// both POST /v1/payments and the MCP 402 path.
 //
-// Why POST /v1/payments and not a tool-call path: the MCP tool gateway is T5.
-// Until then a payment is its own verb with its own audit kind, and T5 can
-// call the same function from tools/call.
-//
-// Who may pay whom is not here any more: the payee allowlist and the budgets
-// are part of each agent's scope (internal/agents), checked by policy.Evaluate.
+// Two doors, one path: POST /v1/payments pays a named paid tool, and an MCP
+// tools/call that gets HTTP 402 is paid the same way (payChallenge). Who may
+// pay whom is not decided here: the payee allowlist, budgets and approval
+// threshold are part of each agent's scope (internal/agents), checked by
+// policy.Evaluate. Tools maps names to URLs for the first door only: clients
+// name tools, they never supply URLs (no SSRF).
 type Payments struct {
 	Wallet  *wallet.Wallet
-	Tools   map[string]string // tool name -> URL. Clients name tools; they never supply URLs (no SSRF).
+	Tools   map[string]string // tool name -> URL, for POST /v1/payments
 	Fetcher x402.Fetcher
 }
 
@@ -132,7 +134,46 @@ func (c *call) pay() {
 		c.fail(http.StatusBadGateway, StatusPaymentFailed, "bad_payment_requirements", "paid tool sent unusable requirements", nil)
 		return
 	}
-	amount := atomic
+	c.payChallenge(payTarget{
+		Tool: in.Tool, PolicyTool: in.Tool, Input: input, Ch: ch, Req: req, Amount: atomic,
+		Send: func(ctx context.Context, pl x402.PaymentPayload) (*http.Response, error) {
+			return p.Fetcher.Pay(ctx, http.MethodPost, url, input, pl)
+		},
+		OK: func(out []byte, _ string, sr x402.SettleResponse, charged money.Nanos) {
+			var result json.RawMessage = out
+			if !json.Valid(out) {
+				result, _ = json.Marshal(string(out))
+			}
+			c.writeJSON(http.StatusOK, map[string]any{"request_id": c.ev.RequestID, "tool": in.Tool, "charged": charged.String(),
+				"transaction": sr.Transaction, "network": sr.Network, "result": result})
+			c.finish(audit.StatusOK)
+		},
+	})
+}
+
+// payTarget is what differs between paying for a tool through POST
+// /v1/payments and paying for an MCP tool that answered 402: where the paid
+// retry goes and how a success is shown. Everything between (idempotency,
+// approval, hold, policy, wallet, settlement) is one code path (I10, I11).
+type payTarget struct {
+	Tool       string // audit name
+	PolicyTool string // the name the agent's tool scope matches
+	Input      []byte // part of the approval fingerprint
+	Ch         *x402.Challenge
+	Req        x402.Requirements
+	Amount     money.Nanos
+	Send       func(ctx context.Context, p x402.PaymentPayload) (*http.Response, error)
+	// OK writes the success response. ctype is the paid response's Content-Type.
+	OK func(out []byte, ctype string, sr x402.SettleResponse, charged money.Nanos)
+}
+
+// payChallenge: idempotency -> approval -> reserve -> policy -> prepare+record
+// -> sign -> paid retry -> settle ledger. It always ends the request.
+func (c *call) payChallenge(t payTarget) {
+	s, p := c.s, c.s.Payments
+	in := struct{ Tool string }{t.Tool}
+	agent, acct := c.agent, c.agent.AccountID
+	req, amount, ch, input := t.Req, t.Amount, t.Ch, t.Input
 	c.ev.Cost = 0
 
 	// 2. Idempotency key, task, and any approval already queued for this request.
@@ -193,7 +234,7 @@ func (c *call) pay() {
 	c.ext.HoldID = hold.ID
 
 	// 4. Screen before sign (I10). A refusal never reaches the wallet.
-	preq := policy.Request{AgentID: agent.ID, Kind: policy.KindPayment, Tool: in.Tool, Payee: req.PayTo, Network: req.Network,
+	preq := policy.Request{AgentID: agent.ID, Kind: policy.KindPayment, Tool: t.PolicyTool, Payee: req.PayTo, Network: req.Network,
 		Amount: amount, TaskID: task, HoldID: hold.ID, Approved: approved}
 	d, ok := c.evaluate(preq, approvalID)
 	if !ok {
@@ -244,79 +285,67 @@ func (c *call) pay() {
 	pctx, pcancel := context.WithTimeout(context.WithoutCancel(c.ctx), time.Duration(req.MaxTimeoutSeconds)*time.Second+30*time.Second)
 	defer pcancel()
 
-	resp, err := p.Fetcher.Pay(pctx, http.MethodPost, url, input, payload)
+	resp, err := t.Send(pctx, payload)
 	if err != nil {
 		c.unknown("transport_error", "")
 		return
 	}
 	defer resp.Body.Close()
-	out, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	out, _ := io.ReadAll(io.LimitReader(resp.Body, maxMCPBody))
 	var sr x402.SettleResponse
 	hasSettle := x402.DecodeHeader(resp.Header.Get(x402.HeaderResponse), &sr) == nil
 
-	// Only a definite "no" releases the hold:
-	//   - the tool answered 402 from verification (no signature was accepted, nothing was sent), or
-	//   - the settlement reported a revert / rejected send (ReasonTxState).
-	// Everything else (5xx, unparsable, unexpected_settle_error, pending) may
-	// hide a transfer that happened, so the hold stays and the chain decides.
-	definiteNo := (resp.StatusCode == http.StatusPaymentRequired && !hasSettle && resp.Header.Get(x402.HeaderRequired) != "") ||
-		(hasSettle && !sr.Success && sr.ErrorReason == x402.ReasonTxState)
-
-	switch {
-	case resp.StatusCode == http.StatusOK && hasSettle && sr.Success:
-		c.ev.Usage.UpstreamID = sr.Transaction
-		st, err := s.Ledger.Settle(pctx, ledger.SettleReq{HoldID: hold.ID, Actual: amount,
-			IdemKey: "settle:" + hold.ID, Memo: "payment " + in.Tool + " tx " + sr.Transaction})
-		switch {
-		case errors.Is(err, ledger.ErrHoldNotActive):
-			// The reconciler got there first and read the same chain fact.
-			c.ev.Cost, c.ev.CostSource, c.ev.Err = amount, "chain", "settled_by_reconciler"
-		case err != nil:
-			// Money moved on chain but the ledger write failed. The hold stays,
-			// and the reconciler settles it from the chain.
-			s.Log.Error("settle ledger after chain settle", "request_id", c.ev.RequestID, "tx", sr.Transaction, "err", err)
-			c.unknown("ledger_settle_failed_after_chain", sr.Transaction)
-			return
-		default:
-			c.closeCharge(hold.ID, st.Charged)
-			c.ev.Cost, c.ev.CostSource = st.Charged, "chain"
-		}
-		var result json.RawMessage = out
-		if !json.Valid(out) {
-			result, _ = json.Marshal(string(out))
-		}
-		c.writeJSON(http.StatusOK, map[string]any{"request_id": c.ev.RequestID, "tool": in.Tool, "charged": c.ev.Cost.String(),
-			"transaction": sr.Transaction, "network": sr.Network, "result": result})
-		c.finish(audit.StatusOK)
-	case definiteNo:
-		c.release(hold, "payment failed")
-		reason := sr.ErrorReason
-		if reason == "" {
-			reason = "payment_rejected"
-		}
-		c.ev.Err = reason
-		c.writeJSON(http.StatusBadGateway, map[string]any{"error": map[string]any{"type": "payment_failed", "code": reason,
-			"message": "payment was not settled; nothing was charged", "request_id": c.ev.RequestID}})
-		c.finish(StatusPaymentFailed)
-	default:
+	// A signature exists, so from here only the chain can say "no" (I11).
+	// The tool's own word that nothing moved (a 402, a revert report, a 5xx) is
+	// NOT enough to release: the tool still holds a signed authorization and
+	// could submit it until validBefore. So the only exit that charges is a
+	// success the tool reported AND that the ledger could record; every other
+	// exit keeps the hold active, answers 202, and leaves the release to
+	// x402.AuthLookup, which asks the chain once the window has closed.
+	if resp.StatusCode != http.StatusOK || !hasSettle || !sr.Success {
 		reason := sr.ErrorReason
 		if reason == "" {
 			reason = "http_" + strconv.Itoa(resp.StatusCode)
 		}
 		c.unknown(reason, sr.Transaction)
+		return
 	}
+	c.ev.Usage.UpstreamID = sr.Transaction
+	st, err := s.Ledger.Settle(pctx, ledger.SettleReq{HoldID: hold.ID, Actual: amount,
+		IdemKey: "settle:" + hold.ID, Memo: "payment " + t.Tool + " tx " + sr.Transaction})
+	switch {
+	case errors.Is(err, ledger.ErrHoldNotActive):
+		// The reconciler got there first and read the same chain fact.
+		c.ev.Cost, c.ev.CostSource, c.ev.Err = amount, "chain", "settled_by_reconciler"
+	case err != nil:
+		// Money moved on chain but the ledger write failed. The hold stays,
+		// and the reconciler settles it from the chain.
+		s.Log.Error("settle ledger after chain settle", "request_id", c.ev.RequestID, "tx", sr.Transaction, "err", err)
+		c.unknown("ledger_settle_failed_after_chain", sr.Transaction)
+		return
+	default:
+		c.closeCharge(hold.ID, st.Charged)
+		c.ev.Cost, c.ev.CostSource = st.Charged, "chain"
+	}
+	t.OK(out, resp.Header.Get("Content-Type"), sr, c.ev.Cost)
 }
 
 // unknown is the "signed, outcome not known" exit: the hold and the policy
 // budget stay as they are, the client gets 202, and the reconciler decides
-// from the chain once the authorization window has closed. Trade-off: a tool
-// failure before settlement lands here too, so that money is held until the
-// window closes (about a minute plus the reconciler's margin) instead of
-// being returned at once.
+// from the chain once the authorization window has closed. Trade-off: every
+// failure after signing lands here, so that money is held until the window
+// closes (about a minute plus the reconciler's margin) instead of being
+// returned at once. That is the price of not trusting the tool (I11).
 func (c *call) unknown(reason, tx string) {
 	c.ev.Err = reason
 	if tx != "" {
 		c.ev.Usage.UpstreamID = tx
+	}
+	if c.rpc {
+		c.writeRPCError(http.StatusAccepted, "settlement_pending", "the payment may have settled; the ledger will resolve it from the chain",
+			map[string]any{"request_id": c.ev.RequestID, "reason": reason})
+		c.finish(StatusSettlementPending)
+		return
 	}
 	c.writeJSON(http.StatusAccepted, map[string]any{"request_id": c.ev.RequestID, "status": "settlement_pending", "reason": reason,
 		"message": "the payment may have settled; the ledger will resolve it from the chain"})

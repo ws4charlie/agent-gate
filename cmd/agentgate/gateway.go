@@ -29,6 +29,7 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/screen"
 	"github.com/ws4charlie/agent-gate/internal/server"
 	"github.com/ws4charlie/agent-gate/internal/telemetry"
+	"github.com/ws4charlie/agent-gate/internal/wallet"
 )
 
 // common holds the flags every database-backed command shares.
@@ -258,7 +259,8 @@ func keyCmd(ctx context.Context, args []string, stdout io.Writer) error {
 func report(ctx context.Context, args []string, stdout io.Writer) error {
 	c := newCommon("report")
 	since := c.fs.String("since", "24h", "duration (24h, 7d) or RFC 3339 time")
-	by := c.fs.String("by", "model", "model or account")
+	by := c.fs.String("by", "model", "model, account or agent (agent: model spend and tool payments side by side, reconciled with the chain)")
+	paymentsPath := c.fs.String("payments", os.Getenv("AG_PAYMENTS"), "payments config JSON: with --by agent, also compares payment holds with the chain")
 	_, pool, err := c.open(ctx, args)
 	if err != nil {
 		return err
@@ -267,6 +269,34 @@ func report(ctx context.Context, args []string, stdout io.Writer) error {
 	from, err := parseSince(*since, time.Now())
 	if err != nil {
 		return err
+	}
+	if *by == "agent" {
+		lines, err := audit.ReportByAgent(ctx, pool, from)
+		if err != nil {
+			return err
+		}
+		audit.PrintAgents(stdout, lines)
+		if *paymentsPath == "" {
+			fmt.Fprintln(stdout, "\nchain reconciliation: skipped (no --payments config)")
+			return nil
+		}
+		pf, err := readPaymentsFile(*paymentsPath)
+		if err != nil {
+			return err
+		}
+		reader, err := chainReader(ctx, pf)
+		if err != nil {
+			return err
+		}
+		rep, err := wallet.ReconcileChain(ctx, pool, reader, from)
+		if err != nil {
+			return err
+		}
+		rep.Print(stdout)
+		if len(rep.Findings) > 0 {
+			return fmt.Errorf("report: %d ledger/chain mismatches", len(rep.Findings))
+		}
+		return nil
 	}
 	var priceOf func(string) (pricing.Price, bool)
 	if pc, err := provider.LoadConfig(*c.providers); err == nil {

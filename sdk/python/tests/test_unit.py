@@ -70,3 +70,19 @@ def test_run_is_scoped_to_the_block():
         c.chat("m", [])
     c.chat("m", [])
     assert heads == ["r9", None]
+
+
+def test_balance_is_a_read_only_get_with_the_key():
+    seen = {}
+
+    def handler(r):
+        seen["m"], seen["p"], seen["auth"] = r.method, r.url.path, r.headers["authorization"]
+        return httpx.Response(200, json={"balance": "9.99", "available": "9.99", "daily_spent": "0.01"})
+    b = client(handler).balance()
+    assert (seen["m"], seen["p"], seen["auth"]) == ("GET", "/v1/balance", "Bearer ag_key")
+    assert b["balance"] == "9.99"
+
+
+def test_balance_refused_raises():
+    with pytest.raises(AgentGateError):
+        client(lambda r: httpx.Response(401, json={"error": {"code": "unauthorized", "message": "m"}})).balance()

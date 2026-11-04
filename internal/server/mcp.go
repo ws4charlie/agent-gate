@@ -23,6 +23,8 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/policy"
 	"github.com/ws4charlie/agent-gate/internal/run"
 	"github.com/ws4charlie/agent-gate/internal/screen"
+	"github.com/ws4charlie/agent-gate/internal/wallet"
+	"github.com/ws4charlie/agent-gate/internal/x402"
 )
 
 // Audit statuses written by the MCP route.
@@ -184,7 +186,7 @@ func (c *call) mcp(name string) {
 // upstream sends one POST to the upstream MCP server. The client's own
 // Authorization is never forwarded; the server's credential comes from the
 // environment (I9). The mirrored protocol headers and any Mcp-Param-* pass on.
-func (c *call) upstream(ctx context.Context, srv mcp.Server, body []byte) (*http.Response, error) {
+func (c *call) upstream(ctx context.Context, srv mcp.Server, body []byte, extra ...[2]string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -201,6 +203,9 @@ func (c *call) upstream(ctx context.Context, srv mcp.Server, body []byte) (*http
 	// client-chosen id must not steer another client's upstream state.
 	if name, val := srv.Credential(c.s.Getenv); name != "" && val != "" {
 		req.Header.Set(name, val)
+	}
+	for _, h := range extra { // only the x402 payment header today
+		req.Header.Set(h[0], h[1])
 	}
 	return c.s.Client.Do(req)
 }
@@ -463,6 +468,9 @@ func (c *call) toolCall(server string, srv mcp.Server, req mcp.Request, body []b
 	defer resp.Body.Close()
 	upSpan.SetAttributes(attribute.Int("http.status", resp.StatusCode))
 	upSpan.End()
+	if resp.StatusCode == http.StatusPaymentRequired && !held && c.s.Payments != nil && c.payMCP(server, srv, p.Name, body, resp) {
+		return // paid (or refused before signing); the request is answered
+	}
 	if resp.StatusCode/100 != 2 {
 		// The upstream's error body is not relayed: it is text from outside,
 		// and the gateway answers with its own error.
@@ -700,4 +708,59 @@ func (c *call) settleTool(hold ledger.Hold, held bool, tool string, price money.
 		c.ev.Err = "unrecovered_overage"
 	}
 	c.finish(status)
+}
+
+// payMCP handles a free-priced tool that answered HTTP 402 with an x402
+// challenge: the same payment path as POST /v1/payments (agent identity,
+// policy, approval queue, kill switch, wallet cap), then one retry of the very
+// same tools/call with the payment header. It is still the one run step that
+// beginRun opened, and the one audit row, now of kind payment.
+//
+// It returns false when the 402 is not a challenge this gateway can answer
+// (no usable PAYMENT-REQUIRED header); the caller then treats it as an
+// upstream error. Challenge text from the tool is data: only its payee,
+// amount and network are used, and policy decides on exactly those.
+func (c *call) payMCP(server string, srv mcp.Server, name string, body []byte, resp *http.Response) bool {
+	ch, err := x402.ChallengeFrom(resp)
+	if err != nil {
+		return false
+	}
+	req, err := ch.Pick()
+	atomic, ok := wallet.Nanos(parseBig(req.Amount))
+	if err != nil || !ok || atomic <= 0 {
+		return false
+	}
+	tool := server + "/" + name
+	c.ev.Kind = "payment"
+	var params struct {
+		Params json.RawMessage `json:"params"`
+	}
+	_ = json.Unmarshal(body, &params)
+	c.payChallenge(payTarget{
+		Tool: tool, PolicyTool: tool, Input: params.Params, Ch: ch, Req: req, Amount: atomic,
+		Send: func(ctx context.Context, pl x402.PaymentPayload) (*http.Response, error) {
+			h, err := x402.EncodeHeader(pl)
+			if err != nil {
+				return nil, err
+			}
+			return c.upstream(ctx, srv, body, [2]string{x402.HeaderSignature, h})
+		},
+		OK: func(out []byte, ctype string, _ x402.SettleResponse, _ money.Nanos) {
+			msg := out
+			if strings.HasPrefix(ctype, "text/event-stream") {
+				fake := &http.Response{Header: http.Header{"Content-Type": {ctype}}, Body: io.NopCloser(bytes.NewReader(out))}
+				if m, err := finalMessage(fake, c.rpcID); err == nil {
+					msg = m
+				}
+			}
+			// Paid already; the result is still untrusted text and is screened like any other.
+			if v, _ := c.screenMessage(server, name, msg); v.Blocked {
+				c.blocked(server, name, v, ledger.Hold{}, false, 0)
+				return
+			}
+			c.relayJSON(msg)
+			c.finish(audit.StatusOK)
+		},
+	})
+	return true
 }

@@ -1,10 +1,64 @@
 # AgentGate
 
-A custody-grade gateway for AI agents: every model call and every payment is authorized, metered, limited and auditable.
+A custody-grade gateway for AI agents: every model call, tool call and payment is authorized, metered, limited and auditable.
 
-## Status
+## Thesis
 
-Early work. Foundations, the Postgres ledger, the gateway (OpenAI-compatible and native Anthropic endpoints, streaming, audit, report), x402 payments on a simulated chain, the policy engine (scoped agent credentials, budgets, velocity limits, an approval queue, a kill switch), the MCP tool gateway with tool-output screening and runs, a thin Python SDK, and a scored policy benchmark that runs in CI. The later layers land in further pull requests.
+An agent that can spend money is closer to a bank client than to an API user. A bare key with a budget is not enough: the thing holding it can be hijacked by text in a tool result. So AgentGate treats an agent as a **scoped identity** in front of a **ledger**, and puts one decision point, `policy.Evaluate`, in front of everything that costs money: model calls, MCP tool calls and on-chain payments. The two rules that carry the design:
+
+- **Reserve before you spend.** Every cost is held in an append-only ledger first (one conditional `UPDATE`, so parallel requests cannot overspend), then settled to the real amount or released. Retries, crashes and races leave the books balanced, and a function recomputes that from the append-only entries.
+- **Screen before you sign.** The wallet's signing path takes a value only the policy package can construct, so a refused payment never reaches the key, and the wallet adds its own cap as an independent second check.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    AG[agent / Claude Code / Python SDK] -->|Bearer ag_...| GW[gateway]
+    GW --> ID[agent identity + scope]
+    ID --> PE{policy.Evaluate}
+    PE -->|deny| REF[refuse + audit]
+    PE -->|needs a human| AQ[approval queue]
+    AQ -->|approve, replay| PE
+    PE -->|allow| LG[(ledger: hold)]
+    LG --> M[model providers<br/>OpenAI-compatible / Anthropic]
+    LG --> T[MCP tool gateway + output screen]
+    LG --> W[wallet: cap, sign]
+    T -.402.-> W
+    W --> X[x402 paid tool] --> CH[(chain: Base Sepolia / simulated)]
+    M --> ST[settle]
+    T --> ST
+    X --> ST
+    ST --> LG
+    GW -.every request.-> AU[(audit log + runs)]
+    RC[reconciler] -.closes dead holds, asks the chain.-> LG
+    KS[kill switch] -.cancels in flight.-> GW
+```
+
+## Phase status
+
+| Phase | What | State |
+|---|---|---|
+| 1 | Credits ledger, OpenAI-compatible and native Anthropic gateway, streaming, audit, report | built; offline tests; one small live smoke |
+| 1.5 | x402 payments with screen-before-sign, on a simulated chain | built; offline tests |
+| 2 | Policy engine, approval queue, kill switch, MCP tool gateway, output screening, runs | built; offline tests |
+| 3 | Python SDK, 45-scenario policy benchmark in CI, full wallet behind the policy engine, tool payments through MCP, side-by-side report, balance route | built; offline tests; the Base Sepolia run is written but **not run** |
+| 4 | Not started | backlog |
+
+## Measured numbers
+
+Every number below says where it came from. Nothing here was measured on real traffic.
+
+| What | Value | Source |
+|---|---|---|
+| Gateway overhead, concurrency 1 | about 2 ms first byte, 4 ms total (p50) | **offline**, fake upstream, `go run ./bench` ([details](#latency-overhead)) |
+| Policy benchmark | 45 of 45 scripted scenarios as expected | **offline**, `go run ./benchmark`, checked in CI ([details](#benchmark)) |
+| Output screen | 0 missed of 22 malicious, 0 false positives of 13 benign samples; 6 known evasions listed separately | **offline**, a corpus written together with the rules: not a security claim ([details](#screening-tool-output)) |
+| Cost accuracy | ledger charge matched OpenRouter's `total_cost` on 2 of 2 generations checked | **live**, OpenRouter, 8 requests on 2026-11-03 ([details](#live-smoke)) |
+| Payments on Base Sepolia | not run | **live**, pending |
+
+### Dogfooding results
+
+> **Placeholder, to be filled by a human with real data.** No dogfooding has been run, so there are no numbers here: no request counts, no spend, no cache hit rate, no latency from real traffic, no policy refusals. When data exists it goes in this section, labelled live.
 
 ## Build and test
 
@@ -92,7 +146,7 @@ At concurrency 1 the gateway adds about 2 ms (first byte) to 4 ms (total) at p50
 
 ## Payments
 
-An agent can pay for a paid tool call through the public [x402](https://github.com/coinbase/x402) flow (v2, `exact` scheme, EIP-3009 `transferWithAuthorization`), hand-written here with go-ethereum and no x402 SDK. The rule that matters is **screen before sign**: the wallet's only signing path takes a `policy.Allowed`, a value only package `policy` can construct, so a refused payment never reaches the key and never reaches the chain (I10). The EIP-3009 nonce is derived from the ledger hold id, so a retried payment cannot settle twice on chain (I11).
+An agent can pay for a paid tool call, through `POST /v1/payments` or by calling an MCP tool that answers HTTP 402, through the public [x402](https://github.com/coinbase/x402) flow (v2, `exact` scheme, EIP-3009 `transferWithAuthorization`), hand-written here with go-ethereum and no x402 SDK. The rule that matters is **screen before sign**: the wallet's only signing path takes a `policy.Allowed`, a value only package `policy` can construct, so a refused payment never reaches the key and never reaches the chain (I10). The EIP-3009 nonce is derived from the ledger hold id, so a retried payment cannot settle twice on chain (I11).
 
 ```mermaid
 sequenceDiagram
@@ -103,7 +157,7 @@ sequenceDiagram
     participant W as wallet (key)
     participant T as paid tool + x402 server
     participant C as chain
-    A->>G: POST /v1/payments {tool, input} + agent credential
+    A->>G: POST /v1/payments {tool, input}, or MCP tools/call, + agent credential
     G->>T: request, unpaid
     T-->>G: 402 + PAYMENT-REQUIRED (amount, payTo, asset)
     G->>L: Reserve(kind payment)
@@ -125,24 +179,42 @@ sequenceDiagram
         T-->>G: 200 + PAYMENT-RESPONSE + tool result
         G->>L: Settle (hold + settle rows)
         G-->>A: 200 result + tx hash
+        Note over G,T: any other answer after signing (402, revert, 5xx):<br/>the hold stays, 202, the reconciler asks the chain
     end
 ```
 
 Run it offline, with a simulated EVM chain inside the paid-tool process:
 
 ```bash
-demo/phase15.sh
+demo/phase15.sh     # POST /v1/payments: one payment settles, one is refused before signing
+demo/phase3.sh      # MCP tool payments, approval path, side-by-side report reconciled with the chain
 ```
 
-It makes two payments: a $0.01 call that settles on the simulated chain and is charged in the ledger, and a $0.50 call that is over the agent's $0.30 budget and is refused before signing. It prints the ledger rows (hold, settle; hold, release) and the audit rows.
+`phase15.sh` makes a $0.01 payment that settles and a $0.50 one that is over the agent's $0.30 budget and is refused before signing. `phase3.sh` has an agent call paid MCP tools: the tool answers 402, policy allows, the wallet signs, the same call is retried, and the agent sees one result (one run step, one audit row). Then an over-policy payment is refused before signing, an over-threshold one is queued, approved and paid once, and `agentgate report --by agent` prints model spend and tool payments side by side.
+
+### Tool payments through MCP
+
+An MCP `tools/call` whose upstream answers `402` with a `PAYMENT-REQUIRED` header (and which has no list price in config) takes the same path as `/v1/payments`: idempotency claim, approval queue, a hold of kind `payment`, `policy.Evaluate` on payee, amount and network, the wallet, then one retry of the same call with `PAYMENT-SIGNATURE`. The paid result is screened like any tool output. A refusal before signing is a JSON-RPC error; the settlement-pending answer is a JSON-RPC error with code `settlement_pending`.
+
+### Side-by-side report
+
+```bash
+agentgate report --since 24h --by agent --payments payments.json
+```
+
+One row per agent: model requests and USD, priced tool calls, payment requests and USD, payments still pending, total. With `--payments` it also compares each payment hold with the chain through the authorization recorded on the hold: a settled hold whose authorization never executed (`ledger_without_transfer`), or an authorization that executed while the hold is released or open (`transfer_without_ledger`), is a finding and the command exits non-zero. Offline it reads the simulated chain; live it reads `AG_RPC_URL`. It starts from the ledger's holds, so a transfer made with the wallet key outside the gateway is not seen.
+
+### Balance
+
+`GET /v1/balance` (agent credential) returns the account's `balance`, `held`, `available`, the agent's `daily_spent` and, when it has a daily budget, `daily_budget` and `remaining_today`. It is read-only and shows nothing of any other agent.
 
 What this is and is not:
 
 - The offline run uses a mock token with Circle USDC's EIP-3009 interface, so it proves the protocol logic, not Base Sepolia behaviour.
 - A run on Base Sepolia (`demo/phase15.sh --network base-sepolia`, needing an RPC URL, a gas-funded facilitator key and a USDC-funded wallet from the environment) is built but **separate and not part of the offline demo or CI**. The USDC address used there is Circle's [documented](https://developers.circle.com/stablecoins/usdc-contract-addresses) Base Sepolia one.
-- The wallet refuses to start for any chain id except 84532 and the local simulated chain. `agentgate wallet new` writes a testnet key to a gitignored `0600` file and prints only the address.
-- After signing, the chain is the source of truth. The authorization is recorded on the ledger hold before it is signed. A definite refusal (verification failed, or the transaction reverted) releases the hold. Any other outcome (lost connection, tool 5xx, a ledger failure after the transfer) leaves the hold for the reconciler, which asks the token contract: used, so it settles the authorized amount; unused with the window still open, so it waits; unused with the window closed, so it releases. A failed tool call therefore returns money after about three minutes, not at once.
-- Who may pay whom is part of the agent's scope: its tool and payee allowlists, its daily and per-task budgets, its velocity limit and approval threshold (see [Policy](#policy)). The payments config file only lists tools and the network (`demo/payments.example.json`).
+- The wallet refuses to start for any chain id except 84532 and the local simulated chain, enforces its own per-transaction cap ($1 by default, `max_tx_usd`; it cannot be switched off) after and independent of policy, and prints as its address only. `agentgate wallet new` writes a testnet key to a gitignored `0600` file and prints only the address.
+- After signing, the chain is the source of truth, and the tool's word is not. The authorization is recorded on the ledger hold before it is signed. A tool that answers 402 or reports a revert after receiving the signature still holds a signed authorization and could submit it until `validBefore`, so no post-signature "no" releases the hold. Only a reported success settles; every other outcome (402, revert report, lost connection, 5xx, a ledger failure after the transfer) leaves the hold for the reconciler, which asks the token contract: used, so it settles the authorized amount; unused with the window still open, so it waits; unused with the window closed, so it releases. A failed tool call therefore returns money after about three minutes, not at once. A test has a tool report failure and then submit the authorization: the ledger charges once.
+- Who may pay whom is part of the agent's scope: its tool and payee allowlists, its daily and per-task budgets, its velocity limit and approval threshold (see [Policy](#policy)). The payments config file lists tools, the network and the wallet cap (`demo/payments.example.json`).
 
 ## Policy
 
@@ -193,7 +265,7 @@ agentgate kill --agent researcher           # and --resume to undo; `agent revok
 - **Approvals are exact.** An approval pins the request (kind, model or tool, payee, amount, network, task, body); replaying the same `Idempotency-Key` with anything different is refused (422), the replay runs once (a second is 409), and an unused approval expires (default 15 minutes) and releases its hold. An approval lifts the approval threshold only: a budget or scope that no longer fits still refuses it. The approver's name is recorded.
 - **No self-approval.** There is no HTTP route that approves, changes an agent or kills one. The CLI needs direct database access, which an agent credential never has.
 - **T2 API keys keep working.** A migration turns every existing key into an agent with the default scope (any model, any tool, no limits, no payees), so existing clients are unaffected and cannot pay until a payee is listed.
-- **Single gateway process.** The kill switch registry and the velocity window are simple because there is one process; the CLI kills through the database and the gateway notices within 250 ms.
+- **Single gateway process.** The registry of in-flight calls is in process; the velocity window is in Postgres. The CLI kills through the database and the gateway notices within 250 ms.
 
 Offline demo (burn a budget, trip velocity, queue and approve a request, refuse an out-of-scope model, kill a stream mid-flight): `demo/phase2-policy.sh`. Study guide: [docs/learn/policy.md](docs/learn/policy.md).
 
@@ -261,11 +333,12 @@ with Client("http://127.0.0.1:8080", key) as c, c.run() as run_id:          # on
     for chunk in c.chat_stream("fake/chat", messages): ...                  # SSE chunks, parsed
     c.tool_call("up", "echo", {"text": "hi"})                               # MCP tools/call (2026-07-28 fields and headers added for you)
     c.pay("echo", {"text": "hi"})                                           # x402 payment through the gateway
+    c.balance()["remaining_today"]                                          # what this agent may still spend today
 ```
 
 - **Errors come from the rule id, not the HTTP status.** `BudgetExceeded` (`budget_daily`, `budget_task`), `VelocityLimited`, `ScopeDenied` (`scope_model`, `scope_tool`, `scope_payee`), `Killed` (`agent_killed`, `agent_revoked`, `run_killed`), `Duplicate`, `ScreenedOutput` (a tool result the screen blocked). Every one carries `.rule`, `.status` and `.request_id`; anything else is `AgentGateError`.
 - **A 202 is never success.** `ApprovalRequired(id)` means a human must approve (replay the same request with the same `idempotency_key` afterwards). `SettlementPending` means a payment may have settled and the gateway will resolve it from the chain: do not retry with a new key.
-- **No `balance()`.** The gateway has no HTTP route for balances (the CLI reads the database), and the SDK does not invent one.
+- **`balance()`** calls `GET /v1/balance`: balance, held, available and today's spend, with the remaining daily budget when there is one, so an agent can plan inside its budget instead of finding the limit by being refused.
 - **Tests** (`pytest`, in CI) run the SDK against a real gateway built from the same commit, with fakes and a simulated chain: `cd sdk/python && AG_REQUIRE_DB=1 DATABASE_URL=... pytest`.
 - **Demo agents** in [demo/agents](demo/agents) are scripts on the SDK, with no LLM: `runaway.py`, `paying.py`, `injected.py`.
 
@@ -298,6 +371,8 @@ The five-minute demo, offline (burn a budget, trip velocity, queue an over-limit
 Plus 6 known screen evasions listed as expected misses, outside these counts. Full table: [benchmark/results.md](benchmark/results.md).
 <!-- benchmark:end -->
 
+**The 100% is for 45 scripted scenarios** written alongside the rules they exercise. It shows the rules do what they say; it is not a measure of how the gateway fares against an adversary who has not read them. The 6 known evasions above are real misses, kept visible on purpose.
+
 - **Allow cases are there so refusing everything fails.** A gateway that denies all traffic scores 100% deny recall and 0% allow recall.
 - **Injection rows are honest.** The screen's rules are scored on a corpus written together with them, so a clean score is not a security claim. The six samples in `internal/screen/testdata/evasions` are known misses; `results.md` lists them as expected misses, outside the counts, and the run fails if one starts being caught (so it moves into the scored set).
 - **The task budget is not a hard limit.** The caller chooses `X-AgentGate-Task`; scenario `allow-new-task-new-window` shows a fresh value getting a fresh window. Only the daily budget and velocity bind a hostile agent.
@@ -306,6 +381,34 @@ Plus 6 known screen evasions listed as expected misses, outside these counts. Fu
 ## Security and threat model
 
 The gateway's job is to keep a provider key and an account's money out of reach of the thing calling it: provider keys live only in the gateway's environment and are never logged, put in a span, or relayed (the client never sees upstream headers: only an allowlist is copied back); client credentials are 256-bit random secrets stored only as SHA-256; a request can spend only what its account holds, because the budget check is one atomic `UPDATE` in Postgres, not application code; prompts and responses are not stored unless an operator turns that on, and then bearer tokens and `sk-` patterns are redacted. It does not defend against a compromised gateway host (which holds the provider key and the database), a malicious operator, or secrets that appear in prompts in forms the redactor does not recognise (redaction is best effort, which is why storage is off by default). Per-agent scopes, budgets, approvals and a kill switch limit what a credential can do (see [Policy](#policy)). Single process, no TLS termination, no request rate limiting: put it behind a reverse proxy on a trusted network.
+
+## What I borrowed and what I did differently
+
+Public gateway designs (LiteLLM, Portkey, Bifrost, OpenRouter) share a shape: an OpenAI-compatible front, virtual keys with budgets, routing by model name, spend logs, and guardrail hooks. This section compares against their public documentation. No code was copied, and everything here was written from scratch.
+
+| Borrowed | Where it came from | What is different here |
+|---|---|---|
+| OpenAI-compatible endpoint, model-prefix routing, per-key budgets | the public gateways | The budget check is one conditional `UPDATE` in Postgres, enforced by `CHECK` constraints, not an application counter. |
+| Spend logs | the public gateways | An append-only audit table plus an append-only ledger that a function can re-audit (I1, I2). |
+| Authorize, then capture or void | card networks | Every cost is a hold with a lease; a dead process's hold is found and closed by a reconciler (I6). |
+| Idempotency keys | payment APIs | A key replay changes nothing and returns the first result; the same key with other parameters is an error (I4). |
+| Generation lookup for real cost | OpenRouter | Used as the usage source when a process died before settling. |
+| HTTP 402 payment flow, `exact` scheme | the x402 spec | Hand-written client and verifier (no SDK), the nonce derived from the hold id, and the wallet signs only behind a policy decision. |
+| `transferWithAuthorization` | EIP-3009 | The chain, not the paid tool, decides whether money moved: the hold waits for the authorization window to close. |
+| Guardrail hooks | the public gateways | Agent identity, not a key, is the unit: scope, approval queue and kill switch are part of the engine and its order is fixed. |
+| MCP tool proxy | the MCP spec | Tool results are screened before the agent sees them; tool calls and payments are steps of the same run. |
+
+Not here: provider fallback, load balancing, a dashboard, multi-tenant management, a plugin system.
+
+## Limits
+
+- **Single gateway process.** Only the registry of in-flight calls (what the kill switch cancels) is in process, so a second gateway would not see a kill for its own streams until its own watcher polled the database. The velocity window is in Postgres under an advisory lock, and the ledger is safe with several processes.
+- **Testnet only.** The wallet refuses every chain but Base Sepolia (84532) and the local simulated one. No mainnet, ever, in this code.
+- **Offline proof is not live proof.** The simulated chain uses a mock token with USDC's EIP-3009 interface. Base Sepolia behaviour (fees, RPC, real USDC) is untested until the live run.
+- **Reorgs** after a receipt are not handled.
+- **Screening is rule-based.** It lowers the odds of cheap attacks; budgets, scope and approval are what hold against a hijacked agent.
+- **Chain reconciliation starts from holds.** A transfer made with the key outside the gateway is not seen.
+- **No dogfooding data yet**, and no real-traffic latency.
 
 ## Learn
 
