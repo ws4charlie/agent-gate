@@ -1,0 +1,54 @@
+[
+ {
+  "id": "scope-tool-unlisted",
+  "category": "out-of-scope-tool",
+  "description": "Tool fail when only echo is listed.",
+  "setup": {
+   "tools": [
+    "up/echo"
+   ]
+  },
+  "steps": [
+   {
+    "op": "tool",
+    "tool": "fail"
+   }
+  ],
+  "expected": "deny",
+  "rule": "scope_tool"
+ },
+ {
+  "id": "scope-tool-empty-allowlist",
+  "category": "out-of-scope-tool",
+  "description": "An empty tool allowlist means nothing.",
+  "setup": {
+   "tools": []
+  },
+  "steps": [
+   {
+    "op": "tool",
+    "tool": "echo"
+   }
+  ],
+  "expected": "deny",
+  "rule": "scope_tool"
+ },
+ {
+  "id": "scope-tool-sibling",
+  "category": "out-of-scope-tool",
+  "description": "A priced sibling of an allowed tool.",
+  "setup": {
+   "tools": [
+    "up/echo"
+   ]
+  },
+  "steps": [
+   {
+    "op": "tool",
+    "tool": "paid"
+   }
+  ],
+  "expected": "deny",
+  "rule": "scope_tool"
+ }
+]

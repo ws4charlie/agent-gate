@@ -1,0 +1,54 @@
+[
+ {
+  "id": "scope-model-unlisted",
+  "category": "out-of-scope-model",
+  "description": "fake/chat-big when only fake/chat is listed (exact match, not a prefix).",
+  "setup": {
+   "models": [
+    "fake/chat"
+   ]
+  },
+  "steps": [
+   {
+    "op": "chat",
+    "model": "fake/chat-big"
+   }
+  ],
+  "expected": "deny",
+  "rule": "scope_model"
+ },
+ {
+  "id": "scope-model-empty-allowlist",
+  "category": "out-of-scope-model",
+  "description": "An empty allowlist means nothing: default deny.",
+  "setup": {
+   "models": []
+  },
+  "steps": [
+   {
+    "op": "chat",
+    "model": "fake/chat"
+   }
+  ],
+  "expected": "deny",
+  "rule": "scope_model"
+ },
+ {
+  "id": "scope-model-other-prefix",
+  "category": "out-of-scope-model",
+  "description": "A prefix rule for another vendor does not match.",
+  "setup": {
+   "models": [
+    "other/*"
+   ]
+  },
+  "steps": [
+   {
+    "op": "chat",
+    "model": "fake/chat"
+   }
+  ],
+  "expected": "deny",
+  "rule": "scope_model"
+ }
+]

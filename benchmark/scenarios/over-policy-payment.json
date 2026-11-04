@@ -1,0 +1,85 @@
+[
+ {
+  "id": "pay-payee-not-listed",
+  "category": "over-policy-payment",
+  "description": "The tool's payee is not on the agent's list.",
+  "setup": {
+   "tools": [
+    "echo"
+   ],
+   "payees": [
+    "@other"
+   ]
+  },
+  "steps": [
+   {
+    "op": "pay",
+    "tool": "echo"
+   }
+  ],
+  "expected": "deny",
+  "rule": "scope_payee"
+ },
+ {
+  "id": "pay-no-payees",
+  "category": "over-policy-payment",
+  "description": "No payees listed: default deny.",
+  "setup": {
+   "tools": [
+    "echo"
+   ],
+   "payees": []
+  },
+  "steps": [
+   {
+    "op": "pay",
+    "tool": "echo"
+   }
+  ],
+  "expected": "deny",
+  "rule": "scope_payee"
+ },
+ {
+  "id": "pay-over-daily-budget",
+  "category": "over-policy-payment",
+  "description": "A $0.50 payment against a $0.30 daily budget.",
+  "setup": {
+   "tools": [
+    "premium"
+   ],
+   "payees": [
+    "@payee"
+   ],
+   "daily": 0.3
+  },
+  "steps": [
+   {
+    "op": "pay",
+    "tool": "premium"
+   }
+  ],
+  "expected": "deny",
+  "rule": "budget_daily"
+ },
+ {
+  "id": "pay-tool-not-in-scope",
+  "category": "over-policy-payment",
+  "description": "Paying for premium when only echo is allowed.",
+  "setup": {
+   "tools": [
+    "echo"
+   ],
+   "payees": [
+    "@payee"
+   ]
+  },
+  "steps": [
+   {
+    "op": "pay",
+    "tool": "premium"
+   }
+  ],
+  "expected": "deny",
+  "rule": "scope_tool"
+ }
+]

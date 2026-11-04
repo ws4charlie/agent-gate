@@ -1,0 +1,65 @@
+[
+ {
+  "id": "approval-pay-echo",
+  "category": "over-threshold-payment",
+  "description": "A $0.01 payment over a $0.005 threshold waits for a human; nothing is signed.",
+  "setup": {
+   "tools": [
+    "echo"
+   ],
+   "payees": [
+    "@payee"
+   ],
+   "approval_over": 0.005
+  },
+  "steps": [
+   {
+    "op": "pay",
+    "tool": "echo"
+   }
+  ],
+  "expected": "approval",
+  "rule": "approval_threshold"
+ },
+ {
+  "id": "approval-pay-premium",
+  "category": "over-threshold-payment",
+  "description": "A $0.50 payment over a $0.10 threshold.",
+  "setup": {
+   "tools": [
+    "premium"
+   ],
+   "payees": [
+    "@payee"
+   ],
+   "approval_over": 0.1
+  },
+  "steps": [
+   {
+    "op": "pay",
+    "tool": "premium"
+   }
+  ],
+  "expected": "approval",
+  "rule": "approval_threshold"
+ },
+ {
+  "id": "approval-chat",
+  "category": "over-threshold-payment",
+  "description": "A model call whose worst case is over the threshold.",
+  "setup": {
+   "models": [
+    "fake/chat"
+   ],
+   "approval_over": 0.1
+  },
+  "steps": [
+   {
+    "op": "chat",
+    "model": "fake/chat"
+   }
+  ],
+  "expected": "approval",
+  "rule": "approval_threshold"
+ }
+]

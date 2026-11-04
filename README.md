@@ -4,7 +4,7 @@ A custody-grade gateway for AI agents: every model call and every payment is aut
 
 ## Status
 
-Early work. Foundations, the Postgres ledger, the gateway (OpenAI-compatible and native Anthropic endpoints, streaming, audit, report), x402 payments on a simulated chain, the policy engine (scoped agent credentials, budgets, velocity limits, an approval queue, a kill switch), and the MCP tool gateway with tool-output screening and runs. The later layers land in further pull requests.
+Early work. Foundations, the Postgres ledger, the gateway (OpenAI-compatible and native Anthropic endpoints, streaming, audit, report), x402 payments on a simulated chain, the policy engine (scoped agent credentials, budgets, velocity limits, an approval queue, a kill switch), the MCP tool gateway with tool-output screening and runs, a thin Python SDK, and a scored policy benchmark that runs in CI. The later layers land in further pull requests.
 
 ## Build and test
 
@@ -249,6 +249,60 @@ The spend of a run is summed from `ledger_entries` through the hold of each step
 
 Offline demo (list, call a free and a priced tool, refuse an out-of-scope one, block an injected result, show a run, kill it mid-call): `demo/phase2-mcp.sh --offline`. Without `--offline` it uses `npx @modelcontextprotocol/server-everything` as the upstream. Study guide: [docs/learn/mcp-runs.md](docs/learn/mcp-runs.md).
 
+## SDK
+
+A thin Python client, `sdk/python` (package `agentgate`, Python 3.11+, one dependency: `httpx`, about 250 lines). It is synchronous, has no retry layer, and sends what the gateway requires so an agent does not have to know it.
+
+```python
+from agentgate import Client, BudgetExceeded, ApprovalRequired, SettlementPending
+
+with Client("http://127.0.0.1:8080", key) as c, c.run() as run_id:          # one run id for every call in the block
+    c.chat("fake/chat", [{"role": "user", "content": "hi"}])                # OpenAI-compatible
+    for chunk in c.chat_stream("fake/chat", messages): ...                  # SSE chunks, parsed
+    c.tool_call("up", "echo", {"text": "hi"})                               # MCP tools/call (2026-07-28 fields and headers added for you)
+    c.pay("echo", {"text": "hi"})                                           # x402 payment through the gateway
+```
+
+- **Errors come from the rule id, not the HTTP status.** `BudgetExceeded` (`budget_daily`, `budget_task`), `VelocityLimited`, `ScopeDenied` (`scope_model`, `scope_tool`, `scope_payee`), `Killed` (`agent_killed`, `agent_revoked`, `run_killed`), `Duplicate`, `ScreenedOutput` (a tool result the screen blocked). Every one carries `.rule`, `.status` and `.request_id`; anything else is `AgentGateError`.
+- **A 202 is never success.** `ApprovalRequired(id)` means a human must approve (replay the same request with the same `idempotency_key` afterwards). `SettlementPending` means a payment may have settled and the gateway will resolve it from the chain: do not retry with a new key.
+- **No `balance()`.** The gateway has no HTTP route for balances (the CLI reads the database), and the SDK does not invent one.
+- **Tests** (`pytest`, in CI) run the SDK against a real gateway built from the same commit, with fakes and a simulated chain: `cd sdk/python && AG_REQUIRE_DB=1 DATABASE_URL=... pytest`.
+- **Demo agents** in [demo/agents](demo/agents) are scripts on the SDK, with no LLM: `runaway.py`, `paying.py`, `injected.py`.
+
+The five-minute demo, offline (burn a budget, trip velocity, queue an over-limit payment and approve it, kill a stream mid-run, refuse an out-of-scope tool): `demo/demo.sh`. It needs Python 3.11+ with httpx (`AG_PYTHON` names the interpreter; `pip install ./sdk/python` provides httpx). Study guide: [docs/learn/sdk-benchmark.md](docs/learn/sdk-benchmark.md).
+
+## Benchmark
+
+`go run ./benchmark` boots the whole gateway in process on fakes (a fake model upstream, a fake MCP server, a simulated chain, a throwaway Postgres database) and plays every scenario in [benchmark/scenarios](benchmark/scenarios). A scenario is `{id, category, setup, steps, expected: allow|deny|approval, rule}`: the setup is the agent's scope, the steps are played in order, and `expected` and `rule` describe the last step. It passes only when both the verdict and the rule id match. The run exits non-zero on any mismatch and writes [benchmark/results.md](benchmark/results.md); CI regenerates this table and fails if it is stale.
+
+<!-- benchmark:start -->
+| category | scenarios | as expected |
+|---|---|---|
+| allow | 11 | 11 |
+| injection | 6 | 6 |
+| killed-agent | 4 | 4 |
+| out-of-scope-model | 3 | 3 |
+| out-of-scope-tool | 3 | 3 |
+| over-budget | 4 | 4 |
+| over-policy-payment | 4 | 4 |
+| over-threshold-payment | 3 | 3 |
+| revoked-credential | 4 | 4 |
+| velocity | 3 | 3 |
+
+| class | precision | recall |
+|---|---|---|
+| allow | 100.0% (11/11) | 100.0% (11/11) |
+| deny | 100.0% (31/31) | 100.0% (31/31) |
+| approval | 100.0% (3/3) | 100.0% (3/3) |
+
+Plus 6 known screen evasions listed as expected misses, outside these counts. Full table: [benchmark/results.md](benchmark/results.md).
+<!-- benchmark:end -->
+
+- **Allow cases are there so refusing everything fails.** A gateway that denies all traffic scores 100% deny recall and 0% allow recall.
+- **Injection rows are honest.** The screen's rules are scored on a corpus written together with them, so a clean score is not a security claim. The six samples in `internal/screen/testdata/evasions` are known misses; `results.md` lists them as expected misses, outside the counts, and the run fails if one starts being caught (so it moves into the scored set).
+- **The task budget is not a hard limit.** The caller chooses `X-AgentGate-Task`; scenario `allow-new-task-new-window` shows a fresh value getting a fresh window. Only the daily budget and velocity bind a hostile agent.
+- **Mutation check.** Disabling one rule (velocity) makes three scenarios fail and the run exit 1; this is how we know the benchmark can fail.
+
 ## Security and threat model
 
 The gateway's job is to keep a provider key and an account's money out of reach of the thing calling it: provider keys live only in the gateway's environment and are never logged, put in a span, or relayed (the client never sees upstream headers: only an allowlist is copied back); client credentials are 256-bit random secrets stored only as SHA-256; a request can spend only what its account holds, because the budget check is one atomic `UPDATE` in Postgres, not application code; prompts and responses are not stored unless an operator turns that on, and then bearer tokens and `sk-` patterns are redacted. It does not defend against a compromised gateway host (which holds the provider key and the database), a malicious operator, or secrets that appear in prompts in forms the redactor does not recognise (redaction is best effort, which is why storage is off by default). Per-agent scopes, budgets, approvals and a kill switch limit what a credential can do (see [Policy](#policy)). Single process, no TLS termination, no request rate limiting: put it behind a reverse proxy on a trusted network.
@@ -261,6 +315,7 @@ The gateway's job is to keep a provider key and an account's money out of reach 
 - [Payments](docs/learn/payments.md)
 - [Policy](docs/learn/policy.md)
 - [MCP gateway and runs](docs/learn/mcp-runs.md)
+- [SDK, benchmark and demo](docs/learn/sdk-benchmark.md)
 
 ## License
 

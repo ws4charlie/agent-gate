@@ -1,0 +1,329 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ws4charlie/agent-gate/internal/db"
+	"github.com/ws4charlie/agent-gate/internal/screen"
+)
+
+type result struct {
+	S     Scenario
+	Got   Outcome
+	Err   error
+	Match bool
+}
+
+var classes = []string{"allow", "deny", "approval"}
+
+func run(root, out, readme string) (failed int, err error) {
+	scenarios, err := loadScenarios(root)
+	if err != nil {
+		return 0, err
+	}
+	ctx := context.Background()
+	url := os.Getenv("DATABASE_URL")
+	if url == "" {
+		return 0, fmt.Errorf("set DATABASE_URL (a Postgres the benchmark may create a database on)")
+	}
+	pool, cleanup, err := tempDB(ctx, url)
+	if err != nil {
+		return 0, err
+	}
+	defer cleanup()
+	r, err := newRig(ctx, pool, root)
+	if err != nil {
+		return 0, err
+	}
+	defer r.Close()
+
+	var results []result
+	for _, s := range scenarios {
+		res := result{S: s}
+		a, err := r.newAgent(ctx, s.Setup)
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", s.ID, err)
+		}
+		for i, st := range s.Steps {
+			o, err := r.play(ctx, a, st)
+			if err != nil {
+				res.Err = fmt.Errorf("step %d (%s): %w", i+1, st.Op, err)
+				break
+			}
+			res.Got = o
+		}
+		res.Match = res.Err == nil && res.Got.Verdict == s.Expected && res.Got.Rule == s.Rule
+		if !res.Match {
+			failed++
+			fmt.Fprintf(os.Stderr, "MISMATCH %-28s want %s/%s, got %s/%s %v\n", s.ID, s.Expected, s.Rule, res.Got.Verdict, res.Got.Rule, res.Err)
+		}
+		results = append(results, res)
+	}
+	// The gateway's own books must still balance after all that traffic (I1, I2).
+	if err := r.led.Audit(ctx); err != nil {
+		return 0, fmt.Errorf("ledger audit after the run: %w", err)
+	}
+	misses, err := evasions(root)
+	if err != nil {
+		return 0, err
+	}
+	for _, m := range misses {
+		if m.Caught {
+			failed++
+			fmt.Fprintf(os.Stderr, "EVASION now caught: %s by %s; move it to the malicious corpus and the scenarios\n", m.File, m.Rule)
+		}
+	}
+	md := render(results, misses)
+	fmt.Print(summary(results))
+	if out != "" {
+		if err := os.WriteFile(filepath.Join(root, out), []byte(md), 0o644); err != nil {
+			return 0, err
+		}
+	}
+	if readme != "" {
+		if err := patchReadme(filepath.Join(root, readme), readmeTable(results, misses)); err != nil {
+			return 0, err
+		}
+	}
+	return failed, nil
+}
+
+// ---- known evasions ----
+
+type evasion struct {
+	File   string
+	Caught bool
+	Rule   string
+}
+
+// evasions plays the committed known-evasion samples through the screen. They
+// are inputs the rules are known to miss; reporting them keeps the headline
+// number honest. They are NOT in the pass/fail count: a miss is the expected
+// result, and a sample that is suddenly caught fails the run so it is moved to
+// the scored corpus.
+func evasions(root string) ([]evasion, error) {
+	fs, err := filepath.Glob(filepath.Join(root, "internal", "screen", "testdata", "evasions", "*.txt"))
+	if err != nil || len(fs) == 0 {
+		return nil, fmt.Errorf("no evasion samples found: %v", err)
+	}
+	sort.Strings(fs)
+	var out []evasion
+	for _, f := range fs {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return nil, err
+		}
+		v := (&screen.Screener{}).Screen(context.Background(), screen.ToolResult{Texts: []string{string(b)}})
+		out = append(out, evasion{File: filepath.Base(f), Caught: v.Blocked, Rule: v.Rule})
+	}
+	return out, nil
+}
+
+// ---- numbers ----
+
+type stats struct{ tp, fp, fn int }
+
+func (s stats) precision() string { return ratio(s.tp, s.tp+s.fp) }
+func (s stats) recall() string    { return ratio(s.tp, s.tp+s.fn) }
+
+func ratio(n, d int) string {
+	if d == 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.1f%% (%d/%d)", 100*float64(n)/float64(d), n, d)
+}
+
+// confusion counts by the verdict class only (the rule id is checked separately by Match).
+func confusion(rs []result) (m map[string]map[string]int, st map[string]stats) {
+	m = map[string]map[string]int{}
+	st = map[string]stats{}
+	for _, c := range classes {
+		m[c] = map[string]int{}
+	}
+	for _, r := range rs {
+		got := r.Got.Verdict
+		if r.Err != nil || got == "" {
+			got = "error"
+		}
+		m[r.S.Expected][got]++
+		for _, c := range classes {
+			s := st[c]
+			switch {
+			case r.S.Expected == c && got == c:
+				s.tp++
+			case r.S.Expected != c && got == c:
+				s.fp++
+			case r.S.Expected == c && got != c:
+				s.fn++
+			}
+			st[c] = s
+		}
+	}
+	return
+}
+
+func summary(rs []result) string {
+	pass := 0
+	for _, r := range rs {
+		if r.Match {
+			pass++
+		}
+	}
+	_, st := confusion(rs)
+	var b strings.Builder
+	fmt.Fprintf(&b, "benchmark: %d/%d scenarios as expected\n", pass, len(rs))
+	for _, c := range classes {
+		fmt.Fprintf(&b, "  %-9s precision %s  recall %s\n", c, st[c].precision(), st[c].recall())
+	}
+	return b.String()
+}
+
+func render(rs []result, misses []evasion) string {
+	var b strings.Builder
+	pass := 0
+	for _, r := range rs {
+		if r.Match {
+			pass++
+		}
+	}
+	m, st := confusion(rs)
+	fmt.Fprintf(&b, "# Policy benchmark results\n\nGenerated by `go run ./benchmark`; do not edit. %d scenarios, %d as expected, %d not.\n\n", len(rs), pass, len(rs)-pass)
+	b.WriteString("A scenario passes when its last step gets the expected verdict **and** the expected rule id. Everything ran offline against fakes: a fake model upstream, a fake MCP server, a simulated chain.\n\n")
+	b.WriteString("## Precision and recall\n\n| class | precision | recall |\n|---|---|---|\n")
+	for _, c := range classes {
+		fmt.Fprintf(&b, "| %s | %s | %s |\n", c, st[c].precision(), st[c].recall())
+	}
+	b.WriteString("\nPrecision of `deny`: of the requests refused, how many should have been. Recall of `deny`: of the requests that should be refused, how many were. A gateway that refuses everything has deny recall 100% and allow recall 0%.\n\n")
+	b.WriteString("## Confusion matrix (rows: expected, columns: got)\n\n| expected \\ got | allow | deny | approval | other |\n|---|---|---|---|---|\n")
+	for _, c := range classes {
+		other := 0
+		for k, v := range m[c] {
+			if k != "allow" && k != "deny" && k != "approval" {
+				other += v
+			}
+		}
+		fmt.Fprintf(&b, "| %s | %d | %d | %d | %d |\n", c, m[c]["allow"], m[c]["deny"], m[c]["approval"], other)
+	}
+	b.WriteString("\n## By category\n\n" + categoryTable(rs))
+	b.WriteString("\n## Scenarios\n\n| id | category | expected | rule | got | result |\n|---|---|---|---|---|---|\n")
+	for _, r := range rs {
+		got := r.Got.Verdict + "/" + r.Got.Rule
+		if r.Err != nil {
+			got = "error: " + r.Err.Error()
+		}
+		fmt.Fprintf(&b, "| %s | %s | %s | `%s` | %s | %s |\n", r.S.ID, r.S.Category, r.S.Expected, r.S.Rule, got, map[bool]string{true: "pass", false: "**FAIL**"}[r.Match])
+	}
+	b.WriteString("\n## Known misses (not in the count above)\n\nSamples in `internal/screen/testdata/evasions` that the rule-based output screen is known **not** to catch. A miss is the expected result here; it is reported so the pass rate is not read as a security claim. If a sample starts being caught, the run fails until it is moved into the scored scenarios.\n\n")
+	b.WriteString("| sample | screen verdict | expected |\n|---|---|---|\n")
+	for _, e := range misses {
+		v := "passed through (missed)"
+		if e.Caught {
+			v = "**now caught by " + e.Rule + "**"
+		}
+		fmt.Fprintf(&b, "| %s | %s | missed |\n", e.File, v)
+	}
+	b.WriteString("\n## Notes\n\n- The per-task budget (`budget_task`) is keyed by the `X-AgentGate-Task` header, which the caller chooses. It limits a cooperative client, not a hostile one: scenario `allow-new-task-new-window` shows a fresh task value getting a fresh window. Only the daily budget and velocity bind a hostile agent.\n- Injection scenarios named `*-screen-*` feed a corpus file straight to the output screen; `inject-fake-mcp-tool` goes through the gateway and the fake MCP server.\n- The corpus the screen is scored on was written together with its rules, so a clean result shows the rules do what they say, not how an adversary fares.\n")
+	return b.String()
+}
+
+func categoryTable(rs []result) string {
+	type c struct{ n, ok int }
+	by := map[string]*c{}
+	var names []string
+	for _, r := range rs {
+		x := by[r.S.Category]
+		if x == nil {
+			x = &c{}
+			by[r.S.Category] = x
+			names = append(names, r.S.Category)
+		}
+		x.n++
+		if r.Match {
+			x.ok++
+		}
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	b.WriteString("| category | scenarios | as expected |\n|---|---|---|\n")
+	for _, n := range names {
+		fmt.Fprintf(&b, "| %s | %d | %d |\n", n, by[n].n, by[n].ok)
+	}
+	return b.String()
+}
+
+func readmeTable(rs []result, misses []evasion) string {
+	_, st := confusion(rs)
+	var b strings.Builder
+	b.WriteString(categoryTable(rs))
+	b.WriteString("\n| class | precision | recall |\n|---|---|---|\n")
+	for _, c := range classes {
+		fmt.Fprintf(&b, "| %s | %s | %s |\n", c, st[c].precision(), st[c].recall())
+	}
+	fmt.Fprintf(&b, "\nPlus %d known screen evasions listed as expected misses, outside these counts. Full table: [benchmark/results.md](benchmark/results.md).\n", len(misses))
+	return b.String()
+}
+
+const (
+	mStart = "<!-- benchmark:start -->"
+	mEnd   = "<!-- benchmark:end -->"
+)
+
+func patchReadme(path, table string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	s := string(b)
+	i, j := strings.Index(s, mStart), strings.Index(s, mEnd)
+	if i < 0 || j < i {
+		return fmt.Errorf("%s has no %s ... %s block", path, mStart, mEnd)
+	}
+	return os.WriteFile(path, []byte(s[:i+len(mStart)]+"\n"+table+s[j:]), 0o644)
+}
+
+// ---- database ----
+
+func tempDB(ctx context.Context, url string) (*pgxpool.Pool, func(), error) {
+	cfg, err := pgx.ParseConfig(url)
+	if err != nil {
+		return nil, nil, err
+	}
+	admin, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("database unreachable: %w", err)
+	}
+	name := "agentgate_bench_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+	if _, err := admin.Exec(ctx, `CREATE DATABASE `+pgx.Identifier{name}.Sanitize()); err != nil {
+		admin.Close(ctx)
+		return nil, nil, err
+	}
+	pcfg, _ := pgxpool.ParseConfig(url)
+	pcfg.ConnConfig.Database = name
+	pool, err := pgxpool.NewWithConfig(ctx, pcfg)
+	if err != nil {
+		admin.Close(ctx)
+		return nil, nil, err
+	}
+	cleanup := func() {
+		pool.Close()
+		dctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = admin.Exec(dctx, `DROP DATABASE IF EXISTS `+pgx.Identifier{name}.Sanitize()+` WITH (FORCE)`)
+		admin.Close(dctx)
+	}
+	if _, err := db.Migrate(ctx, pool); err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	return pool, cleanup, nil
+}
