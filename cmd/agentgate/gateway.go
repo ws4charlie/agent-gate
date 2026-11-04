@@ -69,6 +69,7 @@ func (c *common) open(ctx context.Context, args []string) (config.Config, *pgxpo
 func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	c := newCommon("serve")
 	storeBodies := c.fs.Bool("store-bodies", false, "store redacted request/response bodies in the audit log (default off)")
+	paymentsPath := c.fs.String("payments", os.Getenv("AG_PAYMENTS"), "payments config JSON (default $AG_PAYMENTS; empty: POST /v1/payments is off)")
 	reconcileEvery := c.fs.Duration("reconcile-every", 30*time.Second, "background reconcile interval")
 	cfg, pool, err := c.open(ctx, args)
 	if err != nil {
@@ -97,6 +98,15 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	srv := &server.Server{Pool: pool, Ledger: led, Audit: audit.NewStore(pool), Providers: pc, Prices: prices,
 		Keys: config.ProviderKey, Tracer: tracer, Log: log, MaxHold: cfg.MaxHoldNanos,
 		DefaultMaxTokens: cfg.DefaultMaxTokens, StoreBodies: *storeBodies}
+
+	if *paymentsPath != "" {
+		pay, err := loadPayments(*paymentsPath)
+		if err != nil {
+			return err
+		}
+		srv.Payments = pay
+		log.Info("payments enabled", "wallet", pay.Wallet.Address().Hex(), "network", pay.Wallet.Network())
+	}
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()

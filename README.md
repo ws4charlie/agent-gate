@@ -4,7 +4,7 @@ A custody-grade gateway for AI agents: every model call and every payment is aut
 
 ## Status
 
-Early work. Foundations, the Postgres ledger and the gateway (OpenAI-compatible and native Anthropic endpoints, streaming, audit, report). Policy and the later layers land in further pull requests.
+Early work. Foundations, the Postgres ledger, the gateway (OpenAI-compatible and native Anthropic endpoints, streaming, audit, report) and a first payments slice (a thin policy check, an agent wallet and x402 payments on a simulated chain). The full policy engine and the later layers land in further pull requests.
 
 ## Build and test
 
@@ -90,6 +90,57 @@ Measured offline: `go run ./bench` starts a fake upstream with a fixed 20 ms del
 
 At concurrency 1 the gateway adds about 2 ms (first byte) to 4 ms (total) at p50 and 3 to 5 ms at p99 (auth, claim, reserve, attach, settle, audit: about six short Postgres round trips). At 50 the p99 grows by roughly 40 ms from database commit contention; the p50 comparison there is inside timer noise (the direct path's 20 ms timer sleeps longer than 20 ms on macOS). TTFB is the first body byte, total is the end of the stream.
 
+## Payments
+
+An agent can pay for a paid tool call through the public [x402](https://github.com/coinbase/x402) flow (v2, `exact` scheme, EIP-3009 `transferWithAuthorization`), hand-written here with go-ethereum and no x402 SDK. The rule that matters is **screen before sign**: the wallet's only signing path takes a `policy.Allowed`, a value only package `policy` can construct, so a refused payment never reaches the key and never reaches the chain (I10). The EIP-3009 nonce is derived from the ledger hold id, so a retried payment cannot settle twice on chain (I11).
+
+```mermaid
+sequenceDiagram
+    participant A as agent
+    participant G as gateway
+    participant L as ledger
+    participant P as policy
+    participant W as wallet (key)
+    participant T as paid tool + x402 server
+    participant C as chain
+    A->>G: POST /v1/payments {tool, agent_id}
+    G->>T: request, unpaid
+    T-->>G: 402 + PAYMENT-REQUIRED (amount, payTo, asset)
+    G->>L: Reserve(kind payment)
+    G->>P: Check(agent, payee, amount)
+    alt refused
+        P-->>G: Denied
+        G->>L: Release (hold + release rows)
+        G-->>A: 403 policy_denied (no signature, no tx)
+    else allowed
+        P-->>G: Allowed
+        G->>W: Pay(Allowed, hold id)
+        W-->>G: signed EIP-3009 authorization
+        G->>T: retry + PAYMENT-SIGNATURE
+        T->>T: verify signature, amount, payee, window, network
+        T->>C: transferWithAuthorization (tool server pays gas)
+        C-->>T: receipt
+        T-->>G: 200 + PAYMENT-RESPONSE + tool result
+        G->>L: Settle (hold + settle rows)
+        G-->>A: 200 result + tx hash
+    end
+```
+
+Run it offline, with a simulated EVM chain inside the paid-tool process:
+
+```bash
+demo/phase15.sh
+```
+
+It makes two payments: a $0.01 call that settles on the simulated chain and is charged in the ledger, and a $0.50 call that is over the agent's $0.30 budget and is refused before signing. It prints the ledger rows (hold, settle; hold, release) and the audit rows.
+
+What this is and is not:
+
+- The offline run uses a mock token with Circle USDC's EIP-3009 interface, so it proves the protocol logic, not Base Sepolia behaviour.
+- A run on Base Sepolia (`demo/phase15.sh --network base-sepolia`, needing an RPC URL, a gas-funded facilitator key and a USDC-funded wallet from the environment) is built but **separate and not part of the offline demo or CI**. The USDC address used there is Circle's [documented](https://developers.circle.com/stablecoins/usdc-contract-addresses) Base Sepolia one.
+- The wallet refuses to start for any chain id except 84532 and the local simulated chain. `agentgate wallet new` writes a testnet key to a gitignored `0600` file and prints only the address.
+- Policy here is a per-agent total budget and a payee allowlist read from a JSON file. The real policy engine comes next; the wallet hardening (velocity, key handling) after that.
+
 ## Security and threat model
 
 The gateway's job is to keep a provider key and an account's money out of reach of the thing calling it: provider keys live only in the gateway's environment and are never logged, put in a span, or relayed (the client never sees upstream headers: only an allowlist is copied back); client credentials are 256-bit random secrets stored only as SHA-256; a request can spend only what its account holds, because the budget check is one atomic `UPDATE` in Postgres, not application code; prompts and responses are not stored unless an operator turns that on, and then bearer tokens and `sk-` patterns are redacted. It does not defend against a compromised gateway host (which holds the provider key and the database), a malicious operator, or secrets that appear in prompts in forms the redactor does not recognise (redaction is best effort, which is why storage is off by default). Single process, no TLS termination, no rate limiting yet: put it behind a reverse proxy on a trusted network. Per-agent policy and kill switches are the next layer.
@@ -99,6 +150,7 @@ The gateway's job is to keep a provider key and an account's money out of reach 
 - [Foundations](docs/learn/foundations.md)
 - [Ledger](docs/learn/ledger.md)
 - [Gateway](docs/learn/gateway.md)
+- [Payments](docs/learn/payments.md)
 
 ## License
 
