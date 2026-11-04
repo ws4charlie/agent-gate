@@ -57,20 +57,30 @@ func (f Fetcher) Probe(ctx context.Context, method, url string, body []byte) (*C
 	if resp.StatusCode != http.StatusPaymentRequired {
 		return nil, resp, nil
 	}
+	ch, err := ChallengeFrom(resp)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ch, nil, nil
+}
+
+// ChallengeFrom parses a 402 response (and closes its body). The header is the
+// only part used; the body is data from outside and is discarded.
+func ChallengeFrom(resp *http.Response) (*Challenge, error) {
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
 	h := resp.Header.Get(HeaderRequired)
 	if h == "" {
-		return nil, nil, errors.New("x402: 402 without PAYMENT-REQUIRED header")
+		return nil, errors.New("x402: 402 without PAYMENT-REQUIRED header")
 	}
 	var pr PaymentRequired
 	if err := DecodeHeader(h, &pr); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if pr.X402Version != Version {
-		return nil, nil, fmt.Errorf("x402: unsupported version %d", pr.X402Version)
+		return nil, fmt.Errorf("x402: unsupported version %d", pr.X402Version)
 	}
-	return &Challenge{Required: pr}, nil, nil
+	return &Challenge{Required: pr}, nil
 }
 
 // Pay retries the request with the signed payload. The caller reads the body

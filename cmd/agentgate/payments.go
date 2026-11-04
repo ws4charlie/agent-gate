@@ -22,6 +22,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 
 	"github.com/ws4charlie/agent-gate/internal/ledger"
+	"github.com/ws4charlie/agent-gate/internal/money"
 	"github.com/ws4charlie/agent-gate/internal/paidtool"
 	"github.com/ws4charlie/agent-gate/internal/server"
 	"github.com/ws4charlie/agent-gate/internal/wallet"
@@ -37,6 +38,9 @@ type PaymentsFile struct {
 	// simulated chain; the reconciler asks it whether an authorization was used.
 	// On base-sepolia the reconciler uses $AG_RPC_URL instead.
 	ChainQueryURL string `json:"chain_query_url"`
+	// MaxTxUSD is the wallet's per-transaction cap (default $1). It is checked
+	// inside the wallet, after and independent of policy.
+	MaxTxUSD string `json:"max_tx_usd"`
 }
 
 func readPaymentsFile(path string) (PaymentsFile, error) {
@@ -66,6 +70,13 @@ func loadPayments(f PaymentsFile) (*server.Payments, error) {
 	if err != nil {
 		return nil, err
 	}
+	if f.MaxTxUSD != "" { // the wallet's own cap, independent of every agent's policy
+		n, err := money.FromUSD(f.MaxTxUSD)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("payments config: max_tx_usd: %q is not a positive USD amount", f.MaxTxUSD)
+		}
+		w.SetMaxTx(n)
+	}
 	return &server.Payments{Wallet: w, Tools: f.Tools}, nil
 }
 
@@ -73,6 +84,16 @@ func loadPayments(f PaymentsFile) (*server.Payments, error) {
 // After signing, the chain is the source of truth, so a gateway that has
 // payments configured must be able to read it.
 func paymentsLookup(ctx context.Context, f PaymentsFile) (ledger.UsageLookup, error) {
+	r, err := chainReader(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	return &x402.AuthLookup{Chain: r}, nil
+}
+
+// chainReader is the read-only view of the chain: the simulated one over HTTP,
+// or Base Sepolia over $AG_RPC_URL. It holds no key.
+func chainReader(ctx context.Context, f PaymentsFile) (x402.AuthReader, error) {
 	var r x402.AuthReader
 	switch f.Network {
 	case "sim", "":
@@ -100,7 +121,7 @@ func paymentsLookup(ctx context.Context, f PaymentsFile) (ledger.UsageLookup, er
 	default:
 		return nil, fmt.Errorf("unknown network %q", f.Network)
 	}
-	return &x402.AuthLookup{Chain: r}, nil
+	return r, nil
 }
 
 func chainIDFor(network string) (uint64, error) {

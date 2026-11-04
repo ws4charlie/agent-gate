@@ -1,4 +1,4 @@
-// Command agentgate is the single binary; subcommands are added by later tasks.
+// Command agentgate is the single binary.
 package main
 
 import (
@@ -81,7 +81,7 @@ commands:
   approve     list | allow ID | deny ID: the approval queue
   kill        --agent X [--resume]: the kill switch
   run         list | show ID | kill ID: runs (X-AgentGate-Run): steps, spend, kill as a unit
-  report      --since 24h --by model|account
+  report      --since 24h --by model|account|agent
   reconcile   close expired holds once
   prices      sync: refresh configs/prices.json from OpenRouter
   wallet      new | address: the agent wallet key (testnet only)

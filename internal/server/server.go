@@ -66,7 +66,7 @@ type Server struct {
 	HoldTTL          time.Duration
 	ExtendEvery      time.Duration
 	StoreBodies      bool      // opt-in; bodies are redacted before storage (I9)
-	Payments         *Payments // nil disables POST /v1/payments (T3)
+	Payments         *Payments // nil disables POST /v1/payments and paying MCP 402s
 
 	// T4 policy. All three default to working instances over Pool.
 	Agents      *agents.Store
@@ -135,6 +135,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/chat/completions", s.handle(provider.FormatOpenAI))
 	mux.HandleFunc("POST /v1/messages", s.handle(provider.FormatAnthropic))
+	mux.HandleFunc("GET /v1/balance", s.handleBalance)
 	if s.Payments != nil {
 		mux.HandleFunc("POST /v1/payments", s.handlePayment)
 	}

@@ -97,3 +97,15 @@ def test_pay(stack, make_client):
     assert r["transaction"] and r["tool"] == "echo"
     with pytest.raises(BudgetExceeded):
         c.pay("premium", {"text": "x"})
+
+
+def test_balance_follows_spending(stack, make_client):
+    _, key = stack.agent(models="*", tools="echo", payees="0x70997970C51812dc3A010C7d01b50e0d17dc79C8", daily="0.30")
+    c = make_client(key)
+    before = c.balance()
+    assert before["daily_budget_nanos"] == 300_000_000 and before["daily_spent_nanos"] == 0
+    c.pay("echo", {"text": "hello"})
+    after = c.balance()
+    assert after["daily_spent_nanos"] == 10_000_000
+    assert after["remaining_today_nanos"] == before["remaining_today_nanos"] - 10_000_000
+    assert after["balance_nanos"] == before["balance_nanos"] - 10_000_000
