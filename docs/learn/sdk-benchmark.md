@@ -42,7 +42,7 @@ A scenario ([scenarios/*.json](../../benchmark/scenarios/)) is `{id, category, s
 - **The task budget is not a hard limit.** The caller picks `X-AgentGate-Task`. `allow-new-task-new-window` demonstrates it: after task `t1` is exhausted, `t2` is allowed.
 - **After the run** the benchmark calls `ledger.Audit`, so a scenario that corrupted the books (I1, I2) fails the run too.
 
-CI regenerates `results.md` and the table in `docs/reference.md` and fails if the committed copies differ ([ci.yml](../../.github/workflows/ci.yml), job `benchmark`).
+CI regenerates `results.md` and fails if the committed copy differs ([ci.yml](../../.github/workflows/ci.yml), job `benchmark`).
 
 ### Mutation check
 
