@@ -53,12 +53,15 @@ func Build(t Target, key string, client Format, in http.Header, body []byte, str
 	switch {
 	case client == FormatOpenAI && t.Cfg.Kind == KindOpenAICompatible:
 		up.URL, up.Wire = base+"/chat/completions", FormatOpenAI
-		up.Body, err = rewrite(body, t.Model, func(m map[string]json.RawMessage) {
+		up.Body, err = rewrite(body, t.Model, func(m map[string]json.RawMessage) bool {
+			changed := limitOutput(m, defaultMax)
 			if stream && t.Cfg.IncludeUsage {
 				if _, ok := m["stream_options"]; !ok {
 					m["stream_options"] = json.RawMessage(`{"include_usage":true}`)
+					changed = true
 				}
 			}
+			return changed
 		})
 		up.Header.Set("Authorization", "Bearer "+key)
 	case client == FormatOpenAI && t.Cfg.Kind == KindAnthropic:
@@ -67,11 +70,11 @@ func Build(t Target, key string, client Format, in http.Header, body []byte, str
 		anthropicAuth(up.Header, key)
 	case client == FormatAnthropic && t.Cfg.Kind == KindOpenAICompatible:
 		up.URL, up.Wire = base+"/messages", FormatAnthropic
-		up.Body, err = rewrite(body, t.Model, nil)
+		up.Body, err = rewrite(body, t.Model, func(m map[string]json.RawMessage) bool { return limitOutput(m, defaultMax) })
 		up.Header.Set("Authorization", "Bearer "+key)
 	case client == FormatAnthropic && t.Cfg.Kind == KindAnthropic:
 		up.URL, up.Wire = base+"/messages", FormatAnthropic
-		up.Body, err = rewrite(body, t.Model, nil)
+		up.Body, err = rewrite(body, t.Model, func(m map[string]json.RawMessage) bool { return limitOutput(m, defaultMax) })
 		anthropicAuth(up.Header, key)
 	default:
 		err = fmt.Errorf("provider: no adapter for %s client on %s", client, t.Cfg.Kind)
@@ -86,20 +89,32 @@ func anthropicAuth(h http.Header, key string) {
 	}
 }
 
-// rewrite sets "model" (and applies edit) while keeping every other field as
-// the client sent it. If nothing changes the original bytes go through.
-func rewrite(body []byte, model string, edit func(map[string]json.RawMessage)) ([]byte, error) {
+// limitOutput adds the output limit the hold assumed when the client set none.
+// Without it the upstream could produce more than the gateway estimated, and
+// one request could pass the agent's budget.
+func limitOutput(m map[string]json.RawMessage, limit int64) bool {
+	positive := func(key string) bool {
+		var n int64
+		return json.Unmarshal(m[key], &n) == nil && n > 0
+	}
+	if positive("max_tokens") || positive("max_completion_tokens") {
+		return false
+	}
+	m["max_tokens"], _ = json.Marshal(limit)
+	return true
+}
+
+// rewrite sets "model" (and applies edit, which reports whether it changed
+// anything) while keeping every other field as the client sent it. If nothing
+// changes the original bytes go through.
+func rewrite(body []byte, model string, edit func(map[string]json.RawMessage) bool) ([]byte, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil {
 		return nil, fmt.Errorf("provider: request body: %w", err)
 	}
 	var cur string
 	_ = json.Unmarshal(m["model"], &cur)
-	before := len(m)
-	if edit != nil {
-		edit(m)
-	}
-	if cur == model && len(m) == before {
+	if !edit(m) && cur == model {
 		return body, nil
 	}
 	mb, _ := json.Marshal(model)
