@@ -24,6 +24,15 @@ type ProviderCfg struct {
 	// IncludeUsage adds stream_options.include_usage to streaming chat
 	// requests. Direct OpenAI needs it; OpenRouter does not.
 	IncludeUsage bool `json:"include_usage,omitempty"`
+	// NoUsageLookup marks an openai-compatible provider that has no per-request
+	// usage endpoint (direct OpenAI). After a crash its holds are charged in
+	// full instead of released (I6).
+	NoUsageLookup bool `json:"no_usage_lookup,omitempty"`
+}
+
+// HasUsageLookup reports whether a call can be looked up after the fact.
+func (c ProviderCfg) HasUsageLookup() bool {
+	return c.Kind == KindOpenAICompatible && !c.NoUsageLookup
 }
 
 // Route maps a client model name to a provider and an upstream model name.

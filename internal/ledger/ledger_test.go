@@ -995,3 +995,48 @@ func TestStateful_I1_I2(t *testing.T) {
 type rc struct{ Settled, Released, Errors int }
 
 func counts(r ledger.Report) rc { return rc{r.Settled, r.Released, r.Errors} }
+
+// chargeHoldLookup answers "found, charge the whole hold" for every id.
+type chargeHoldLookup struct{}
+
+func (chargeHoldLookup) Lookup(context.Context, string, string) (ledger.Usage, bool, error) {
+	return ledger.Usage{ChargeHold: true, Source: "hold_no_lookup"}, true, nil
+}
+
+// I6: when the real cost cannot be known, the reconciler charges the whole hold.
+func TestReconcileChargeHold_I6(t *testing.T) {
+	l, _ := setup(t)
+	acct := funded(t, l, 1000)
+	h := reserve(t, l, acct, "ch1", 300)
+	if err := l.AttachUpstream(ctx, h.ID, "direct", "pending:req-1"); err != nil {
+		t.Fatal(err)
+	}
+	late := time.Now().Add(time.Hour)
+	rep, err := l.Reconcile(ctx, chargeHoldLookup{}, late)
+	if err != nil || counts(rep) != (rc{Settled: 1}) {
+		t.Fatalf("reconcile: %+v %v", rep, err)
+	}
+	o := rep.Outcomes[0]
+	if o.Result != "settled" || o.Amount != 300 || o.Source != "hold_no_lookup" {
+		t.Fatalf("outcome %+v", o)
+	}
+	b, _ := l.Balance(ctx, acct)
+	if b.Balance != 700 || b.Held != 0 {
+		t.Fatalf("balance %+v, want 700/0", b)
+	}
+	if err := l.Audit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ { // a repeat pass changes nothing
+		rep, err := l.Reconcile(ctx, chargeHoldLookup{}, late)
+		if err != nil || counts(rep) != (rc{}) {
+			t.Fatalf("replay %d: %+v %v", i, rep, err)
+		}
+	}
+	if b2, _ := l.Balance(ctx, acct); b2 != b {
+		t.Fatalf("balance moved: %+v -> %+v", b, b2)
+	}
+	if err := l.Audit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}

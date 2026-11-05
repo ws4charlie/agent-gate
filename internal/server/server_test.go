@@ -18,6 +18,7 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/fakeupstream"
 	"github.com/ws4charlie/agent-gate/internal/ledger"
 	"github.com/ws4charlie/agent-gate/internal/money"
+	"github.com/ws4charlie/agent-gate/internal/provider"
 	"github.com/ws4charlie/agent-gate/internal/server"
 )
 
@@ -429,9 +430,39 @@ func TestGenerationLookupNotFound(t *testing.T) {
 	if err != nil || found {
 		t.Fatalf("found=%v err=%v", found, err)
 	}
-	_, found, _ = l.Lookup(context.Background(), "fakean", "msg_1")
-	if found {
-		t.Fatal("anthropic kind has no lookup endpoint")
+	// Unknown provider and empty id stay not found.
+	if _, found, _ = l.Lookup(context.Background(), "nope", "x"); found {
+		t.Fatal("unknown provider must be not found")
+	}
+	if _, found, _ = l.Lookup(context.Background(), "fakeoa", ""); found {
+		t.Fatal("empty id must be not found")
+	}
+}
+
+// A provider without a usage lookup answers "charge the hold", with no HTTP call.
+func TestGenerationLookupNoUsageLookupChargesHold(t *testing.T) {
+	e := newEnv(t, 10*usd, nil)
+	provs := map[string]provider.ProviderCfg{
+		"fakean": e.srv.Providers.Providers["fakean"],
+		"direct": {Kind: provider.KindOpenAICompatible, BaseURL: e.fake.URL + "/v1", NoUsageLookup: true},
+	}
+	l := &provider.GenerationLookup{Client: http.DefaultClient, Providers: provs, Key: func(string) string { return upstreamKey }}
+	before := len(e.fake.Calls())
+	for _, name := range []string{"fakean", "direct"} {
+		u, found, err := l.Lookup(context.Background(), name, "pending:r1")
+		if err != nil || !found || !u.ChargeHold || u.Source != "hold_no_lookup" {
+			t.Fatalf("%s: %+v found=%v err=%v", name, u, found, err)
+		}
+	}
+	if n := len(e.fake.Calls()); n != before {
+		t.Fatalf("%d HTTP calls to the provider, want 0", n-before)
+	}
+	// OpenRouter style: real cost, not a charge-the-hold answer.
+	e.fake.Push(fakeupstream.Script{CostUSD: "0.0005"})
+	e.do("/v1/chat/completions", chatBody("oa/m", false), nil)
+	u, found, err := (&provider_lookup{e}).l().Lookup(context.Background(), "fakeoa", "gen-1")
+	if err != nil || !found || u.ChargeHold || u.Cost != 500_000 {
+		t.Fatalf("%+v found=%v err=%v", u, found, err)
 	}
 }
 

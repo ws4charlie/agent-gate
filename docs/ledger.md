@@ -10,6 +10,8 @@ This is what stops a group of agents overspending together. Ten calls at once ca
 
 Most gateways keep a running total. We keep a history that can only be added to, so the balance can be worked out again from scratch at any time. If the two ever disagree, we know something is wrong.
 
-Crashes are the awkward case. If the gateway dies in the middle of a call, the held money would be stuck forever. So a background job looks for holds that have expired and closes them. If it can find out what the call really cost, it charges that. If it can't, it returns the money and flags the row, so you can see that something went unbilled.
+Crashes are the awkward case. If the gateway dies in the middle of a call, the held money would be stuck forever. So a background job looks for holds that have expired and closes them. If it can find out what the call really cost, it charges that.
 
-Today, finding the real cost after a crash only works for providers that let you look it up afterwards, which in practice means OpenRouter.
+Some providers, such as OpenRouter, let you look up a past call. Others, such as OpenAI and Anthropic when called directly, do not. After a crash we cannot tell whether such a call ran, and the provider may well have billed us. Returning the money would mean we pay and nobody is charged. So for these providers the job charges the whole hold and marks the row, so you can see it was not the real cost.
+
+This means that in the rare case of a crash, an account can pay up to its hold more than the call cost. We chose that on purpose: a small overcharge can be refunded, but spend nobody was billed for is lost. A call that fails cleanly is not affected. It is returned in full, as before.
