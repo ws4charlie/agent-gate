@@ -95,7 +95,7 @@ jobs:
   #  - Payments: a real local anvil node (chain id 84532, the testnet's) over real JSON-RPC, with a mock USDC.
   #  - Model traffic: recorded prompt fixtures (testdata/llm) replayed over real HTTP and SSE.
   # Proves the RPC, fee and receipt path and the gateway's accounting. It does not prove Circle's real
-  # USDC contract or any provider's behaviour. See docs/learn/local-e2e.md.
+  # USDC contract or any provider's behaviour. See docs/testing.md.
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 30
