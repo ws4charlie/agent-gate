@@ -11,16 +11,7 @@ Two rules carry the design:
 
 ## How it works
 
-```mermaid
-flowchart LR
-    A[Agent] --> G[Authenticate]
-    G --> P{Policy}
-    P -->|refused| X[Rule id returned]
-    P -->|allowed| H[Hold funds]
-    H --> U[Model, tool or payment]
-    U --> S[Settle real cost]
-    S --> L[(Audit log)]
-```
+![Every request is authenticated, checked by policy, held, executed, settled and audited. Refusals, failures and crashes all end with the funds settled or returned.](docs/images/request-flow.png)
 
 It is one Go process and one Postgres database. Operators use a CLI that writes to the database, so an agent has no HTTP route to approve its own requests.
 
