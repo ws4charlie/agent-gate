@@ -6,6 +6,7 @@
 #      ledger shows a hold and its release, the audit log shows the refusal.
 #
 #   demo/phase15.sh                         # offline, simulated chain (default)
+#   demo/phase15.sh --network anvil         # a local anvil node (chain id 84532), mock USDC; starts and stops anvil
 #   demo/phase15.sh --network base-sepolia  # LIVE testnet run; see below
 #
 # base-sepolia needs, from the environment (nothing is read from files in the repo):
@@ -21,10 +22,10 @@ NETWORK=sim
 while [ $# -gt 0 ]; do
   case "$1" in
     --network) NETWORK="${2:?--network needs sim or base-sepolia}"; shift 2 ;;
-    *) echo "usage: $0 [--network sim|base-sepolia]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--network sim|anvil|base-sepolia]" >&2; exit 2 ;;
   esac
 done
-case "$NETWORK" in sim|base-sepolia) ;; *) echo "unknown network $NETWORK" >&2; exit 2 ;; esac
+case "$NETWORK" in sim|anvil|base-sepolia) ;; *) echo "unknown network $NETWORK" >&2; exit 2 ;; esac
 if [ "$NETWORK" = base-sepolia ]; then
   for v in AG_RPC_URL AG_FACILITATOR_KEY AG_WALLET_KEY AG_PAYEE; do
     [ -n "${!v:-}" ] || { echo "base-sepolia needs \$$v (see the header of this script)" >&2; exit 2; }
@@ -38,7 +39,9 @@ PORT="${DEMO_PORT:-18081}"
 TOOLPORT="${DEMO_TOOL_PORT:-19402}"
 GW="http://127.0.0.1:$PORT"
 PIDS=()
+. "$(dirname "$0")/anvil-lib.sh"
 cleanup() {
+  anvil_down
   for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done
   wait 2>/dev/null || true
   dropdb --if-exists --force "$DB" 2>/dev/null || true
@@ -46,11 +49,16 @@ cleanup() {
 }
 trap cleanup EXIT
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
+fail() { echo "FAIL: $*" >&2; exit 1; }
+expect() { # expect <what> <needle> <haystack>
+  case "$3" in *"$2"*) echo "   ok: $1" ;; *) echo "   output was: $3" >&2; fail "$1 (wanted: $2)" ;; esac
+}
 
 say "build"
 go build -o "$WORK/agentgate" ./cmd/agentgate
 AG="$WORK/agentgate"
 createdb "$DB"
+[ "$NETWORK" != anvil ] || anvil_up "$WORK"
 export DATABASE_URL="postgres:///$DB?host=$PGHOST"
 export AG_LISTEN="127.0.0.1:$PORT"
 echo '{"providers":{},"routes":[]}' > "$WORK/providers.json"
@@ -63,12 +71,12 @@ ACCT="$("$AG" account create --name agent-demo)"
 "$AG" account deposit --account "$ACCT" --amount 1
 
 say "wallet and paid tool"
-if [ "$NETWORK" = sim ]; then
+if [ "$NETWORK" != base-sepolia ]; then
   export AG_WALLET_KEY_FILE="$WORK/wallet.key"
   WALLET="$("$AG" wallet new --file "$AG_WALLET_KEY_FILE")"
   PAYEE=0x70997970C51812dc3A010C7d01b50e0d17dc79C8   # a public test address, not a secret
   echo "wallet address (key stays in a 0600 file): $WALLET"
-  "$AG" paidtool --network sim --listen "127.0.0.1:$TOOLPORT" --pay-to "$PAYEE" --fund 5 --fund-address "$WALLET" > "$WORK/tool.log" 2>&1 &
+  "$AG" paidtool --network "$NETWORK" --listen "127.0.0.1:$TOOLPORT" --pay-to "$PAYEE" --fund 5 --fund-address "$WALLET" > "$WORK/tool.log" 2>&1 &
 else
   PAYEE="$AG_PAYEE"
   "$AG" paidtool --network base-sepolia --listen "127.0.0.1:$TOOLPORT" --pay-to "$PAYEE" > "$WORK/tool.log" 2>&1 &
@@ -101,11 +109,15 @@ pay() { # pay <tool> <idempotency-key>
 }
 
 say "1. echo (\$0.01): inside policy -> signed -> settled on chain -> charged"
-pay echo demo-1
+r="$(pay echo demo-1)"; echo "$r"
+expect "the payment returned HTTP 200" 'HTTP 200' "$r"
+expect "it carries a transaction hash" '"transaction":"0x' "$r"
 "$AG" account balance --account "$ACCT"
 
 say "2. premium (\$0.50): over the \$0.30 daily budget -> refused before signing"
-pay premium demo-2
+r="$(pay premium demo-2)"; echo "$r"
+expect "refused by the budget rule" 'budget_daily' "$r"
+expect "with HTTP 429" 'HTTP 429' "$r"
 "$AG" account balance --account "$ACCT"
 
 say "3. the same Idempotency-Key again: 409, nothing signed, nothing charged"

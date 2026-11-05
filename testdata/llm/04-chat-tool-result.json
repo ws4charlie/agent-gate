@@ -1,0 +1,18 @@
+{
+  "id": "chat-tool-result",
+  "match": {
+    "model": "mock/chat-small",
+    "prompt": "{\"city\":\"Lisbon\",\"temp_c\":21,\"sky\":\"clear\"}"
+  },
+  "response": {
+    "text": "It is 21 degrees Celsius and clear in Lisbon."
+  },
+  "usage": {
+    "input": 63,
+    "output": 16,
+    "cache_read": 0,
+    "cache_write": 0
+  },
+  "cost": 0.000104500,
+  "upstream_id": "gen-fx-04-chat-tool-result"
+}

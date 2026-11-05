@@ -133,3 +133,39 @@ def make_client(stack):
     yield make
     for c in clients:
         c.close()
+
+
+@pytest.fixture(scope="session")
+def fx_stack(stack):
+    """A second gateway whose only provider is the fixture mock (testdata/llm replayed over HTTP and
+    SSE). Same binaries and database as `stack`; its own account, upstream and port. The key is a
+    placeholder and every base URL is on 127.0.0.1: nothing here can leave the machine."""
+    work = stack.work
+    s = Stack(work)
+    s.procs = []  # closed with the first stack's processes via its own list below
+    up = s.start([str(work / "fakeupstream"), "-fixtures", str(ROOT / "testdata" / "llm")])
+    fake = _first_line(up)
+    providers = (ROOT / "configs" / "providers.mock.json").read_text().replace("127.0.0.1:18999", fake.removeprefix("http://"))
+    assert fake.removeprefix("http://") in providers
+    (work / "providers.fx.json").write_text(providers)
+    port = _port()
+    s.env.update(AG_LISTEN=f"127.0.0.1:{port}", AG_PROVIDERS=str(work / "providers.fx.json"),
+                 AG_PRICES=str(ROOT / "configs" / "prices.mock.json"),
+                 OPENROUTER_API_KEY="mock", ANTHROPIC_API_KEY="mock")
+    s.acct = s.cli("account", "create", "--name", "fx-" + uuid.uuid4().hex[:6])
+    s.cli("account", "deposit", "--account", s.acct, "--amount", "5")
+    s.start([s.ag, "serve"])
+    s.url = f"http://127.0.0.1:{port}"
+    import httpx
+    try:
+        for _ in range(100):
+            try:
+                if httpx.get(s.url + "/healthz", timeout=1).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.1)
+        else:
+            raise RuntimeError("fixture gateway did not start")
+        yield s
+    finally:
+        s.close()

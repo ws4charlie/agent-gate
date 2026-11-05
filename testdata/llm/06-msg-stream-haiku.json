@@ -1,0 +1,19 @@
+{
+  "id": "msg-stream-haiku",
+  "match": {
+    "model": "mock/messages-m",
+    "prompt": "Write a haiku about a quiet ledger."
+  },
+  "response": {
+    "text": "Columns of small sums, / each hold released or settled, / the balance sleeps well."
+  },
+  "usage": {
+    "input": 12,
+    "output": 26,
+    "cache_read": 0,
+    "cache_write": 0,
+    "cost_inline": false
+  },
+  "cost": 0.000426000,
+  "upstream_id": "gen-fx-06-msg-stream-haiku"
+}

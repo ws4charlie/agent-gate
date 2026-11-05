@@ -1,0 +1,25 @@
+{
+  "id": "chat-tool-call",
+  "match": {
+    "model": "mock/chat-small",
+    "prompt": "What is the weather in Lisbon right now?"
+  },
+  "response": {
+    "tool_calls": [
+      {
+        "name": "get_weather",
+        "arguments": {
+          "city": "Lisbon"
+        }
+      }
+    ]
+  },
+  "usage": {
+    "input": 42,
+    "output": 18,
+    "cache_read": 0,
+    "cache_write": 0
+  },
+  "cost": 0.000085800,
+  "upstream_id": "gen-fx-03-chat-tool-call"
+}

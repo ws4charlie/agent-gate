@@ -1,0 +1,19 @@
+{
+  "id": "msg-translate",
+  "match": {
+    "model": "mock/messages-m",
+    "prompt": "Translate 'good morning' into Spanish."
+  },
+  "response": {
+    "text": "Buenos días."
+  },
+  "usage": {
+    "input": 16,
+    "output": 7,
+    "cache_read": 0,
+    "cache_write": 0,
+    "cost_inline": false
+  },
+  "cost": 0.000153000,
+  "upstream_id": "gen-fx-05-msg-translate"
+}

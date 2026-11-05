@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -40,6 +41,9 @@ type Script struct {
 	TruncateBody                   bool          // non-stream: promise more bytes than sent, then drop the connection
 	InBandError                    bool          // stream carries an in-band error event instead of finishing
 	NoTerminal                     bool          // stream ends with a clean EOF before [DONE] / message_stop
+
+	ID         string // upstream id to report (x-generation-id and the body id); default gen-<n>
+	GenCostUSD string // what /generation returns when the response itself carries no cost; default CostUSD
 }
 
 // Call is one recorded request.
@@ -59,6 +63,8 @@ type Server struct {
 	calls    []Call
 	gens     map[string]gen
 	n        int
+	fx       *Fixtures
+	miss     unmatchedLog
 	GenDelay time.Duration // how long a finished call stays invisible to /generation
 }
 
@@ -69,13 +75,28 @@ type gen struct {
 	partial bool
 }
 
-func New() *Server {
+func New() *Server { return NewAt("") }
+
+// NewAt listens on addr (e.g. 127.0.0.1:18999) instead of a free port, so a
+// config file can name the mock by a fixed address. Empty addr: a free port.
+func NewAt(addr string) *Server {
 	s := &Server{gens: map[string]gen{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) { s.serve(w, r, false) })
 	mux.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) { s.serve(w, r, true) })
 	mux.HandleFunc("GET /v1/generation", s.generation)
-	s.Server = httptest.NewServer(mux)
+	if addr == "" {
+		s.Server = httptest.NewServer(mux)
+		return s
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		panic(fmt.Sprintf("fakeupstream: listen %s: %v", addr, err))
+	}
+	s.Server = httptest.NewUnstartedServer(mux)
+	s.Server.Listener.Close()
+	s.Server.Listener = ln
+	s.Server.Start()
 	return s
 }
 
@@ -115,16 +136,16 @@ func variant(model string, base Script) Script {
 	return base
 }
 
-func (s *Server) next(model string) (Script, int) {
+func (s *Server) next(model string) (sc Script, n int, queued bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.n++
 	if len(s.queue) > 0 {
 		sc := s.queue[0]
 		s.queue = s.queue[1:]
-		return sc, s.n
+		return sc, s.n, true
 	}
-	return variant(model, s.def), s.n
+	return variant(model, s.def), s.n, false
 }
 
 func (sc Script) texts() []string {
@@ -159,10 +180,25 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, anthropic bool) {
 		Model  string `json:"model"`
 	}
 	_ = json.Unmarshal(body, &req)
-	sc, n := s.next(req.Model)
+	sc, n, queued := s.next(req.Model)
 	s.mu.Lock()
 	s.calls = append(s.calls, Call{Path: r.URL.Path, Header: r.Header.Clone(), Body: body})
+	fx := s.fx
 	s.mu.Unlock()
+	if fx != nil && !queued {
+		fsc, _, prompt, ok := fx.script(req.Model, body)
+		if !ok {
+			// Loud on purpose: a test that sends a prompt nobody recorded must
+			// fail, not receive a generic answer.
+			m := Unmatched{Model: req.Model, Prompt: prompt, Hash: PromptHash(req.Model, prompt)}
+			s.miss.add(m)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			io.WriteString(w, unmatchedBody(m))
+			return
+		}
+		sc = fsc
+	}
 
 	if s.Key != "" {
 		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -194,9 +230,15 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, anthropic bool) {
 	// OpenRouter sends the generation id in a header on every response, also on
 	// the Anthropic surface, where the body id (msg_...) cannot be looked up.
 	genID := "gen-" + strconv.Itoa(n)
+	if sc.ID != "" {
+		genID = sc.ID
+	}
 	id := genID
 	if anthropic {
-		id = "msg_" + strconv.Itoa(n)
+		id = "msg_" + strings.TrimPrefix(genID, "gen-")
+		if sc.ID == "" {
+			id = "msg_" + strconv.Itoa(n)
+		}
 	}
 	w.Header().Set("X-Generation-Id", genID)
 	in, out := sc.tokens()
@@ -278,7 +320,10 @@ func (s *Server) generation(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":{"message":"not found"}}`, http.StatusNotFound)
 		return
 	}
-	cost := g.usage.CostUSD
+	cost := g.usage.GenCostUSD
+	if cost == "" {
+		cost = g.usage.CostUSD
+	}
 	if cost == "" {
 		cost = "0"
 	}

@@ -1,0 +1,19 @@
+{
+  "id": "msg-cache-write",
+  "match": {
+    "model": "mock/messages-m",
+    "prompt": "Read the style guide above and list its three main rules."
+  },
+  "response": {
+    "text": "1. Keep sentences short. 2. Name each thing once. 3. Prefer verbs to adjectives."
+  },
+  "usage": {
+    "input": 96,
+    "output": 48,
+    "cache_read": 0,
+    "cache_write": 2048,
+    "cost_inline": false
+  },
+  "cost": 0.008688000,
+  "upstream_id": "gen-fx-08-msg-cache-write"
+}

@@ -1,0 +1,18 @@
+{
+  "id": "judge-passes-plain",
+  "match": {
+    "model": "mock/judge-tiny",
+    "prompt": "Order 4471 shipped on Tuesday and should arrive by Friday. Carrier: Northwind Freight."
+  },
+  "response": {
+    "text": "NO"
+  },
+  "usage": {
+    "input": 37,
+    "output": 2,
+    "cache_read": 0,
+    "cache_write": 0
+  },
+  "cost": 0.000004950,
+  "upstream_id": "gen-fx-16-judge-passes-plain"
+}

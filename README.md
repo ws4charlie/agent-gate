@@ -39,14 +39,15 @@ flowchart LR
 | Phase | What | State |
 |---|---|---|
 | 1 | Credits ledger, OpenAI-compatible and native Anthropic gateway, streaming, audit, report | built; offline tests; one small live smoke |
-| 1.5 | x402 payments with screen-before-sign, on a simulated chain | built; offline tests |
+| 1.5 | x402 payments with screen-before-sign, on a simulated chain | built; offline tests; also run on a local anvil node ([Local end to end](#local-end-to-end)) |
 | 2 | Policy engine, approval queue, kill switch, MCP tool gateway, output screening, runs | built; offline tests |
 | 3 | Python SDK, 45-scenario policy benchmark in CI, full wallet behind the policy engine, tool payments through MCP, side-by-side report, balance route | built; offline tests; the Base Sepolia run is written but **not run** |
+| 3.5 | Local end to end: payments on a local anvil node, model traffic on prompt fixtures, in CI with no secrets | built; runs in CI |
 | 4 | Not started | backlog |
 
 ## Measured numbers
 
-Every number below says where it came from. Nothing here was measured on real traffic.
+Every number below says where it came from, under one of three labels: **offline** (fakes inside the process), **local e2e** (a real local anvil node and hand-written prompt fixtures, over real HTTP and JSON-RPC), or **live** (a real provider or chain). Nothing here was measured on real traffic.
 
 | What | Value | Source |
 |---|---|---|
@@ -54,11 +55,31 @@ Every number below says where it came from. Nothing here was measured on real tr
 | Policy benchmark | 45 of 45 scripted scenarios as expected | **offline**, `go run ./benchmark`, checked in CI ([details](#benchmark)) |
 | Output screen | 0 missed of 22 malicious, 0 false positives of 13 benign samples; 6 known evasions listed separately | **offline**, a corpus written together with the rules: not a security claim ([details](#screening-tool-output)) |
 | Cost accuracy | ledger charge matched OpenRouter's `total_cost` on 2 of 2 generations checked | **live**, OpenRouter, 8 requests on 2026-11-03 ([details](#live-smoke)) |
+| Payments on a local node | 6 scenarios settle or fail as scripted on anvil: one payment, over-policy refused, response lost, signed but never broadcast, tool reports failure then submits, report reconciled with real transfers | **local e2e**, anvil with chain id 84532 and a mock USDC, `go test ./e2e/...`, checked in CI ([details](#local-end-to-end)) |
+| Accounting on fixtures | 16 hand-written fixtures; 14-request transcript charged 24,286,700 nanos, equal to the fixtures' bill and to the `/generation` bill, to the nano; cache hit rate 65.1% | **local e2e**, fixture mock at the HTTP boundary, `go test ./e2e/...`, checked in CI: it proves the gateway's accounting, not provider behaviour ([details](#local-end-to-end)) |
 | Payments on Base Sepolia | not run | **live**, pending |
 
 ### Dogfooding results
 
 > **Placeholder, to be filled by a human with real data.** No dogfooding has been run, so there are no numbers here: no request counts, no spend, no cache hit rate, no latency from real traffic, no policy refusals. When data exists it goes in this section, labelled live.
+
+## Local end to end
+
+Two layers run in CI with no secret, no faucet and no money, and neither is a substitute for a live run.
+
+| Layer | What runs | Proves | Does not prove |
+|---|---|---|---|
+| Payments | a local `anvil` node started with `--chain-id 84532`, a mock USDC (EIP-3009, domain `USDC` / `2`), real JSON-RPC, EIP-1559 fees, receipts; `agentgate paidtool --network anvil` | the RPC, fee and receipt path, the signed domain with Base Sepolia's chain id, the reconciler reading `authorizationState` over RPC | Circle's real USDC contract, a public RPC's behaviour, Base's fee market |
+| Model traffic | `testdata/llm/*.json` replayed by `fakeupstream -fixtures` over real HTTP and SSE; `configs/providers.mock.json` points every route at it | routing, SSE passthrough, usage parsing, cost source, ledger charge, the report, the screen `Judge` | how a real provider behaves or bills: fixtures are written by hand, not recorded from traffic |
+
+```bash
+anvil --chain-id 84532 &
+AG_ANVIL_URL=http://127.0.0.1:8545 AG_REQUIRE_ANVIL=1 AG_REQUIRE_DB=1 go test -count=1 ./e2e/...
+demo/phase15.sh --network anvil
+demo/phase3.sh --network anvil
+```
+
+Anvil's chain id is the testnet's, so the wallet needs no new id and the signing path is unchanged; funds come from minting the mock token and `anvil_setBalance`. The binary refuses to start against a node that does not call itself anvil, so a mint can never reach a real network, and every key is generated at run time. Time moves with `evm_increaseTime` and `evm_mine`, never with sleeps. Without `AG_ANVIL_URL` the chain tests skip; with `AG_REQUIRE_ANVIL=1` they fail. An unmatched prompt is a loud 500 naming the prompt hash. Study guide: [docs/learn/local-e2e.md](docs/learn/local-e2e.md).
 
 ## Build and test
 
@@ -212,7 +233,7 @@ What this is and is not:
 
 - The offline run uses a mock token with Circle USDC's EIP-3009 interface, so it proves the protocol logic, not Base Sepolia behaviour.
 - A run on Base Sepolia (`demo/phase15.sh --network base-sepolia`, needing an RPC URL, a gas-funded facilitator key and a USDC-funded wallet from the environment) is built but **separate and not part of the offline demo or CI**. The USDC address used there is Circle's [documented](https://developers.circle.com/stablecoins/usdc-contract-addresses) Base Sepolia one.
-- The wallet refuses to start for any chain id except 84532 and the local simulated chain, enforces its own per-transaction cap ($1 by default, `max_tx_usd`; it cannot be switched off) after and independent of policy, and prints as its address only. `agentgate wallet new` writes a testnet key to a gitignored `0600` file and prints only the address.
+- The wallet refuses to start for any chain id except 84532 and the local simulated chain (anvil runs with 84532), enforces its own per-transaction cap ($1 by default, `max_tx_usd`; it cannot be switched off) after and independent of policy, and prints as its address only. `agentgate wallet new` writes a testnet key to a gitignored `0600` file and prints only the address.
 - After signing, the chain is the source of truth, and the tool's word is not. The authorization is recorded on the ledger hold before it is signed. A tool that answers 402 or reports a revert after receiving the signature still holds a signed authorization and could submit it until `validBefore`, so no post-signature "no" releases the hold. Only a reported success settles; every other outcome (402, revert report, lost connection, 5xx, a ledger failure after the transfer) leaves the hold for the reconciler, which asks the token contract: used, so it settles the authorized amount; unused with the window still open, so it waits; unused with the window closed, so it releases. A failed tool call therefore returns money after about three minutes, not at once. A test has a tool report failure and then submit the authorization: the ledger charges once.
 - Who may pay whom is part of the agent's scope: its tool and payee allowlists, its daily and per-task budgets, its velocity limit and approval threshold (see [Policy](#policy)). The payments config file lists tools, the network and the wallet cap (`demo/payments.example.json`).
 
@@ -404,7 +425,7 @@ Not here: provider fallback, load balancing, a dashboard, multi-tenant managemen
 
 - **Single gateway process.** Only the registry of in-flight calls (what the kill switch cancels) is in process, so a second gateway would not see a kill for its own streams until its own watcher polled the database. The velocity window is in Postgres under an advisory lock, and the ledger is safe with several processes.
 - **Testnet only.** The wallet refuses every chain but Base Sepolia (84532) and the local simulated one. No mainnet, ever, in this code.
-- **Offline proof is not live proof.** The simulated chain uses a mock token with USDC's EIP-3009 interface. Base Sepolia behaviour (fees, RPC, real USDC) is untested until the live run.
+- **Offline and local proof is not live proof.** The simulated chain and anvil both use a mock token with USDC's EIP-3009 interface. Anvil proves the RPC, fee and receipt path, not Circle's real USDC contract; Base Sepolia behaviour (public RPC, real USDC) is untested until the live run. Fixtures prove the gateway's accounting, not provider behaviour.
 - **Reorgs** after a receipt are not handled.
 - **Screening is rule-based.** It lowers the odds of cheap attacks; budgets, scope and approval are what hold against a hijacked agent.
 - **Chain reconciliation starts from holds.** A transfer made with the key outside the gateway is not seen.
@@ -419,6 +440,7 @@ Not here: provider fallback, load balancing, a dashboard, multi-tenant managemen
 - [Policy](docs/learn/policy.md)
 - [MCP gateway and runs](docs/learn/mcp-runs.md)
 - [SDK, benchmark and demo](docs/learn/sdk-benchmark.md)
+- [Local end to end](docs/learn/local-e2e.md)
 
 ## License
 

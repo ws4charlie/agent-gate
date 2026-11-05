@@ -1,0 +1,18 @@
+{
+  "id": "chat-hello",
+  "match": {
+    "model": "mock/chat-small",
+    "prompt": "Say hello in one short sentence."
+  },
+  "response": {
+    "text": "Hello there, nice to meet you."
+  },
+  "usage": {
+    "input": 14,
+    "output": 9,
+    "cache_read": 0,
+    "cache_write": 0
+  },
+  "cost": 0.000035200,
+  "upstream_id": "gen-fx-01-chat-hello"
+}

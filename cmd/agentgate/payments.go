@@ -32,11 +32,11 @@ import (
 // PaymentsFile is the JSON the gateway reads with --payments / $AG_PAYMENTS.
 // Absent file: the payments route is off.
 type PaymentsFile struct {
-	Network string            `json:"network"` // sim | base-sepolia
+	Network string            `json:"network"` // sim | anvil | base-sepolia
 	Tools   map[string]string `json:"tools"`   // tool name -> URL
 	// ChainQueryURL (sim only): base URL of the paid tool, which hosts the
 	// simulated chain; the reconciler asks it whether an authorization was used.
-	// On base-sepolia the reconciler uses $AG_RPC_URL instead.
+	// On anvil and base-sepolia the reconciler reads the node over $AG_RPC_URL instead.
 	ChainQueryURL string `json:"chain_query_url"`
 	// MaxTxUSD is the wallet's per-transaction cap (default $1). It is checked
 	// inside the wallet, after and independent of policy.
@@ -101,6 +101,13 @@ func chainReader(ctx context.Context, f PaymentsFile) (x402.AuthReader, error) {
 			return nil, errors.New("payments config: sim needs chain_query_url (the paid tool's base URL)")
 		}
 		r = &x402.RemoteChain{BaseURL: strings.TrimRight(f.ChainQueryURL, "/")}
+	case "anvil":
+		// The same node over real JSON-RPC (chainReader), not the paid tool's HTTP path.
+		n, err := x402.DialAnvil(ctx, envOr("AG_RPC_URL", x402.DefaultAnvilURL))
+		if err != nil {
+			return nil, err
+		}
+		r = &x402.EthChain{Client: n.Client} // read-only use: no facilitator key
 	case "base-sepolia":
 		rpc := os.Getenv("AG_RPC_URL")
 		if rpc == "" {
@@ -128,10 +135,10 @@ func chainIDFor(network string) (uint64, error) {
 	switch network {
 	case "sim", "":
 		return x402.LocalChainID, nil
-	case "base-sepolia":
-		return x402.BaseSepoliaChainID, nil
+	case "base-sepolia", x402.NetworkAnvil:
+		return x402.BaseSepoliaChainID, nil // anvil runs with the testnet's chain id: the signing path is unchanged
 	}
-	return 0, fmt.Errorf("unknown network %q (want sim or base-sepolia)", network)
+	return 0, fmt.Errorf("unknown network %q (want sim, anvil or base-sepolia)", network)
 }
 
 // walletCmd: `agentgate wallet new [--file PATH]` and `wallet address`.
@@ -171,10 +178,10 @@ func walletCmd(args []string, stdout io.Writer) error {
 func paidtoolCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("paidtool", flag.ContinueOnError)
 	listen := fs.String("listen", "127.0.0.1:9402", "listen address")
-	network := fs.String("network", "sim", "sim | base-sepolia")
+	network := fs.String("network", "sim", "sim | anvil | base-sepolia")
 	payTo := fs.String("pay-to", "", "address that receives payment (required)")
-	fund := fs.String("fund", "", "sim only: mint this many USDC to --fund-address at startup, e.g. 5")
-	fundAddr := fs.String("fund-address", "", "sim only: the payer address to fund")
+	fund := fs.String("fund", "", "sim and anvil: mint this many USDC to --fund-address at startup, e.g. 5")
+	fundAddr := fs.String("fund-address", "", "sim and anvil: the payer address to fund")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -199,6 +206,35 @@ func paidtoolCmd(ctx context.Context, args []string, stdout io.Writer) error {
 				return errors.New("paidtool: --fund must be a whole number of USDC")
 			}
 			if err := sim.Mint(ctx, ecommon.HexToAddress(*fundAddr), big.NewInt(whole*1_000_000)); err != nil {
+				return err
+			}
+		}
+	case x402.NetworkAnvil:
+		// A local anvil node (--chain-id 84532), $AG_RPC_URL or http://127.0.0.1:8545. The
+		// guard in DialAnvil refuses anything that is not anvil before a single mint.
+		node, err := x402.DialAnvil(ctx, envOr("AG_RPC_URL", x402.DefaultAnvilURL))
+		if err != nil {
+			return err
+		}
+		defer node.Close()
+		chain, err := node.NewChain(ctx) // fresh facilitator key, gas via anvil_setBalance
+		if err != nil {
+			return err
+		}
+		token, err := chain.DeployMockUSDC(ctx)
+		if err != nil {
+			return err
+		}
+		cfg.Network, cfg.Token, cfg.Chain = x402.NetworkBaseSepolia, token, chain
+		if *fund != "" {
+			if !ecommon.IsHexAddress(*fundAddr) {
+				return errors.New("paidtool: --fund needs --fund-address")
+			}
+			whole, err := strconv.ParseInt(*fund, 10, 64)
+			if err != nil || whole < 0 {
+				return errors.New("paidtool: --fund must be a whole number of USDC")
+			}
+			if err := chain.Mint(ctx, token, ecommon.HexToAddress(*fundAddr), big.NewInt(whole*1_000_000)); err != nil {
 				return err
 			}
 		}

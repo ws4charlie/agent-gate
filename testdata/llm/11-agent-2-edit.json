@@ -1,0 +1,28 @@
+{
+  "id": "agent-2-edit",
+  "match": {
+    "model": "mock/code-agent",
+    "prompt": "func Add(a, b int) int { return a - b }"
+  },
+  "response": {
+    "text": "Add subtracts. Fixing the operator.",
+    "tool_calls": [
+      {
+        "name": "edit_file",
+        "arguments": {
+          "path": "calc.go",
+          "old": "a - b",
+          "new": "a + b"
+        }
+      }
+    ]
+  },
+  "usage": {
+    "input": 64,
+    "output": 52,
+    "cache_read": 1500,
+    "cache_write": 120
+  },
+  "cost": 0.002059200,
+  "upstream_id": "gen-fx-11-agent-2-edit"
+}

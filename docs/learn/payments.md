@@ -27,6 +27,10 @@ Both go through the same idempotency claim, approval queue, hold (`kind=payment`
 - **Chains.** `wallet.New` accepts only 84532 and the simulated chain; `Prepare` also refuses a requirement whose network differs. `TestWalletRefusesEveryOtherChain`.
 - **The key** lives in an unexported field, is read from an env var or a 0600 file, and `Wallet` formats as its address only (`String`, `GoString`, `LogValue`). `TestWalletKeyNeverFormatted`.
 
+## A real node, locally
+
+`paidtool --network anvil` and `payments.json` with `"network": "anvil"` use a local anvil node (`AG_RPC_URL`, default `http://127.0.0.1:8545`) started with `--chain-id 84532`. The signed domain, the 402 and the wallet guard are the Base Sepolia ones; the token is a mock USDC deployed at start (domain `USDC`, version `2`). `x402.DialAnvil` refuses any node whose `web3_clientVersion` does not say anvil, before a mint or an `anvil_setBalance`. The reconciler reads the same node over RPC (`chainReader`), not the paid tool. The six scenarios in `e2e/payments_test.go` run against it; see [local-e2e.md](local-e2e.md) for what that does and does not prove.
+
 Wire format (x402 v2, HTTP transport): headers `PAYMENT-REQUIRED`, `PAYMENT-SIGNATURE`, `PAYMENT-RESPONSE`, each base64 JSON. Payload fields: `x402Version`, `resource`, `accepted` (the requirements), `payload.signature`, `payload.authorization{from,to,value,validAfter,validBefore,nonce}`. Network is CAIP-2 (`eip155:84532`).
 
 ## Screen before sign (I10)

@@ -85,7 +85,7 @@ commands:
   reconcile   close expired holds once
   prices      sync: refresh configs/prices.json from OpenRouter
   wallet      new | address: the agent wallet key (testnet only)
-  paidtool    run the paid x402 endpoint (--network sim | base-sepolia)`)
+  paidtool    run the paid x402 endpoint (--network sim | anvil | base-sepolia)`)
 }
 
 func migrate(ctx context.Context, args []string, stdout io.Writer) error {
