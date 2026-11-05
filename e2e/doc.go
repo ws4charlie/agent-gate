@@ -7,5 +7,5 @@
 // internal/fakeupstream. The payment tests skip unless AG_ANVIL_URL is set and
 // fail when AG_REQUIRE_ANVIL=1; the Postgres-backed ones follow AG_REQUIRE_DB.
 //
-// What this proves and what it does not is in docs/learn/local-e2e.md.
+// What this proves and what it does not is in docs/testing.md.
 package e2e
