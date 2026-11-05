@@ -75,7 +75,7 @@ func TestResolveAndBuild(t *testing.T) {
 		t.Fatalf("%s", up.Body)
 	}
 	// same model, nothing to add: the body goes through byte for byte
-	raw := []byte(`{ "model" : "openai/gpt-y",  "x":1 }`)
+	raw := []byte(`{ "model" : "openai/gpt-y",  "max_tokens":5,"x":1 }`)
 	up, _ = Build(tg, "K", FormatAnthropic, hdr, raw, false, 100)
 	if !bytes.Equal(up.Body, raw) || up.URL != "https://openrouter.test/api/v1/messages" {
 		t.Fatalf("%s %s", up.URL, up.Body)

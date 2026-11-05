@@ -305,10 +305,8 @@ func (c *call) run() {
 	}
 
 	// 3. estimate the worst case: it is both the policy amount and the hold
-	maxOut := hdr.MaxTokens
-	if hdr.MaxCompletionTokens > 0 {
-		maxOut = hdr.MaxCompletionTokens
-	}
+	// The larger of the two: the gateway cannot know which one a provider obeys.
+	maxOut := max(hdr.MaxTokens, hdr.MaxCompletionTokens)
 	if maxOut <= 0 {
 		maxOut = s.DefaultMaxTokens
 	}

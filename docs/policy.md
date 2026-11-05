@@ -25,4 +25,4 @@ Agents can't approve their own requests or switch their limits off, because thos
 
 The per-task budget relies on the client being honest, since the client names the task. A hostile agent can invent a new task for each call.
 
-Budgets are checked against an estimate. If a request sets no limit on its output, it can cost more than we estimated, and one call can push an agent past its daily budget. The account balance is still a real ceiling.
+Budgets are checked against an estimate before a request runs. We give every request an output limit so the estimate holds, but a provider can still bill more than we expected, for example if our price table is out of date. Very large requests are also held at a fixed maximum, not their full worst case. So one call can occasionally land over budget. The account balance is the real ceiling.
