@@ -34,8 +34,8 @@ jobs:
         run: go test -race -count=1 ./...
 
   # The policy benchmark: scored scenarios against the assembled gateway on fakes.
-  # Exits non-zero on any mismatch. It rewrites the table in docs/reference.md and results.md, and the
-  # last step fails if the committed copies differ, so the published numbers are always current.
+  # Exits non-zero on any mismatch. It rewrites results.md, and the
+  # last step fails if the committed copy differs, so the published numbers are always current.
   benchmark:
     runs-on: ubuntu-latest
     services:
@@ -57,9 +57,9 @@ jobs:
         with:
           go-version-file: go.mod
       - name: run the benchmark
-        run: go run ./benchmark -readme docs/reference.md
-      - name: results.md and the reference table are committed
-        run: git diff --exit-code -- docs/reference.md benchmark/results.md
+        run: go run ./benchmark
+      - name: results.md is committed
+        run: git diff --exit-code -- benchmark/results.md
 
   # The Python SDK against a real gateway built from this commit (Go binaries, fakes, simulated chain).
   sdk-python:

@@ -15,15 +15,18 @@ Two rules carry the design:
 
 It is one Go process and one Postgres database. Operators use a CLI that writes to the database, so an agent has no HTTP route to approve its own requests.
 
+Read more about each part. Each page takes a minute or two:
+
 | Area | What it does |
 |---|---|
-| [Gateway](docs/reference.md#gateway) | OpenAI-compatible and native Anthropic endpoints, with streaming |
-| [Ledger](docs/reference.md#ledger) | Holds, settlement and recovery after a crash |
-| [Policy](docs/reference.md#policy) | Scopes, budgets, velocity limits, human approval, kill switch |
-| [MCP gateway](docs/reference.md#mcp-gateway) | Tool access control and tool output screening |
-| [Payments](docs/reference.md#payments) | x402 payments in USDC, with the chain as the source of truth |
-| [Runs](docs/reference.md#runs) | Groups the steps of one job so you can inspect or kill them together |
-| [SDK](docs/reference.md#sdk) | A thin Python client |
+| [Gateway](docs/gateway.md) | Sits between agents and model providers |
+| [Ledger](docs/ledger.md) | Holds the money first, then charges the real cost |
+| [Policy](docs/policy.md) | Sets what each agent may do and spend |
+| [Tools](docs/tools.md) | Controls tool access and screens what comes back |
+| [Payments](docs/payments.md) | Pays for tools in USDC, trusting the chain over the tool |
+| [Runs](docs/runs.md) | Groups one job's steps so you can read or stop them together |
+| [Python SDK](docs/sdk.md) | A small client for scripts and agents |
+| [Testing](docs/testing.md) | How it's tested without spending money |
 
 ## Try it
 
@@ -31,14 +34,6 @@ You need Go and a running Postgres. This demo uses a fake model provider and a t
 
 ```bash
 demo/phase1.sh
-```
-
-To run the tests:
-
-```bash
-createdb agentgate_test
-export DATABASE_URL='postgres:///agentgate_test?host=/tmp'
-AG_REQUIRE_DB=1 go test -race -count=1 ./...
 ```
 
 ## Status
@@ -49,12 +44,7 @@ AG_REQUIRE_DB=1 go test -race -count=1 ./...
 | Payments on a local chain | Local anvil node with a mock USDC, in CI |
 | OpenRouter | One small live run of 8 requests |
 
-**Not done:** Base Sepolia payments and real-traffic dogfooding. This is testnet-only software for a single gateway process. See [Limits](docs/reference.md#limits).
-
-## Learn more
-
-- [Reference](docs/reference.md): every feature, measured number and limit
-- [Study guides](docs/learn/foundations.md): how each part works, with quiz questions
+**Not done:** Base Sepolia payments and real-traffic dogfooding. This is testnet-only software for a single gateway process. See [Limits](docs/limits.md).
 
 ## License
 

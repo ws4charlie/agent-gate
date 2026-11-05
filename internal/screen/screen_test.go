@@ -42,7 +42,7 @@ func expectedRule(f string) string {
 
 // The corpus run: every malicious sample is blocked by the rule its file name
 // says, every benign sample passes. The counts are logged, and they are the
-// numbers docs/reference.md reports.
+// numbers we report.
 func TestCorpus(t *testing.T) {
 	s := &screen.Screener{}
 	mal, ben := files(t, "malicious"), files(t, "benign")
@@ -72,7 +72,7 @@ func TestCorpus(t *testing.T) {
 
 // The limits, written down: these evade the rules today. If a rule is ever
 // improved so that one is caught, this test fails and the file moves to
-// malicious/, which is the right nudge. See docs/reference.md for why this list
+// malicious/, which is the right nudge. See docs/tools.md for why this list
 // exists.
 func TestKnownEvasionsPass(t *testing.T) {
 	s := &screen.Screener{}
