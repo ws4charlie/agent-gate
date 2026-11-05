@@ -320,8 +320,8 @@ func filterTools(msg []byte, allow func(string) bool) (out []byte, kept, total i
 // passthrough forwards a request the gateway does not interpret (resources,
 // prompts, discover, ping, subscriptions) and streams the answer back
 // unchanged. It is authenticated, run-attached and audited, but not screened or
-// metered: that content re-enters the agent's context unchecked, a limit the
-// README states.
+// metered: that content re-enters the agent's context unchecked, a limit
+// docs/reference.md states.
 func (c *call) passthrough(srv mcp.Server, req mcp.Request, body []byte) {
 	upCtx, cancel := context.WithCancel(c.ctx)
 	defer cancel()

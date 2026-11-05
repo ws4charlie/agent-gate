@@ -32,7 +32,7 @@ Why a refusal is HTTP 200: the transport worked and the call was refused; JSON-R
 
 Layer one is a list of rules ([`rules.go`](../../internal/screen/rules.go)); layer two is an optional `Judge`. Rules run on every string in the result (`ExtractTexts` walks the JSON, skipping image/audio bytes), in this order: invisible characters (they also hide the others), instruction-override phrases, role markers, exfiltration URLs, then base64/hex/percent runs decoded once and re-scanned. A hit blocks the call result: the client gets error `40302` with the rule id; `screen_events` gets the rule and a SHA-256 of the text; the log line carries the same two things. The content is never stored (I9). The audit row has status `screened` and the rule id in `err`.
 
-What it cannot do is as important as what it does: see the README. The evasion samples are in the repository and a test fails the day one starts being caught, which is the prompt to move it into the malicious corpus.
+What it cannot do is as important as what it does: see [the reference](../reference.md#screening-tool-output). The evasion samples are in the repository and a test fails the day one starts being caught, which is the prompt to move it into the malicious corpus.
 
 ## Runs
 
