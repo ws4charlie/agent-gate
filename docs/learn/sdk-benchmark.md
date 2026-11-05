@@ -42,7 +42,7 @@ A scenario ([scenarios/*.json](../../benchmark/scenarios/)) is `{id, category, s
 - **The task budget is not a hard limit.** The caller picks `X-AgentGate-Task`. `allow-new-task-new-window` demonstrates it: after task `t1` is exhausted, `t2` is allowed.
 - **After the run** the benchmark calls `ledger.Audit`, so a scenario that corrupted the books (I1, I2) fails the run too.
 
-CI regenerates `results.md` and the README table and fails if the committed copies differ ([ci.yml](../../.github/workflows/ci.yml), job `benchmark`).
+CI regenerates `results.md` and the table in `docs/reference.md` and fails if the committed copies differ ([ci.yml](../../.github/workflows/ci.yml), job `benchmark`).
 
 ### Mutation check
 
@@ -71,7 +71,7 @@ The agents contain no model: they drive the fake upstream. They exist to show th
 2. **What do `ApprovalRequired` and `SettlementPending` have in common, and why are they different types?** Both arrive as 202 and neither is success. Approval: no money has moved, wait for a human and replay with the same key. Settlement pending: money may have moved, resolve it, never pay again with a new key.
 3. **What does `tool_call` add that a plain POST would miss?** `_meta` with the protocol version and capabilities, and the `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name` headers; without them the gateway rejects the request.
 4. **Why does a scenario judge only its last step?** Earlier steps create the situation (burn, kill, approve); the question is how the gateway treats the final request in that situation.
-5. **Why do the benchmark and its README table fail CI when stale?** So the published numbers are always what the current code produces.
+5. **Why do the benchmark and its published table fail CI when stale?** So the published numbers are always what the current code produces.
 6. **A gateway that refuses everything: what does it score?** Deny recall 100%, allow recall 0%, allow precision undefined or zero, so the 11 allow scenarios fail.
 7. **Why are the six evasion samples outside the pass/fail count?** A miss is their expected result. Counting them as passes would hide that the screen misses them; counting them as failures would make CI permanently red. They are listed, and the run fails only if one is newly caught.
 8. **Why does the velocity scenario fire calls in parallel against a slow upstream?** Spend is counted at the worst-case estimate while a call is in flight; sequential fast calls settle to their small real cost and never reach the limit.

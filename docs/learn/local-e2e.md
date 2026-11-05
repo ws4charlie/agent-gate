@@ -35,7 +35,7 @@ Mutation check: raise one inline-cost fixture's `cost` and `TestLLMReportGolden`
 | anvil | the RPC client, EIP-1559 fees, receipt waiting, the real EVM running the token's `transferWithAuthorization` | Circle's USDC contract, a public RPC's rate limits and lag, Base's fee market, reorgs |
 | fixtures | routing, SSE passthrough, usage parsing, cost source, ledger and report arithmetic, the Judge's request and answer handling | how a real provider streams, bills, rate limits or fails; prompt quality |
 
-Fixture numbers never go in the dogfooding section of the README. They are labelled **local e2e**.
+Fixture numbers never go in the dogfooding section of docs/reference.md. They are labelled **local e2e**.
 
 ## Quiz
 
