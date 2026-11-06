@@ -152,7 +152,7 @@ ZH = {
     'Early, with more to come.': '刚开始，后续继续测。',
     'your code, with its own key': '你的代码，用自己的密钥',
     'Operator': '运营方',
-    'sets limits, approves by CLI': '用命令行设限额、做审批',
+    'sets limits by CLI': '用命令行设限额',
     'one process that keeps the provider keys': '一个进程，保管供应商密钥',
     'Postgres': 'Postgres',
     'holds all the state': '存放全部状态',
@@ -166,11 +166,11 @@ ZH = {
     'Models': '模型',
     'proxy the call': '转发调用',
     'Tools': '工具',
-    'check, call, screen the result': '检查、调用、筛查结果',
+    'check, then screen': '检查后筛查结果',
     'Payments': '支付',
     'wallet signs if approved': '批准后钱包才签名',
     'Model providers': '模型供应商',
-    'OpenRouter, OpenAI and others': 'OpenRouter、OpenAI 等',
+    'OpenRouter, OpenAI…': 'OpenRouter、OpenAI…',
     'MCP tools': 'MCP 工具',
     'services run by others': '别人运行的服务',
     'Blockchain': '区块链',
@@ -183,17 +183,18 @@ class D:
     def __init__(self, name, w, h):
         self.name, self.w, self.h, self.o = name, w, h, []
 
-    def box(self, x, y, w, h, title="", sub="", c="blue", size=T, dash=False):
+    def box(self, x, y, w, h, title="", sub="", c="blue", size=T, dash=False, sub_size=None):
         f, s = COL[c]
         d = ' stroke-dasharray="8 6"' if dash else ""
         self.o.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="12" fill="{f}" stroke="{s}" stroke-width="2"{d}/>')
         lines = sub.split("\n") if sub else []
-        total = (size if title else -8) + len(lines) * (S + 8)
-        ty = y + (h - total) / 2 + (size * 0.85 if title else -S * 0.15 - 8)
+        sz = sub_size or S
+        total = (size if title else -8) + len(lines) * (sz + 8)
+        ty = y + (h - total) / 2 + (size * 0.85 if title else -sz * 0.15 - 8)
         if title:
             self.text(x + w / 2, ty, title, size, INK, True)
         for i, l in enumerate(lines):
-            self.text(x + w / 2, ty + (i + 1) * (S + 8), l, S, MUTED)
+            self.text(x + w / 2, ty + (i + 1) * (sz + 8), l, sz, MUTED)
 
     def group(self, x, y, w, h, label, c="gray"):
         f, s = COL[c]
@@ -364,7 +365,7 @@ def architecture():
     # Columns are 380 wide. Tiles carry their own margins, so they line up.
     def tile(name, w, h, title, sub, c):
         d = D(f"arch-{name}", w, h)
-        d.box(19, 2, w - 38, h - 4, title, sub, c, size=26)
+        d.box(19, 2, w - 38, h - 4, title, sub, c, size=30, sub_size=24)
         return d
 
     def bar(d, y, x1, x2):
@@ -375,7 +376,7 @@ def architecture():
 
     H, cols = 112, (190, 570, 950)
     tile("agent", 760, H, "Agent", "your code, with its own key", "blue").write()
-    tile("operator", 380, H, "Operator", "sets limits, approves by CLI", "gray").write()
+    tile("operator", 380, H, "Operator", "sets limits by CLI", "gray").write()
 
     d = D("arch-down", 1140, 40)
     d.arrow(380, 2, 380, 38)
@@ -389,28 +390,28 @@ def architecture():
     d.arrow(0, H / 2, 19, H / 2)
     d.write()
 
-    d = D("arch-split", 1140, 70)
-    stub(d, 380, 2, 32)
-    bar(d, 32, cols[0], cols[2])
+    d = D("arch-split", 1140, 74)
+    stub(d, 380, 2, 36)
+    bar(d, 36, cols[0], cols[2])
     for x in cols:
-        d.arrow(x, 32, x, 68)
-    d.text(665, 22, "Every request passes all three", S, MUTED)
+        d.arrow(x, 36, x, 72)
+    d.text(665, 26, "Every request passes all three", 24, MUTED)
     d.write()
 
     tile("policy", 380, H, "Policy", "may it do this?", "amber").write()
     tile("ledger", 380, H, "Ledger", "hold, then charge", "amber").write()
     tile("runs", 380, H, "Runs", "record every step", "amber").write()
 
-    d = D("arch-merge", 1140, 70)
+    d = D("arch-merge", 1140, 74)
     for x in cols:
-        stub(d, x, 2, 32)
-        d.arrow(x, 32, x, 68)
-    bar(d, 32, cols[0], cols[2])
-    d.text(380, 22, "Then it takes one of three paths", S, MUTED)
+        stub(d, x, 2, 36)
+        d.arrow(x, 36, x, 72)
+    bar(d, 36, cols[0], cols[2])
+    d.text(380, 26, "Then it takes one of three paths", 24, MUTED)
     d.write()
 
     tile("models", 380, H, "Models", "proxy the call", "green").write()
-    tile("tools", 380, H, "Tools", "check, call, screen the result", "green").write()
+    tile("tools", 380, H, "Tools", "check, then screen", "green").write()
     tile("payments", 380, H, "Payments", "wallet signs if approved", "green").write()
 
     d = D("arch-out", 1140, 40)
@@ -418,7 +419,7 @@ def architecture():
         d.arrow(x, 2, x, 38)
     d.write()
 
-    tile("providers", 380, H, "Model providers", "OpenRouter, OpenAI and others", "white").write()
+    tile("providers", 380, H, "Model providers", "OpenRouter, OpenAI…", "white").write()
     tile("mcp", 380, H, "MCP tools", "services run by others", "white").write()
     tile("chain", 380, H, "Blockchain", "the tool cashes, we verify", "white").write()
 
