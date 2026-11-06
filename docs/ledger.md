@@ -1,5 +1,7 @@
 # Ledger
 
+[中文](zh/ledger.md)
+
 The ledger is where the money is tracked. It works like a hotel holding a deposit on your card. When you check in, they hold more than you will probably spend. When you check out, they charge the real amount and let the rest go.
 
 ![A $0.50 hold on a $10 balance. The call costs $0.12, so $0.12 is charged and $0.38 returned.](images/ledger.png)

@@ -1,5 +1,7 @@
 # Limits
 
+[中文](zh/limits.md)
+
 Here's what this project is not, so you don't have to find out the hard way.
 
 **It hasn't seen real traffic.** There's been one small live run against OpenRouter. No real workload has gone through it yet, so any performance numbers come from a controlled setup.

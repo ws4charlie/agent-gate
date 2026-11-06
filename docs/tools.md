@@ -1,5 +1,7 @@
 # Tools
 
+[中文](zh/tools.md)
+
 Agents use tools through MCP, the standard protocol for connecting them to outside services. We put the gateway in the middle, so a tool call gets the same treatment as a model call: it is checked, paid for and recorded.
 
 ![Tool calls pass through the gateway, and results are screened before the agent reads them.](images/tools.png)

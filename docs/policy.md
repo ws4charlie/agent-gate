@@ -1,5 +1,7 @@
 # Policy
 
+[中文](zh/policy.md)
+
 An API key with a budget treats an agent as a billing line. We treat it more like a bank customer: it has an identity, it has limits, and someone can freeze the account.
 
 ![Five checks in order. The first failure decides.](images/policy.png)

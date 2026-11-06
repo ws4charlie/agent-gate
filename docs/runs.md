@@ -1,5 +1,7 @@
 # Runs
 
+[中文](zh/runs.md)
+
 Agents don't make one call. They make dozens, mixing model calls, tool calls and payments to finish one job. A run ties those together.
 
 ![One run holds every step of a job, so you can read it, total it or stop it.](images/runs.png)
