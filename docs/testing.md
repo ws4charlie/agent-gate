@@ -1,5 +1,7 @@
 # Testing
 
+[中文](zh/testing.md)
+
 Testing something that spends money has an obvious problem: you don't want to spend money. So almost everything here runs with no keys, no faucet and nothing leaving the machine.
 
 ![Three levels of testing: fakes, local end to end and live.](images/testing.png)

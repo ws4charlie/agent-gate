@@ -1,5 +1,7 @@
 # Python SDK
 
+[中文](zh/sdk.md)
+
 You don't need an SDK, since the gateway speaks standard formats. The Python client is a small convenience for scripts and agents that want the extras: running several calls as one job, paying for tools, and checking how much budget is left.
 
 ![The SDK turns gateway refusals into clear errors.](images/sdk.png)

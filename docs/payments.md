@@ -1,5 +1,7 @@
 # Payments
 
+[中文](zh/payments.md)
+
 Sometimes a tool charges per use. It answers "that will be one cent" using x402, an open standard built on HTTP's old 402 Payment Required status. The gateway can pay it in USDC on the agent's behalf, so the agent doesn't need its own crypto setup.
 
 ![A payment goes through policy, then the wallet, then the chain. If it fails, the chain decides.](images/payments.png)

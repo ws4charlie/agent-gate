@@ -1,5 +1,7 @@
 # Gateway
 
+[中文](zh/gateway.md)
+
 The gateway sits between your agents and the model providers. Agents talk to it the same way they would talk to OpenAI or Anthropic, so most tools work by changing one URL. Claude Code works this way.
 
 ![Agents use a gateway key. The gateway holds the real provider key and streams answers back.](images/gateway.png)

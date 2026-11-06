@@ -5,6 +5,7 @@ import subprocess
 from html import escape
 
 HERE = pathlib.Path(__file__).parent
+OUT, LANG = HERE, "en"
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 FONT = "'PingFang SC','Hiragino Sans GB','Heiti SC',sans-serif"
 T, S = 24, 19  # title and subtitle sizes; the canvas is about 1100 wide
@@ -19,6 +20,138 @@ COL = {
     "white": ("#FFFFFF", "#AEB6BF"),
 }
 INK, MUTED = "#1F2933", "#52606D"
+
+
+ZH = {
+    'Authenticate': '认证',
+    'who is calling': '谁在调用',
+    'Policy': '策略',
+    'is it allowed': '允不允许',
+    'Hold': '冻结',
+    'lock worst case': '冻结最坏花费',
+    'Execute': '执行',
+    'call upstream': '调用上游',
+    'Settle': '结算',
+    'charge real cost': '按实收费',
+    'Audit': '记录',
+    'log the outcome': '写入审计',
+    'Refused': '拒绝',
+    'told which rule,': '告知命中的规则，',
+    'upstream never called': '不调用上游',
+    'Needs a human': '等人审批',
+    'funds stay held': '钱继续冻结',
+    'Fails midway': '中途失败',
+    'pay for what arrived,': '只付已收到的部分，',
+    'the rest is returned': '其余退回',
+    'Process dies': '进程崩溃',
+    'a cleanup job': '后台任务',
+    'closes the hold later': '稍后关闭冻结',
+    'Agent': 'Agent',
+    'holds a gateway key': '只拿网关密钥',
+    'Gateway': '网关',
+    'holds the real key': '保管真实密钥',
+    'Model provider': '模型供应商',
+    'OpenRouter and others': 'OpenRouter 等',
+    'request': '请求',
+    'stream': '流式返回',
+    'When something goes wrong': '出问题时怎么办',
+    'Stream dies': '流中断',
+    'pay for what arrived': '只付已收到的部分',
+    'Provider error': '供应商报错',
+    'pay nothing': '不收钱',
+    'Sent twice': '重复发送',
+    'second one refused': '第二次被拒绝',
+    'Balance': '余额',
+    'up to $0.50': '最多 $0.50',
+    'Call runs': '调用',
+    'really costs $0.12': '实际花了 $0.12',
+    'Charge $0.12': '收 $0.12',
+    'return $0.38': '退回 $0.38',
+    'If the gateway crashes during the call': '如果调用中途网关崩溃',
+    'Hold expires': '冻结到期',
+    'nothing closed it': '没人关闭它',
+    'Background job': '后台任务',
+    'looks for the real cost': '查找真实花费',
+    'Close the hold': '关闭冻结',
+    'charge it, or return it': '按结果扣费或退回',
+    'Active?': '还在用吗',
+    'not killed': '没被停用',
+    'In scope?': '在范围内吗',
+    'model, tool, payee': '模型、工具、收款方',
+    'In budget?': '预算够吗',
+    "today's limit": '今日额度',
+    'Too fast?': '花得太快吗',
+    'spend per minute': '每分钟花费',
+    'Too large?': '金额太大吗',
+    'ask a person': '要人批准',
+    'Fails a check': '没通过',
+    'refused, and told which rule': '拒绝，并告知是哪条规则',
+    'Too large': '金额太大',
+    'money held, waits for a person': '钱冻结着，等人批准',
+    'Passes all five': '全部通过',
+    'goes ahead': '放行',
+    'Checks run left to right. The first failure decides.': '从左到右检查，第一个不通过的说了算。',
+    'sees only allowed tools': '只看到允许的工具',
+    'checks and charges': '检查并收费',
+    'Tool': '工具',
+    'keeps its own login': '凭证留在网关',
+    'call': '调用',
+    'What happens to the result': '工具返回的结果怎么处理',
+    'Tool result': '工具结果',
+    'text someone else wrote': '别人写的文字',
+    'Screen': '筛查',
+    'looks for known tricks': '查找已知手法',
+    'Clean: agent reads it': '干净：交给 Agent',
+    'Match: blocked and logged': '命中：拦截并记录',
+    'Tool asks': '工具要钱',
+    'this costs 1 cent': '这次收 1 美分',
+    'may it pay?': '可以付吗',
+    'Wallet signs': '钱包签名',
+    'only if approved': '批准后才签',
+    'Tool cashes it': '工具兑现',
+    'sends it to the chain': '提交到链上',
+    'Ledger charges': '账本扣费',
+    'the amount paid': '扣实付金额',
+    'If the tool reports anything but success': '只要工具没报成功',
+    'Wait': '等待',
+    'keep the money held until': '钱继续冻结，',
+    'the signature expires': '直到签名过期',
+    'Ask the chain': '问区块链',
+    'did money move?': '钱动了吗',
+    'Moved: charge': '动了：扣费',
+    "Didn't move: refund": '没动：退款',
+    'Run: write the weekly report': '一次 Run：写周报',
+    'Model': '模型',
+    'free': '免费',
+    'Payment': '支付',
+    'Read it': '看过程',
+    'what happened, step by step': '每一步做了什么',
+    'Total it': '算总账',
+    '$0.06, taken from the ledger': '$0.06，数据来自账本',
+    'Stop it': '停下来',
+    'kill just this job': '只停这项工作',
+    'Your agent': '你的 Agent',
+    'Python code': 'Python 代码',
+    'small client': '轻量客户端',
+    'says no, with a reason': '拒绝时给出原因',
+    'The refusal becomes a clear error': '拒绝会变成清楚的错误',
+    'stop for today': '今天先停',
+    'try something else': '换个做法',
+    'stop now': '立刻停止',
+    'wait for a person': '等人批准',
+    "don't pay again": '不要重复付款',
+    'Fakes': '模拟环境',
+    'Fake provider, simulated chain.': '模拟供应商和模拟链。',
+    'Covers crashes, races and dropped streams.': '覆盖崩溃、并发和断流。',
+    'Every change': '每次改动',
+    'Local end to end': '本地端到端',
+    'Real local chain, stand-in USDC, scripted model.': '真实本地链、替身 USDC、脚本化模型。',
+    'The whole path, with no keys.': '跑通全流程，不需要密钥。',
+    'Live': '线上',
+    'Real provider and network.': '真实供应商和网络。',
+    'One small run so far.': '目前只跑过一小次。',
+    'By hand': '人工',
+}
 
 
 class D:
@@ -43,6 +176,8 @@ class D:
         self.text(x + 22, y + 34, label, T, INK, True, "start")
 
     def text(self, x, y, t, size=S, fill=INK, bold=False, anchor="middle"):
+        if LANG == "zh":
+            t = ZH.get(t, t)
         w = ' font-weight="600"' if bold else ""
         self.o.append(f'<text x="{x}" y="{y}" font-size="{size}" fill="{fill}" text-anchor="{anchor}"{w}>{escape(t)}</text>')
 
@@ -60,10 +195,10 @@ class D:
                 f'<path d="M10 0L0 5L10 10z" fill="{MUTED}"/></marker></defs>')
         svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{self.w}" height="{self.h}" viewBox="0 0 {self.w} {self.h}" '
                f'font-family="{FONT}"><rect width="100%" height="100%" fill="#FFFFFF"/>{defs}{"".join(self.o)}</svg>')
-        html = HERE / f".{self.name}.html"
+        html = OUT / f".{self.name}.html"
         html.write_text(f'<!doctype html><meta charset="utf-8"><style>html,body{{margin:0;background:#fff}}</style>{svg}', encoding="utf-8")
         subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--force-device-scale-factor=2",
-                        f"--window-size={self.w},{self.h}", f"--screenshot={HERE / (self.name + '.png')}", html.as_uri()],
+                        f"--window-size={self.w},{self.h}", f"--screenshot={OUT / (self.name + '.png')}", html.as_uri()],
                        check=True, capture_output=True, timeout=60)
         html.unlink()
 
@@ -199,6 +334,7 @@ def testing():
     d.write()
 
 
-for f in (request_flow, gateway, ledger, policy, tools, payments, runs, sdk, testing):
-    f()
+for OUT, LANG in ((HERE, "en"), (HERE.parent / "zh" / "images", "zh")):
+    for f in (request_flow, gateway, ledger, policy, tools, payments, runs, sdk, testing):
+        f()
 print("ok")

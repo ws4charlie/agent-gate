@@ -1,5 +1,7 @@
 # AgentGate
 
+English | [中文](README.zh-CN.md)
+
 A gateway between AI agents and everything that costs money. Every model call, tool call and payment is authorized, metered, limited and logged.
 
 An agent that can spend money can also be hijacked by text in a tool result, so a bare API key with a budget is not enough. AgentGate keeps the keys, gives each agent a scoped identity, and checks every spend against a ledger and a policy before it happens.
