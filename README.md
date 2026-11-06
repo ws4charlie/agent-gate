@@ -44,7 +44,7 @@ demo/phase1.sh
 |---|---|
 | Ledger, gateway, policy, MCP gateway, payments | Tests in CI, with no secrets |
 | Payments on a local chain | Local anvil node with a mock USDC, in CI |
-| OpenRouter | One small live run of 8 requests |
+| OpenRouter | Early live testing, with more to come |
 
 **Not done:** Base Sepolia payments and real-traffic dogfooding. This is testnet-only software for a single gateway process. See [Limits](docs/limits.md).
 

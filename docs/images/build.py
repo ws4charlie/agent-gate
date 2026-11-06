@@ -149,7 +149,7 @@ ZH = {
     'The whole path, with no keys.': '跑通全流程，不需要密钥。',
     'Live': '线上',
     'Real provider and network.': '真实供应商和网络。',
-    'One small run so far.': '目前只跑过一小次。',
+    'Early, with more to come.': '刚开始，后续继续测。',
     'By hand': '人工',
 }
 
@@ -324,7 +324,7 @@ def testing():
     d = D("testing", 1140, 400)
     rows = [("Fakes", "Fake provider, simulated chain.\nCovers crashes, races and dropped streams.", "Every change", "blue"),
             ("Local end to end", "Real local chain, stand-in USDC, scripted model.\nThe whole path, with no keys.", "Every change", "green"),
-            ("Live", "Real provider and network.\nOne small run so far.", "By hand", "amber")]
+            ("Live", "Real provider and network.\nEarly, with more to come.", "By hand", "amber")]
     y = 30
     for t, s, w, c in rows:
         d.box(30, y, 260, 104, t, "", c)

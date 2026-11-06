@@ -46,7 +46,7 @@ demo/phase1.sh
 |---|---|
 | 账本、网关、策略、工具网关、支付 | CI 测试，不需要任何密钥 |
 | 本地链上的支付 | 本地 anvil 节点加 mock USDC，在 CI 中运行 |
-| OpenRouter | 跑过一次小规模线上测试，共 8 个请求 |
+| OpenRouter | 线上测试刚开始，后续继续测 |
 
 **还没做：** Base Sepolia 真实支付和真实流量试用。目前只支持测试网，并且只支持单个网关进程。详见[局限](docs/zh/limits.md)。
 

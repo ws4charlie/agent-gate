@@ -4,7 +4,7 @@
 
 Here's what this project is not, so you don't have to find out the hard way.
 
-**It hasn't seen real traffic.** There's been one small live run against OpenRouter. No real workload has gone through it yet, so any performance numbers come from a controlled setup.
+**It hasn't seen real traffic.** Live testing against OpenRouter has only just started, and no real workload has gone through it yet, so any performance numbers come from a controlled setup.
 
 **It's testnet only.** The wallet refuses mainnet on purpose, and chain reorganisations aren't handled. A public testnet run is written but hasn't happened.
 
