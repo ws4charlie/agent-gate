@@ -104,7 +104,7 @@ ZH = {
     'Clean: agent reads it': '干净：交给 Agent',
     'Match: blocked and logged': '命中：拦截并记录',
     'Tool asks': '工具要钱',
-    'this costs 1 cent': '这次收 1 美分',
+    'this costs 3 cents': '这次收 3 美分',
     'may it pay?': '可以付吗',
     'Wallet signs': '钱包签名',
     'only if approved': '批准后才签',
@@ -119,7 +119,7 @@ ZH = {
     'Ask the chain': '问区块链',
     'did money move?': '钱动了吗',
     'Moved: charge': '动了：扣费',
-    "Didn't move: refund": '没动：退款',
+    "Didn't move: release hold": '没动：解除冻结',
     'Run: write the weekly report': '一次 Run：写周报',
     'Model': '模型',
     'free': '免费',
@@ -290,13 +290,13 @@ def tools():
 
 def payments():
     d = D("payments", 1140, 420)
-    row(d, [("Tool asks", "this costs 1 cent", "gray"), ("Policy", "may it pay?", "amber"), ("Wallet signs", "only if approved", "green"),
+    row(d, [("Tool asks", "this costs 3 cents", "gray"), ("Policy", "may it pay?", "amber"), ("Wallet signs", "only if approved", "green"),
             ("Tool cashes it", "sends it to the chain", "gray"), ("Ledger charges", "the amount paid", "amber")], gap=22)
     d.text(570, 205, "If the tool reports anything but success", T, INK, True)
     d.box(30, 240, 400, 140, "Wait", "keep the money held until\nthe signature expires", "gray")
     d.box(530, 240, 250, 140, "Ask the chain", "did money move?", "blue")
     d.box(860, 240, 250, 62, "", "Moved: charge", "amber")
-    d.box(860, 318, 250, 62, "", "Didn't move: refund", "green")
+    d.box(860, 318, 250, 62, "", "Didn't move: release hold", "green")
     d.arrow(430, 310, 530, 310)
     d.arrow(780, 295, 860, 272)
     d.arrow(780, 330, 860, 348)
