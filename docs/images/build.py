@@ -150,6 +150,31 @@ ZH = {
     'Live': '线上',
     'Real provider and network.': '真实供应商和网络。',
     'Early, with more to come.': '刚开始，后续继续测。',
+    'your code, with its own key': '你的代码，用自己的密钥',
+    'Operator': '运营方',
+    'sets limits, approves by CLI': '用命令行设限额、做审批',
+    'one process that keeps the provider keys': '一个进程，保管供应商密钥',
+    'Postgres': 'Postgres',
+    'holds all the state': '存放全部状态',
+    'Every request passes all three': '每个请求都要过这三关',
+    'Then it takes one of three paths': '然后走三条路之一',
+    'may it do this?': '能不能做',
+    'Ledger': '账本',
+    'hold, then charge': '先冻结，后扣费',
+    'Runs': 'Run',
+    'record every step': '记录每一步',
+    'Models': '模型',
+    'proxy the call': '转发调用',
+    'Tools': '工具',
+    'check, call, screen the result': '检查、调用、筛查结果',
+    'Payments': '支付',
+    'wallet signs if approved': '批准后钱包才签名',
+    'Model providers': '模型供应商',
+    'OpenRouter, OpenAI and others': 'OpenRouter、OpenAI 等',
+    'MCP tools': 'MCP 工具',
+    'services run by others': '别人运行的服务',
+    'Blockchain': '区块链',
+    'the tool cashes, we verify': '工具兑现，网关核对',
     'By hand': '人工',
 }
 
@@ -334,7 +359,71 @@ def testing():
     d.write()
 
 
+def architecture():
+    # The README shows this as a grid of tiles so that each box can be a link.
+    # Columns are 380 wide. Tiles carry their own margins, so they line up.
+    def tile(name, w, h, title, sub, c):
+        d = D(f"arch-{name}", w, h)
+        d.box(19, 2, w - 38, h - 4, title, sub, c, size=26)
+        return d
+
+    def bar(d, y, x1, x2):
+        d.o.append(f'<line x1="{x1}" y1="{y}" x2="{x2}" y2="{y}" stroke="{MUTED}" stroke-width="2.5"/>')
+
+    def stub(d, x, y1, y2):
+        d.o.append(f'<line x1="{x}" y1="{y1}" x2="{x}" y2="{y2}" stroke="{MUTED}" stroke-width="2.5"/>')
+
+    H, cols = 112, (190, 570, 950)
+    tile("agent", 760, H, "Agent", "your code, with its own key", "blue").write()
+    tile("operator", 380, H, "Operator", "sets limits, approves by CLI", "gray").write()
+
+    d = D("arch-down", 1140, 40)
+    d.arrow(380, 2, 380, 38)
+    d.arrow(950, 2, 950, 38)
+    d.write()
+
+    d = tile("gateway", 760, H, "Gateway", "one process that keeps the provider keys", "blue")
+    d.arrow(760, H / 2, 741, H / 2)
+    d.write()
+    d = tile("postgres", 380, H, "Postgres", "holds all the state", "gray")
+    d.arrow(0, H / 2, 19, H / 2)
+    d.write()
+
+    d = D("arch-split", 1140, 70)
+    stub(d, 380, 2, 32)
+    bar(d, 32, cols[0], cols[2])
+    for x in cols:
+        d.arrow(x, 32, x, 68)
+    d.text(665, 22, "Every request passes all three", S, MUTED)
+    d.write()
+
+    tile("policy", 380, H, "Policy", "may it do this?", "amber").write()
+    tile("ledger", 380, H, "Ledger", "hold, then charge", "amber").write()
+    tile("runs", 380, H, "Runs", "record every step", "amber").write()
+
+    d = D("arch-merge", 1140, 70)
+    for x in cols:
+        stub(d, x, 2, 32)
+        d.arrow(x, 32, x, 68)
+    bar(d, 32, cols[0], cols[2])
+    d.text(380, 22, "Then it takes one of three paths", S, MUTED)
+    d.write()
+
+    tile("models", 380, H, "Models", "proxy the call", "green").write()
+    tile("tools", 380, H, "Tools", "check, call, screen the result", "green").write()
+    tile("payments", 380, H, "Payments", "wallet signs if approved", "green").write()
+
+    d = D("arch-out", 1140, 40)
+    for x in cols:
+        d.arrow(x, 2, x, 38)
+    d.write()
+
+    tile("providers", 380, H, "Model providers", "OpenRouter, OpenAI and others", "white").write()
+    tile("mcp", 380, H, "MCP tools", "services run by others", "white").write()
+    tile("chain", 380, H, "Blockchain", "the tool cashes, we verify", "white").write()
+
+
 for OUT, LANG in ((HERE, "en"), (HERE.parent / "zh" / "images", "zh")):
-    for f in (request_flow, gateway, ledger, policy, tools, payments, runs, sdk, testing):
+    for f in (architecture, request_flow, gateway, ledger, policy, tools, payments, runs, sdk, testing):
         f()
 print("ok")
