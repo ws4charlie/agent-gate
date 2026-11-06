@@ -83,6 +83,10 @@ type Ledger interface {
 type Usage struct {
 	Cost   money.Nanos
 	Source string
+	// ChargeHold means the real cost cannot be known (the provider has no usage
+	// lookup, yet may have billed the call), so the reconciler charges the hold
+	// in full and ignores Cost. Overcharging up to the hold beats silent loss (I6).
+	ChargeHold bool
 }
 
 type UsageLookup interface {

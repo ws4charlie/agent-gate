@@ -372,6 +372,13 @@ func (c *call) run() {
 		return
 	}
 
+	// I6: a provider with no usage lookup leaves nothing to find after a crash
+	// unless the hold is marked first; the reconciler then charges it in full.
+	// A real id attached later overwrites this one.
+	if !target.Cfg.HasUsageLookup() {
+		c.attach(hold, target.Name, "pending:"+c.ev.RequestID)
+	}
+
 	// 4. upstream
 	stopLease := c.lease(hold.ID)
 	defer stopLease()

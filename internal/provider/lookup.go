@@ -14,7 +14,9 @@ import (
 
 // GenerationLookup is the ledger.UsageLookup for OpenRouter-style providers:
 // GET <base>/generation?id=... returns the billed cost of one call (I6).
-// Providers of other kinds have no such endpoint, so they report "not found".
+// A known provider without such an endpoint cannot say what a call cost, so
+// the answer is "found, charge the whole hold" (I6): unbilled spend is worse
+// than an overcharge capped at the hold.
 type GenerationLookup struct {
 	Client    *http.Client
 	Providers map[string]ProviderCfg
@@ -25,8 +27,11 @@ var _ ledger.UsageLookup = (*GenerationLookup)(nil)
 
 func (g *GenerationLookup) Lookup(ctx context.Context, name, upstreamID string) (ledger.Usage, bool, error) {
 	cfg, ok := g.Providers[name]
-	if !ok || cfg.Kind != KindOpenAICompatible || upstreamID == "" {
+	if !ok || upstreamID == "" {
 		return ledger.Usage{}, false, nil
+	}
+	if !cfg.HasUsageLookup() {
+		return ledger.Usage{ChargeHold: true, Source: "hold_no_lookup"}, true, nil
 	}
 	u := strings.TrimRight(cfg.BaseURL, "/") + "/generation?id=" + url.QueryEscape(upstreamID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)

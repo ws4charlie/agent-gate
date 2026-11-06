@@ -496,6 +496,15 @@ func (p *Postgres) reconcileOne(ctx context.Context, lookup UsageLookup, id stri
 		if err != nil {
 			return err // ErrNoRows: locked elsewhere or changed
 		}
+		if found && u.ChargeHold {
+			// I6: unknown cost on a provider that may have billed us: charge the hold.
+			st, err := settleLocked(ctx, tx, h, h.Amount, key, "reconciled, charged in full: "+u.Source)
+			if err != nil {
+				return err
+			}
+			outcome = ReconcileOutcome{HoldID: h.ID, AccountID: h.AccountID, Result: "settled", Amount: st.Charged, Source: u.Source}
+			return nil
+		}
 		if found && u.Cost >= 0 {
 			st, err := settleLocked(ctx, tx, h, u.Cost, key, "reconciled from usage: "+u.Source)
 			if err != nil {
