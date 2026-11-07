@@ -28,13 +28,13 @@ ZH = {
     'Policy': '策略',
     'is it allowed': '允不允许',
     'Hold': '冻结',
-    'lock worst case': '冻结最坏花费',
+    'hold worst case': '冻结最坏花费',
     'Execute': '执行',
     'call upstream': '调用上游',
     'Settle': '结算',
-    'charge real cost': '按实收费',
+    'real cost': '按实收费',
     'Audit': '记录',
-    'log the outcome': '写入审计',
+    'log it': '写入审计',
     'Refused': '拒绝',
     'told which rule,': '告知命中的规则，',
     'upstream never called': '不调用上游',
@@ -109,7 +109,7 @@ ZH = {
     'Wallet signs': '钱包签名',
     'only if approved': '批准后才签',
     'Tool cashes it': '工具兑现',
-    'sends it to the chain': '提交到链上',
+    'sends it to chain': '提交到链上',
     'Ledger charges': '账本扣费',
     'the amount paid': '扣实付金额',
     'If the tool reports anything but success': '只要工具没报成功',
@@ -215,9 +215,9 @@ class D:
             self.text(lx if lx is not None else (x1 + x2) / 2, ly if ly is not None else (y1 + y2) / 2 - 10, label, S, MUTED, False, anchor)
 
     def write(self):
-        defs = (f'<defs><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">'
+        defs = (f'<defs><marker id="h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">'
                 f'<path d="M0 0L10 5L0 10z" fill="{MUTED}"/></marker>'
-                f'<marker id="hs" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="8" markerHeight="8" orient="auto">'
+                f'<marker id="hs" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="6" markerHeight="6" orient="auto">'
                 f'<path d="M10 0L0 5L10 10z" fill="{MUTED}"/></marker></defs>')
         svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{self.w}" height="{self.h}" viewBox="0 0 {self.w} {self.h}" '
                f'font-family="{FONT}"><rect width="100%" height="100%" fill="#FFFFFF"/>{defs}{"".join(self.o)}</svg>')
@@ -230,7 +230,7 @@ class D:
 
 
 
-def row(d, items, y=30, h=120, x0=30, total=1080, gap=26, size=23):
+def row(d, items, y=30, h=120, x0=30, total=1080, gap=44, size=23):
     n = len(items)
     w = (total - gap * (n - 1)) / n
     xs = []
@@ -256,8 +256,8 @@ def cards(d, items, y, h=120, x0=30, total=1080, gap=20):
 
 def request_flow():
     d = D("request-flow", 1140, 400)
-    xs = row(d, [("Authenticate", "who is calling", "blue"), ("Policy", "is it allowed", "amber"), ("Hold", "lock worst case", "amber"),
-                 ("Execute", "call upstream", "green"), ("Settle", "charge real cost", "amber"), ("Audit", "log the outcome", "purple")], gap=18)
+    xs = row(d, [("Authenticate", "who is calling", "blue"), ("Policy", "is it allowed", "amber"), ("Hold", "hold worst case", "amber"),
+                 ("Execute", "call upstream", "green"), ("Settle", "real cost", "amber"), ("Audit", "log it", "purple")], gap=36, size=21)
     ys = cards(d, [("Refused", "told which rule,\nupstream never called", "red"), ("Needs a human", "funds stay held", "gray"),
                    ("Fails midway", "pay for what arrived,\nthe rest is returned", "gray"), ("Process dies", "a cleanup job\ncloses the hold later", "gray")], 240, 130)
     for a, b in zip(xs[1:5], ys):
@@ -292,7 +292,7 @@ def ledger():
 def policy():
     d = D("policy", 1140, 400)
     xs = row(d, [("Active?", "not killed", "red"), ("In scope?", "model, tool, payee", "amber"), ("In budget?", "today's limit", "amber"),
-                 ("Too fast?", "spend per minute", "amber"), ("Too large?", "ask a person", "blue")], gap=22, size=23)
+                 ("Too fast?", "spend per minute", "amber"), ("Too large?", "ask a person", "blue")], gap=36, size=23)
     cards(d, [("Fails a check", "refused, and told which rule", "red"), ("Too large", "money held, waits for a person", "gray"), ("Passes all five", "goes ahead", "green")], 245, 130)
     d.text(570, 208, "Checks run left to right. The first failure decides.", T, INK, True)
     d.write()
@@ -317,7 +317,7 @@ def tools():
 def payments():
     d = D("payments", 1140, 420)
     row(d, [("Tool asks", "this costs 3 cents", "gray"), ("Policy", "may it pay?", "amber"), ("Wallet signs", "only if approved", "green"),
-            ("Tool cashes it", "sends it to the chain", "gray"), ("Ledger charges", "the amount paid", "amber")], gap=22)
+            ("Tool cashes it", "sends it to chain", "gray"), ("Ledger charges", "the amount paid", "amber")], gap=36, size=21)
     d.text(570, 205, "If the tool reports anything but success", T, INK, True)
     d.box(30, 240, 400, 140, "Wait", "keep the money held until\nthe signature expires", "gray")
     d.box(530, 240, 250, 140, "Ask the chain", "did money move?", "blue")
@@ -363,9 +363,9 @@ def testing():
 def architecture():
     # The README shows this as a grid of tiles so that each box can be a link.
     # Columns are 380 wide. Tiles carry their own margins, so they line up.
-    def tile(name, w, h, title, sub, c):
+    def tile(name, w, h, title, sub, c, right=19):
         d = D(f"arch-{name}", w, h)
-        d.box(19, 2, w - 38, h - 4, title, sub, c, size=30, sub_size=24)
+        d.box(19, 2, w - 19 - right, h - 4, title, sub, c, size=30, sub_size=24)
         return d
 
     def bar(d, y, x1, x2):
@@ -374,28 +374,28 @@ def architecture():
     def stub(d, x, y1, y2):
         d.o.append(f'<line x1="{x}" y1="{y1}" x2="{x}" y2="{y2}" stroke="{MUTED}" stroke-width="2.5"/>')
 
-    H, cols = 112, (190, 570, 950)
-    tile("agent", 760, H, "Agent", "your code, with its own key", "blue").write()
+    H, cols = 96, (190, 570, 950)
+    tile("agent", 760, H, "Agent", "your code, with its own key", "blue", right=99).write()
     tile("operator", 380, H, "Operator", "sets limits by CLI", "gray").write()
 
     d = D("arch-down", 1140, 40)
-    d.arrow(380, 2, 380, 38)
+    d.arrow(340, 2, 340, 38)
     d.arrow(950, 2, 950, 38)
     d.write()
 
-    d = tile("gateway", 760, H, "Gateway", "one process that keeps the provider keys", "blue")
-    d.arrow(760, H / 2, 741, H / 2)
+    d = tile("gateway", 760, H, "Gateway", "one process that keeps the provider keys", "blue", right=99)
+    d.arrow(760, H / 2, 661, H / 2)
     d.write()
     d = tile("postgres", 380, H, "Postgres", "holds all the state", "gray")
     d.arrow(0, H / 2, 19, H / 2)
     d.write()
 
     d = D("arch-split", 1140, 74)
-    stub(d, 380, 2, 36)
+    stub(d, 340, 2, 36)
     bar(d, 36, cols[0], cols[2])
     for x in cols:
         d.arrow(x, 36, x, 72)
-    d.text(665, 26, "Every request passes all three", 24, MUTED)
+    d.text(645, 26, "Every request passes all three", 24, MUTED)
     d.write()
 
     tile("policy", 380, H, "Policy", "may it do this?", "amber").write()
