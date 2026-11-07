@@ -215,7 +215,7 @@ func (c *call) payChallenge(t payTarget) {
 	// 3. Reserve (kind payment). Refusals below also leave ledger rows: hold, then release.
 	// The hold id is needed before the policy decision: the Allowed is tied to it (I10).
 	hold, err := s.Ledger.Reserve(c.ctx, ledger.ReserveReq{AccountID: acct, Amount: amount, IdemKey: idem,
-		Kind: ledger.KindPayment, TTL: s.HoldTTL, Memo: "payment " + in.Tool})
+		Kind: ledger.KindPayment, TTL: x402.HoldTTL(t.Req), Memo: "payment " + in.Tool})
 	if err != nil {
 		if !approved {
 			_, _ = s.Pool.Exec(context.WithoutCancel(c.ctx), `DELETE FROM gateway_requests WHERE account_id=$1 AND idem_key=$2 AND request_id=$3`, acct, idem, c.ev.RequestID)
