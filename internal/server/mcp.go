@@ -740,7 +740,7 @@ func (c *call) payMCP(server string, srv mcp.Server, name string, body []byte, r
 	if err != nil {
 		return false
 	}
-	req, err := ch.Pick()
+	req, err := ch.Pick(c.s.Payments.Wallet.Network())
 	atomic, ok := wallet.Nanos(parseBig(req.Amount))
 	if err != nil || !ok || atomic <= 0 {
 		return false

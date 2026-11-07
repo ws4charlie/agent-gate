@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -124,7 +125,21 @@ func newPayEnvFunded(t *testing.T, deposit money.Nanos) *payEnv {
 
 	inner := paidtool.Handler(ver)
 	pe.submit = inner
+	// /data is shaped like a real x402 data seller: a GET resource that lists
+	// mainnet before the network this wallet is on.
+	data := mainnetFirst(ver.Protect(big.NewInt(10_000), "data", http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		io.WriteString(rw, `{"rows":3}`)
+	})))
 	tool := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/data" {
+			if r.Method != http.MethodGet || r.ContentLength > 0 {
+				http.Error(rw, "GET without a body only", http.StatusMethodNotAllowed)
+				return
+			}
+			data.ServeHTTP(rw, r)
+			return
+		}
 		if h := r.Header.Get(x402.HeaderSignature); h != "" && pe.toolLies.Load() {
 			pe.kept.Store(h)
 			rec := httptest.NewRecorder() // a fresh unpaid request just to get a well-formed 402 to send back
@@ -151,7 +166,7 @@ func newPayEnvFunded(t *testing.T, deposit money.Nanos) *payEnv {
 		s.Ledger = pe.led
 		s.Payments = &server.Payments{
 			Wallet:  w,
-			Tools:   map[string]string{"echo": tool.URL + "/echo", "premium": tool.URL + "/premium"},
+			Tools:   map[string]string{"echo": tool.URL + "/echo", "premium": tool.URL + "/premium", "data": "GET " + tool.URL + "/data"},
 			Fetcher: x402.Fetcher{HTTP: &http.Client{Transport: pe.net}},
 		}
 	})
@@ -780,6 +795,48 @@ func TestKilledAgentCannotPay(t *testing.T) {
 	code, m, _ := p.pay("echo", "k-2")
 	if code != 403 || !strings.Contains(string(mustJSON(m)), "agent_killed") || p.w.SignCount() != signs || p.head() != before {
 		t.Fatalf("%d %v", code, m)
+	}
+	p.noActiveHolds()
+}
+
+// mainnetFirst rewrites a 402 the way multi-network sellers send it: the same
+// offer on Base mainnet is listed first, so a client that takes the first
+// exact option would pick a network its wallet is not on.
+func mainnetFirst(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rec := httptest.NewRecorder()
+		next.ServeHTTP(rec, r)
+		if rec.Code == http.StatusPaymentRequired {
+			var pr x402.PaymentRequired
+			if x402.DecodeHeader(rec.Header().Get(x402.HeaderRequired), &pr) == nil && len(pr.Accepts) > 0 {
+				main := pr.Accepts[0]
+				main.Network = "eip155:8453"
+				pr.Accepts = append([]x402.Requirements{main}, pr.Accepts...)
+				h, _ := x402.EncodeHeader(pr)
+				rec.Header().Set(x402.HeaderRequired, h)
+			}
+		}
+		for k, v := range rec.Header() {
+			rw.Header()[k] = v
+		}
+		rw.WriteHeader(rec.Code)
+		rw.Write(rec.Body.Bytes())
+	})
+}
+
+// A real x402 data seller: a GET resource with mainnet listed first. The
+// gateway pays the option on its own network and sends no body.
+func TestPaymentGETResourceOnWalletNetwork(t *testing.T) {
+	p := newPayEnv(t)
+	code, m, _ := p.pay("data", "pay-get-1")
+	if code != 200 || m["network"] != x402.NetworkLocal {
+		t.Fatalf("%d %v", code, m)
+	}
+	if !strings.Contains(string(mustJSON(m["result"])), `"rows":3`) {
+		t.Fatalf("result missing: %v", m)
+	}
+	if p.chainBal(p.payTo) != 10_000 {
+		t.Fatalf("payee has %d", p.chainBal(p.payTo))
 	}
 	p.noActiveHolds()
 }

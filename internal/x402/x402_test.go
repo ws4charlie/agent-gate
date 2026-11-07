@@ -75,7 +75,7 @@ func (r *rig) challenge() (x402.Requirements, x402.Resource) {
 	if err != nil || free != nil {
 		r.t.Fatalf("probe: %v %v", err, free)
 	}
-	req, err := ch.Pick()
+	req, err := ch.Pick("")
 	if err != nil {
 		r.t.Fatal(err)
 	}
