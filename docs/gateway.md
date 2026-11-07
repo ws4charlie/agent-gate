@@ -4,7 +4,7 @@
 
 The gateway sits between your agents and the model providers. Agents talk to it the same way they would talk to OpenAI or Anthropic, so most tools work by changing one URL. Claude Code works this way.
 
-![Agents use a gateway key. The gateway holds the real provider key and streams answers back.](images/gateway.png)
+<p align="center"><img src="images/gateway.png" width="60%" alt="Agents use a gateway key. The gateway holds the real provider key and streams answers back."></p>
 
 The real provider key stays on the gateway. Each agent gets its own key, which is only good for talking to the gateway. If an agent leaks its key or gets hijacked, you shut off that one agent and your provider account is untouched.
 

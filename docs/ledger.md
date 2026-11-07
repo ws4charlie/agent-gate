@@ -4,7 +4,7 @@
 
 The ledger is where the money is tracked. It works like a hotel holding a deposit on your card. When you check in, they hold more than you will probably spend. When you check out, they charge the real amount and let the rest go.
 
-![A $0.50 hold on a $10 balance. The call costs $0.12, so $0.12 is charged and $0.38 returned.](images/ledger.png)
+<p align="center"><img src="images/ledger.png" width="60%" alt="A $0.50 hold on a $10 balance. The call costs $0.12, so $0.12 is charged and $0.38 returned."></p>
 
 Every model call, tool call and payment follows the same pattern. Before anything runs, we hold the most it could cost. Afterwards we charge what it really cost and give back the difference. Say an agent has $10 and makes a call that could cost up to $0.50. We hold $0.50 while it runs. If it ends up costing $0.12, the agent is charged $0.12 and the other $0.38 is free again.
 

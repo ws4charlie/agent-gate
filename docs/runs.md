@@ -4,7 +4,7 @@
 
 Agents don't make one call. They make dozens, mixing model calls, tool calls and payments to finish one job. A run ties those together.
 
-![One run holds every step of a job, so you can read it, total it or stop it.](images/runs.png)
+<p align="center"><img src="images/runs.png" width="60%" alt="One run holds every step of a job, so you can read it, total it or stop it."></p>
 
 You can open a run and read it like a story: what the agent did, in what order, what each step cost and how it ended. That's usually the fastest way to answer "why did this cost so much?" or "what did it do before it went wrong?".
 

@@ -4,7 +4,7 @@
 
 An API key with a budget treats an agent as a billing line. We treat it more like a bank customer: it has an identity, it has limits, and someone can freeze the account.
 
-![Five checks in order. The first failure decides.](images/policy.png)
+<p align="center"><img src="images/policy.png" width="60%" alt="Five checks in order. The first failure decides."></p>
 
 For each agent you decide:
 

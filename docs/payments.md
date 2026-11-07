@@ -22,7 +22,7 @@ USDC also lets a wallet pay by signature, and this is the part that surprises pe
 5. The tool checks the signature and cashes it. USDC moves from our wallet to the tool.
 6. The tool returns its result, and the ledger turns the hold into a charge.
 
-![A payment goes through policy, then the wallet, then the chain. If it fails, the chain decides.](images/payments.png)
+<p align="center"><img src="images/payments.png" width="60%" alt="A payment goes through policy, then the wallet, then the chain. If it fails, the chain decides."></p>
 
 The rule that matters most is that a payment has to pass policy before the wallet will sign it. This is built into the code's structure, not just a check someone remembered to add: the signing path can't run without proof of approval, and that proof works once, for one payment. The wallet also has its own spending cap per transaction, so a mistake in policy still can't drain it.
 

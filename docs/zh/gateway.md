@@ -4,7 +4,7 @@
 
 网关站在你的 Agent 和模型供应商中间。Agent 跟它说话的方式，和跟 OpenAI、Anthropic 说话一样，所以大多数工具只要改一个地址就能用上，Claude Code 就是这样接入的。
 
-![Agent 只拿网关密钥，真实密钥留在网关，结果以流式返回。](images/gateway.png)
+<p align="center"><img src="images/gateway.png" width="60%" alt="Agent 只拿网关密钥，真实密钥留在网关，结果以流式返回。"></p>
 
 真正的供应商密钥留在网关上。每个 Agent 拿到的是自己的一把钥匙，这把钥匙只能用来访问网关。就算 Agent 泄露了密钥或者被劫持，你只要停掉这一个 Agent，供应商账号不受影响。
 
