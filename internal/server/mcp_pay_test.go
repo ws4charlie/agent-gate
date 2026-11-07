@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -122,6 +123,20 @@ func TestMCPToolPaidThroughWallet(t *testing.T) {
 	// Replay of the same key: duplicate, no second signature (I11).
 	if _, b := p.call("mp-1"); !strings.Contains(string(b), "duplicate_request") || p.w.SignCount() != 1 {
 		t.Fatalf("replay %s signs=%d", b, p.w.SignCount())
+	}
+}
+
+// A payment's hold lasts as long as its signature can still be cashed, plus the
+// margin. The reconciler can close it as soon as the chain has its final answer.
+func TestPaymentHoldFollowsTheSignatureWindow(t *testing.T) {
+	p := newPayMCPEnv(t)
+	p.call("mp-ttl")
+	var secs float64
+	if err := p.pool.QueryRow(context.Background(), `SELECT extract(epoch FROM expires_at - now()) FROM holds WHERE kind='payment'`).Scan(&secs); err != nil {
+		t.Fatal(err)
+	}
+	if want := (60*time.Second + x402.DefaultAuthMargin).Seconds(); secs < want-20 || secs > want {
+		t.Fatalf("hold lasts %.0fs, want about %.0fs", secs, want)
 	}
 }
 

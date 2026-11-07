@@ -69,6 +69,17 @@ type AuthLookup struct {
 
 var _ ledger.UsageLookup = (*AuthLookup)(nil)
 
+// DefaultAuthMargin is how long after validBefore the chain is still asked to
+// show a late settlement. It is a cautious rule of thumb: a release is safe only
+// once a transaction sent at the last moment could have landed.
+const DefaultAuthMargin = 2 * time.Minute
+
+// HoldTTL is how long a payment's hold must last: the outcome is known once the
+// signature has expired and the margin has passed, and not before.
+func HoldTTL(r Requirements) time.Duration {
+	return time.Duration(r.MaxTimeoutSeconds)*time.Second + DefaultAuthMargin
+}
+
 func (l *AuthLookup) Lookup(ctx context.Context, _, ref string) (ledger.Usage, bool, error) {
 	r, err := DecodeAuthRef(ref)
 	if err != nil {
@@ -94,7 +105,7 @@ func (l *AuthLookup) Lookup(ctx context.Context, _, ref string) (ledger.Usage, b
 		now = l.Now()
 	}
 	if margin == 0 {
-		margin = 2 * time.Minute
+		margin = DefaultAuthMargin
 	}
 	if now.Unix() < r.ValidBefore+int64(margin.Seconds()) {
 		return ledger.Usage{}, false, ErrWindowOpen
