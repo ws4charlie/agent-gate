@@ -149,7 +149,32 @@ ZH = {
     'The whole path, with no keys.': '跑通全流程，不需要密钥。',
     'Live': '线上',
     'Real provider and network.': '真实供应商和网络。',
-    'One small run so far.': '目前只跑过一小次。',
+    'Early, with more to come.': '刚开始，后续继续测。',
+    'your code, with its own key': '你的代码，用自己的密钥',
+    'Operator': '运营方',
+    'sets limits by CLI': '用命令行设限额',
+    'one process that keeps the provider keys': '一个进程，保管供应商密钥',
+    'Postgres': 'Postgres',
+    'holds all the state': '存放全部状态',
+    'Every request passes all three': '每个请求都要过这三关',
+    'Then it takes one of three paths': '然后走三条路之一',
+    'may it do this?': '能不能做',
+    'Ledger': '账本',
+    'hold, then charge': '先冻结，后扣费',
+    'Runs': 'Run',
+    'record every step': '记录每一步',
+    'Models': '模型',
+    'proxy the call': '转发调用',
+    'Tools': '工具',
+    'check, then screen': '检查后筛查结果',
+    'Payments': '支付',
+    'wallet signs if approved': '批准后钱包才签名',
+    'Model providers': '模型供应商',
+    'OpenRouter, OpenAI…': 'OpenRouter、OpenAI…',
+    'MCP tools': 'MCP 工具',
+    'services run by others': '别人运行的服务',
+    'Blockchain': '区块链',
+    'the tool cashes, we verify': '工具兑现，网关核对',
     'By hand': '人工',
 }
 
@@ -158,17 +183,18 @@ class D:
     def __init__(self, name, w, h):
         self.name, self.w, self.h, self.o = name, w, h, []
 
-    def box(self, x, y, w, h, title="", sub="", c="blue", size=T, dash=False):
+    def box(self, x, y, w, h, title="", sub="", c="blue", size=T, dash=False, sub_size=None):
         f, s = COL[c]
         d = ' stroke-dasharray="8 6"' if dash else ""
         self.o.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="12" fill="{f}" stroke="{s}" stroke-width="2"{d}/>')
         lines = sub.split("\n") if sub else []
-        total = (size if title else -8) + len(lines) * (S + 8)
-        ty = y + (h - total) / 2 + (size * 0.85 if title else -S * 0.15 - 8)
+        sz = sub_size or S
+        total = (size if title else -8) + len(lines) * (sz + 8)
+        ty = y + (h - total) / 2 + (size * 0.85 if title else -sz * 0.15 - 8)
         if title:
             self.text(x + w / 2, ty, title, size, INK, True)
         for i, l in enumerate(lines):
-            self.text(x + w / 2, ty + (i + 1) * (S + 8), l, S, MUTED)
+            self.text(x + w / 2, ty + (i + 1) * (sz + 8), l, sz, MUTED)
 
     def group(self, x, y, w, h, label, c="gray"):
         f, s = COL[c]
@@ -324,7 +350,7 @@ def testing():
     d = D("testing", 1140, 400)
     rows = [("Fakes", "Fake provider, simulated chain.\nCovers crashes, races and dropped streams.", "Every change", "blue"),
             ("Local end to end", "Real local chain, stand-in USDC, scripted model.\nThe whole path, with no keys.", "Every change", "green"),
-            ("Live", "Real provider and network.\nOne small run so far.", "By hand", "amber")]
+            ("Live", "Real provider and network.\nEarly, with more to come.", "By hand", "amber")]
     y = 30
     for t, s, w, c in rows:
         d.box(30, y, 260, 104, t, "", c)
@@ -334,7 +360,71 @@ def testing():
     d.write()
 
 
+def architecture():
+    # The README shows this as a grid of tiles so that each box can be a link.
+    # Columns are 380 wide. Tiles carry their own margins, so they line up.
+    def tile(name, w, h, title, sub, c):
+        d = D(f"arch-{name}", w, h)
+        d.box(19, 2, w - 38, h - 4, title, sub, c, size=30, sub_size=24)
+        return d
+
+    def bar(d, y, x1, x2):
+        d.o.append(f'<line x1="{x1}" y1="{y}" x2="{x2}" y2="{y}" stroke="{MUTED}" stroke-width="2.5"/>')
+
+    def stub(d, x, y1, y2):
+        d.o.append(f'<line x1="{x}" y1="{y1}" x2="{x}" y2="{y2}" stroke="{MUTED}" stroke-width="2.5"/>')
+
+    H, cols = 112, (190, 570, 950)
+    tile("agent", 760, H, "Agent", "your code, with its own key", "blue").write()
+    tile("operator", 380, H, "Operator", "sets limits by CLI", "gray").write()
+
+    d = D("arch-down", 1140, 40)
+    d.arrow(380, 2, 380, 38)
+    d.arrow(950, 2, 950, 38)
+    d.write()
+
+    d = tile("gateway", 760, H, "Gateway", "one process that keeps the provider keys", "blue")
+    d.arrow(760, H / 2, 741, H / 2)
+    d.write()
+    d = tile("postgres", 380, H, "Postgres", "holds all the state", "gray")
+    d.arrow(0, H / 2, 19, H / 2)
+    d.write()
+
+    d = D("arch-split", 1140, 74)
+    stub(d, 380, 2, 36)
+    bar(d, 36, cols[0], cols[2])
+    for x in cols:
+        d.arrow(x, 36, x, 72)
+    d.text(665, 26, "Every request passes all three", 24, MUTED)
+    d.write()
+
+    tile("policy", 380, H, "Policy", "may it do this?", "amber").write()
+    tile("ledger", 380, H, "Ledger", "hold, then charge", "amber").write()
+    tile("runs", 380, H, "Runs", "record every step", "amber").write()
+
+    d = D("arch-merge", 1140, 74)
+    for x in cols:
+        stub(d, x, 2, 36)
+        d.arrow(x, 36, x, 72)
+    bar(d, 36, cols[0], cols[2])
+    d.text(380, 26, "Then it takes one of three paths", 24, MUTED)
+    d.write()
+
+    tile("models", 380, H, "Models", "proxy the call", "green").write()
+    tile("tools", 380, H, "Tools", "check, then screen", "green").write()
+    tile("payments", 380, H, "Payments", "wallet signs if approved", "green").write()
+
+    d = D("arch-out", 1140, 40)
+    for x in cols:
+        d.arrow(x, 2, x, 38)
+    d.write()
+
+    tile("providers", 380, H, "Model providers", "OpenRouter, OpenAI…", "white").write()
+    tile("mcp", 380, H, "MCP tools", "services run by others", "white").write()
+    tile("chain", 380, H, "Blockchain", "the tool cashes, we verify", "white").write()
+
+
 for OUT, LANG in ((HERE, "en"), (HERE.parent / "zh" / "images", "zh")):
-    for f in (request_flow, gateway, ledger, policy, tools, payments, runs, sdk, testing):
+    for f in (architecture, request_flow, gateway, ledger, policy, tools, payments, runs, sdk, testing):
         f()
 print("ok")

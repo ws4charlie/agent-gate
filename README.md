@@ -11,6 +11,22 @@ Two rules carry the design:
 - **Reserve before you spend.** The worst-case cost is held first, then settled to the real cost or released.
 - **Screen before you sign.** A payment refused by policy never reaches the wallet's key.
 
+## Architecture
+
+<p>
+<a href="docs/sdk.md"><img src="docs/images/arch-agent.png" width="66.66%" alt="Agent"></a><a href="docs/policy.md"><img src="docs/images/arch-operator.png" width="33.33%" alt="Operator"></a><br>
+<img src="docs/images/arch-down.png" width="100%" alt=""><br>
+<a href="docs/gateway.md"><img src="docs/images/arch-gateway.png" width="66.66%" alt="Gateway"></a><a href="docs/ledger.md"><img src="docs/images/arch-postgres.png" width="33.33%" alt="Postgres"></a><br>
+<img src="docs/images/arch-split.png" width="100%" alt=""><br>
+<a href="docs/policy.md"><img src="docs/images/arch-policy.png" width="33.33%" alt="Policy"></a><a href="docs/ledger.md"><img src="docs/images/arch-ledger.png" width="33.33%" alt="Ledger"></a><a href="docs/runs.md"><img src="docs/images/arch-runs.png" width="33.33%" alt="Runs"></a><br>
+<img src="docs/images/arch-merge.png" width="100%" alt=""><br>
+<a href="docs/gateway.md"><img src="docs/images/arch-models.png" width="33.33%" alt="Models"></a><a href="docs/tools.md"><img src="docs/images/arch-tools.png" width="33.33%" alt="Tools"></a><a href="docs/payments.md"><img src="docs/images/arch-payments.png" width="33.33%" alt="Payments"></a><br>
+<img src="docs/images/arch-out.png" width="100%" alt=""><br>
+<a href="docs/gateway.md"><img src="docs/images/arch-providers.png" width="33.33%" alt="Model providers"></a><a href="docs/tools.md"><img src="docs/images/arch-mcp.png" width="33.33%" alt="MCP tools"></a><a href="docs/payments.md"><img src="docs/images/arch-chain.png" width="33.33%" alt="Blockchain"></a>
+</p>
+
+Click a box to open its page.
+
 ## How it works
 
 ![Every request is authenticated, checked by policy, held, executed, settled and audited. Refusals, failures and crashes all end with the funds settled or returned.](docs/images/request-flow.png)
@@ -44,7 +60,7 @@ demo/phase1.sh
 |---|---|
 | Ledger, gateway, policy, MCP gateway, payments | Tests in CI, with no secrets |
 | Payments on a local chain | Local anvil node with a mock USDC, in CI |
-| OpenRouter | One small live run of 8 requests |
+| OpenRouter | Early live testing, with more to come |
 
 **Not done:** Base Sepolia payments and real-traffic dogfooding. This is testnet-only software for a single gateway process. See [Limits](docs/limits.md).
 

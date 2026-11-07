@@ -13,6 +13,22 @@ AgentGate 是一道架在 AI Agent 和所有花钱动作之间的闸门。模型
 - **先冻结，再花钱。** 先按最坏情况冻结一笔钱，事后按真实花费结算，多余的退回。
 - **先判定，再签名。** 策略拒绝的付款，根本碰不到钱包私钥。
 
+## 整体架构
+
+<p>
+<a href="docs/zh/sdk.md"><img src="docs/zh/images/arch-agent.png" width="66.66%" alt="Agent"></a><a href="docs/zh/policy.md"><img src="docs/zh/images/arch-operator.png" width="33.33%" alt="运营方"></a><br>
+<img src="docs/zh/images/arch-down.png" width="100%" alt=""><br>
+<a href="docs/zh/gateway.md"><img src="docs/zh/images/arch-gateway.png" width="66.66%" alt="网关"></a><a href="docs/zh/ledger.md"><img src="docs/zh/images/arch-postgres.png" width="33.33%" alt="Postgres"></a><br>
+<img src="docs/zh/images/arch-split.png" width="100%" alt=""><br>
+<a href="docs/zh/policy.md"><img src="docs/zh/images/arch-policy.png" width="33.33%" alt="策略"></a><a href="docs/zh/ledger.md"><img src="docs/zh/images/arch-ledger.png" width="33.33%" alt="账本"></a><a href="docs/zh/runs.md"><img src="docs/zh/images/arch-runs.png" width="33.33%" alt="Run"></a><br>
+<img src="docs/zh/images/arch-merge.png" width="100%" alt=""><br>
+<a href="docs/zh/gateway.md"><img src="docs/zh/images/arch-models.png" width="33.33%" alt="模型"></a><a href="docs/zh/tools.md"><img src="docs/zh/images/arch-tools.png" width="33.33%" alt="工具"></a><a href="docs/zh/payments.md"><img src="docs/zh/images/arch-payments.png" width="33.33%" alt="支付"></a><br>
+<img src="docs/zh/images/arch-out.png" width="100%" alt=""><br>
+<a href="docs/zh/gateway.md"><img src="docs/zh/images/arch-providers.png" width="33.33%" alt="模型供应商"></a><a href="docs/zh/tools.md"><img src="docs/zh/images/arch-mcp.png" width="33.33%" alt="MCP 工具"></a><a href="docs/zh/payments.md"><img src="docs/zh/images/arch-chain.png" width="33.33%" alt="区块链"></a>
+</p>
+
+点击方框可以打开对应的文档。
+
 ## 它怎么工作
 
 ![每个请求都要经过认证、策略、冻结、执行、结算和记录。无论被拒绝、中途失败还是进程崩溃，这笔钱最后都会结算或退回。](docs/zh/images/request-flow.png)
@@ -46,7 +62,7 @@ demo/phase1.sh
 |---|---|
 | 账本、网关、策略、工具网关、支付 | CI 测试，不需要任何密钥 |
 | 本地链上的支付 | 本地 anvil 节点加 mock USDC，在 CI 中运行 |
-| OpenRouter | 跑过一次小规模线上测试，共 8 个请求 |
+| OpenRouter | 线上测试刚开始，后续继续测 |
 
 **还没做：** Base Sepolia 真实支付和真实流量试用。目前只支持测试网，并且只支持单个网关进程。详见[局限](docs/zh/limits.md)。
 
