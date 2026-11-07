@@ -60,9 +60,25 @@ demo/phase1.sh
 |---|---|
 | Ledger, gateway, policy, MCP gateway, payments | Tests in CI, with no secrets |
 | Payments on a local chain | Local anvil node with a mock USDC, in CI |
+| Payments on Base Sepolia | One live testnet settlement, below |
 | OpenRouter | Early live testing, with more to come |
 
-**Not done:** Base Sepolia payments and real-traffic dogfooding. This is testnet-only software for a single gateway process. See [Limits](docs/limits.md).
+**Not done:** real-traffic dogfooding. This is testnet-only software for a single gateway process. See [Limits](docs/limits.md).
+
+### Testnet settlement
+
+This is **testnet** money with no real value. Nothing here is mainnet or production settlement.
+
+On 2026-11-06 the gateway paid for one tool call on Base Sepolia (chain id 84532): [settlement transaction](https://sepolia.basescan.org/tx/0x07682129c2aaa44875659058cd142457d9b065f411a39783c08ea04cacc96141). The tool charged $0.01, policy approved it, the wallet signed, and the tool cashed the signature on chain. To repeat it, see the header of `demo/phase15.sh`.
+
+| Role | Address |
+|---|---|
+| USDC (Circle test token) | [`0x036C…CF7e`](https://sepolia.basescan.org/address/0x036CbD53842c5426634e7929541eC2318f3dCF7e) |
+| Payer wallet | [`0x9754…01E2`](https://sepolia.basescan.org/address/0x9754cA4033df6680B32a7f34a888Bec3E31c01E2) |
+| Payee | [`0x7a88…75f7`](https://sepolia.basescan.org/address/0x7a889Db6Ebf3A876E6E2035017A2624814F475f7) |
+| Gas payer | [`0x85f5…f659`](https://sepolia.basescan.org/address/0x85f51b4dE84e47aA439b5C0aE79BDe437571f659) |
+
+We deployed no contract of our own. Settlement uses the transfer-by-signature function that USDC already has.
 
 ## License
 

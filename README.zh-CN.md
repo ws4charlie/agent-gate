@@ -62,9 +62,25 @@ demo/phase1.sh
 |---|---|
 | 账本、网关、策略、工具网关、支付 | CI 测试，不需要任何密钥 |
 | 本地链上的支付 | 本地 anvil 节点加 mock USDC，在 CI 中运行 |
+| Base Sepolia 上的支付 | 一笔真实的测试网结算，见下 |
 | OpenRouter | 线上测试刚开始，后续继续测 |
 
-**还没做：** Base Sepolia 真实支付和真实流量试用。目前只支持测试网，并且只支持单个网关进程。详见[局限](docs/zh/limits.md)。
+**还没做：** 真实流量试用。目前只支持测试网，并且只支持单个网关进程。详见[局限](docs/zh/limits.md)。
+
+### 测试网结算
+
+这里用的是没有真实价值的**测试网**代币，不是主网，也不是生产结算。
+
+2026-11-06，网关在 Base Sepolia（chain id 84532）上为一次工具调用完成了付款：[结算交易](https://sepolia.basescan.org/tx/0x07682129c2aaa44875659058cd142457d9b065f411a39783c08ea04cacc96141)。工具收费 $0.01，策略批准，钱包签名，工具把签名提交上链兑现。复现方法见 `demo/phase15.sh` 开头的说明。
+
+| 角色 | 地址 |
+|---|---|
+| USDC（Circle 测试币） | [`0x036C…CF7e`](https://sepolia.basescan.org/address/0x036CbD53842c5426634e7929541eC2318f3dCF7e) |
+| 付款钱包 | [`0x9754…01E2`](https://sepolia.basescan.org/address/0x9754cA4033df6680B32a7f34a888Bec3E31c01E2) |
+| 收款方 | [`0x7a88…75f7`](https://sepolia.basescan.org/address/0x7a889Db6Ebf3A876E6E2035017A2624814F475f7) |
+| Gas 支付方 | [`0x85f5…f659`](https://sepolia.basescan.org/address/0x85f51b4dE84e47aA439b5C0aE79BDe437571f659) |
+
+我们没有部署自己的合约，结算用的是 USDC 自带的签名转账功能。
 
 ## 许可证
 
