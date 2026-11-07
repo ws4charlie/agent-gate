@@ -4,7 +4,7 @@
 
 Testing something that spends money has an obvious problem: you don't want to spend money. So almost everything here runs with no keys, no faucet and nothing leaving the machine.
 
-![Three levels of testing: fakes, local end to end and live.](images/testing.png)
+<p align="center"><img src="images/testing.png" width="60%" alt="Three levels of testing: fakes, local end to end and live."></p>
 
 There are three levels.
 

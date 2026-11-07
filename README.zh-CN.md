@@ -16,22 +16,22 @@ AgentGate 是一道架在 AI Agent 和所有花钱动作之间的闸门。模型
 ## 整体架构
 
 <p align="center">
-<a href="docs/zh/sdk.md"><img src="docs/zh/images/arch-agent.png" width="53.33%" alt="Agent"></a><a href="docs/zh/policy.md"><img src="docs/zh/images/arch-operator.png" width="26.66%" alt="运营方"></a><br>
-<img src="docs/zh/images/arch-down.png" width="80%" alt=""><br>
-<a href="docs/zh/gateway.md"><img src="docs/zh/images/arch-gateway.png" width="53.33%" alt="网关"></a><a href="docs/zh/ledger.md"><img src="docs/zh/images/arch-postgres.png" width="26.66%" alt="Postgres"></a><br>
-<img src="docs/zh/images/arch-split.png" width="80%" alt=""><br>
-<a href="docs/zh/policy.md"><img src="docs/zh/images/arch-policy.png" width="26.66%" alt="策略"></a><a href="docs/zh/ledger.md"><img src="docs/zh/images/arch-ledger.png" width="26.66%" alt="账本"></a><a href="docs/zh/runs.md"><img src="docs/zh/images/arch-runs.png" width="26.66%" alt="Run"></a><br>
-<img src="docs/zh/images/arch-merge.png" width="80%" alt=""><br>
-<a href="docs/zh/gateway.md"><img src="docs/zh/images/arch-models.png" width="26.66%" alt="模型"></a><a href="docs/zh/tools.md"><img src="docs/zh/images/arch-tools.png" width="26.66%" alt="工具"></a><a href="docs/zh/payments.md"><img src="docs/zh/images/arch-payments.png" width="26.66%" alt="支付"></a><br>
-<img src="docs/zh/images/arch-out.png" width="80%" alt=""><br>
-<a href="docs/zh/gateway.md"><img src="docs/zh/images/arch-providers.png" width="26.66%" alt="模型供应商"></a><a href="docs/zh/tools.md"><img src="docs/zh/images/arch-mcp.png" width="26.66%" alt="MCP 工具"></a><a href="docs/zh/payments.md"><img src="docs/zh/images/arch-chain.png" width="26.66%" alt="区块链"></a>
+<a href="docs/zh/sdk.md"><img src="docs/zh/images/arch-agent.png" width="38.66%" alt="Agent"></a><a href="docs/zh/policy.md"><img src="docs/zh/images/arch-operator.png" width="19.33%" alt="运营方"></a><br>
+<img src="docs/zh/images/arch-down.png" width="58%" alt=""><br>
+<a href="docs/zh/gateway.md"><img src="docs/zh/images/arch-gateway.png" width="38.66%" alt="网关"></a><a href="docs/zh/ledger.md"><img src="docs/zh/images/arch-postgres.png" width="19.33%" alt="Postgres"></a><br>
+<img src="docs/zh/images/arch-split.png" width="58%" alt=""><br>
+<a href="docs/zh/policy.md"><img src="docs/zh/images/arch-policy.png" width="19.33%" alt="策略"></a><a href="docs/zh/ledger.md"><img src="docs/zh/images/arch-ledger.png" width="19.33%" alt="账本"></a><a href="docs/zh/runs.md"><img src="docs/zh/images/arch-runs.png" width="19.33%" alt="Run"></a><br>
+<img src="docs/zh/images/arch-merge.png" width="58%" alt=""><br>
+<a href="docs/zh/gateway.md"><img src="docs/zh/images/arch-models.png" width="19.33%" alt="模型"></a><a href="docs/zh/tools.md"><img src="docs/zh/images/arch-tools.png" width="19.33%" alt="工具"></a><a href="docs/zh/payments.md"><img src="docs/zh/images/arch-payments.png" width="19.33%" alt="支付"></a><br>
+<img src="docs/zh/images/arch-out.png" width="58%" alt=""><br>
+<a href="docs/zh/gateway.md"><img src="docs/zh/images/arch-providers.png" width="19.33%" alt="模型供应商"></a><a href="docs/zh/tools.md"><img src="docs/zh/images/arch-mcp.png" width="19.33%" alt="MCP 工具"></a><a href="docs/zh/payments.md"><img src="docs/zh/images/arch-chain.png" width="19.33%" alt="区块链"></a>
 </p>
 
 点击方框可以打开对应的文档。
 
 ## 它怎么工作
 
-![每个请求都要经过认证、策略、冻结、执行、结算和记录。无论被拒绝、中途失败还是进程崩溃，这笔钱最后都会结算或退回。](docs/zh/images/request-flow.png)
+<p align="center"><img src="docs/zh/images/request-flow.png" width="68%" alt="每个请求都要经过认证、策略、冻结、执行、结算和记录。无论被拒绝、中途失败还是进程崩溃，这笔钱最后都会结算或退回。"></p>
 
 整个系统就是一个 Go 进程加一个 Postgres 数据库。运维人员用命令行直接写数据库，所以 Agent 没有任何网络接口可以批准自己的请求。
 

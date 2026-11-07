@@ -8,7 +8,7 @@ HERE = pathlib.Path(__file__).parent
 OUT, LANG = HERE, "en"
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 FONT = "'PingFang SC','Hiragino Sans GB','Heiti SC',sans-serif"
-T, S = 24, 19  # title and subtitle sizes; the canvas is about 1100 wide
+T, S = 24, 20  # title and subtitle sizes; the canvas is about 1100 wide
 
 COL = {
     "blue": ("#E8F0FE", "#3B6FD4"),
@@ -255,108 +255,108 @@ def cards(d, items, y, h=120, x0=30, total=1080, gap=20):
 
 
 def request_flow():
-    d = D("request-flow", 1140, 400)
+    d = D("request-flow", 1140, 296)
     xs = row(d, [("Authenticate", "who is calling", "blue"), ("Policy", "is it allowed", "amber"), ("Hold", "hold worst case", "amber"),
-                 ("Execute", "call upstream", "green"), ("Settle", "real cost", "amber"), ("Audit", "log it", "purple")], gap=36, size=21)
+                 ("Execute", "call upstream", "green"), ("Settle", "real cost", "amber"), ("Audit", "log it", "purple")], y=20, h=88, gap=36, size=21)
     ys = cards(d, [("Refused", "told which rule,\nupstream never called", "red"), ("Needs a human", "funds stay held", "gray"),
-                   ("Fails midway", "pay for what arrived,\nthe rest is returned", "gray"), ("Process dies", "a cleanup job\ncloses the hold later", "gray")], 240, 130)
+                   ("Fails midway", "pay for what arrived,\nthe rest is returned", "gray"), ("Process dies", "a cleanup job\ncloses the hold later", "gray")], 176, 100)
     for a, b in zip(xs[1:5], ys):
-        d.arrow(a, 150, b, 240)
+        d.arrow(a, 108, b, 176)
     d.write()
 
 
 def gateway():
-    d = D("gateway", 1140, 410)
-    d.box(30, 30, 280, 130, "Agent", "holds a gateway key", "white")
-    d.box(430, 30, 280, 130, "Gateway", "holds the real key", "blue")
-    d.box(830, 30, 280, 130, "Model provider", "OpenRouter and others", "gray")
-    d.arrow(310, 75, 430, 75, "request", ly=64)
-    d.arrow(430, 125, 310, 125, "stream", ly=114)
-    d.arrow(710, 75, 830, 75, "request", ly=64)
-    d.arrow(830, 125, 710, 125, "stream", ly=114)
-    d.text(570, 215, "When something goes wrong", T, INK, True)
-    cards(d, [("Stream dies", "pay for what arrived", "gray"), ("Provider error", "pay nothing", "gray"), ("Sent twice", "second one refused", "gray")], 245, 130)
+    d = D("gateway", 1140, 276)
+    d.box(30, 20, 280, 92, "Agent", "holds a gateway key", "white")
+    d.box(430, 20, 280, 92, "Gateway", "holds the real key", "blue")
+    d.box(830, 20, 280, 92, "Model provider", "OpenRouter and others", "gray")
+    d.arrow(310, 48, 430, 48, "request", ly=38)
+    d.arrow(430, 88, 310, 88, "stream", ly=78)
+    d.arrow(710, 48, 830, 48, "request", ly=38)
+    d.arrow(830, 88, 710, 88, "stream", ly=78)
+    d.text(570, 150, "When something goes wrong", T, INK, True)
+    cards(d, [("Stream dies", "pay for what arrived", "gray"), ("Provider error", "pay nothing", "gray"), ("Sent twice", "second one refused", "gray")], 170, 88)
     d.write()
 
 
 def ledger():
-    d = D("ledger", 1140, 410)
-    xs = row(d, [("Balance", "$10.00", "purple"), ("Hold", "up to $0.50", "amber"), ("Call runs", "really costs $0.12", "green")], total=740, h=130)
-    d.box(880, 30, 230, 130, "Charge $0.12", "return $0.38", "amber")
-    d.arrow(770, 95, 880, 95)
-    d.text(570, 215, "If the gateway crashes during the call", T, INK, True)
-    row(d, [("Hold expires", "nothing closed it", "gray"), ("Background job", "looks for the real cost", "blue"), ("Close the hold", "charge it, or return it", "amber")], y=245, h=130)
+    d = D("ledger", 1140, 276)
+    xs = row(d, [("Balance", "$10.00", "purple"), ("Hold", "up to $0.50", "amber"), ("Call runs", "really costs $0.12", "green")], total=740, y=20, h=92)
+    d.box(880, 20, 230, 92, "Charge $0.12", "return $0.38", "amber")
+    d.arrow(770, 66, 880, 66)
+    d.text(570, 150, "If the gateway crashes during the call", T, INK, True)
+    row(d, [("Hold expires", "nothing closed it", "gray"), ("Background job", "looks for the real cost", "blue"), ("Close the hold", "charge it, or return it", "amber")], y=170, h=88)
     d.write()
 
 
 def policy():
-    d = D("policy", 1140, 400)
+    d = D("policy", 1140, 266)
     xs = row(d, [("Active?", "not killed", "red"), ("In scope?", "model, tool, payee", "amber"), ("In budget?", "today's limit", "amber"),
-                 ("Too fast?", "spend per minute", "amber"), ("Too large?", "ask a person", "blue")], gap=36, size=23)
-    cards(d, [("Fails a check", "refused, and told which rule", "red"), ("Too large", "money held, waits for a person", "gray"), ("Passes all five", "goes ahead", "green")], 245, 130)
-    d.text(570, 208, "Checks run left to right. The first failure decides.", T, INK, True)
+                 ("Too fast?", "spend per minute", "amber"), ("Too large?", "ask a person", "blue")], y=20, h=88, gap=36, size=23)
+    cards(d, [("Fails a check", "refused, and told which rule", "red"), ("Too large", "money held, waits for a person", "gray"), ("Passes all five", "goes ahead", "green")], 160, 88)
+    d.text(570, 140, "Checks run left to right. The first failure decides.", T, INK, True)
     d.write()
 
 
 def tools():
-    d = D("tools", 1140, 410)
-    d.box(30, 40, 260, 120, "Agent", "sees only allowed tools", "white")
-    d.box(440, 40, 260, 120, "Gateway", "checks and charges", "blue")
-    d.box(850, 40, 260, 120, "Tool", "keeps its own login", "gray")
-    d.arrow(290, 100, 440, 100, "call", ly=88)
-    d.arrow(700, 100, 850, 100, "call", ly=88)
-    d.text(570, 212, "What happens to the result", T, INK, True)
-    row(d, [("Tool result", "text someone else wrote", "gray"), ("Screen", "looks for known tricks", "amber")], y=245, h=130, total=660, gap=40)
-    d.box(770, 240, 340, 62, "", "Clean: agent reads it", "green")
-    d.box(770, 318, 340, 62, "", "Match: blocked and logged", "red")
-    d.arrow(690, 290, 770, 272)
-    d.arrow(690, 330, 770, 348)
+    d = D("tools", 1140, 286)
+    d.box(30, 20, 260, 92, "Agent", "sees only allowed tools", "white")
+    d.box(440, 20, 260, 92, "Gateway", "checks and charges", "blue")
+    d.box(850, 20, 260, 92, "Tool", "keeps its own login", "gray")
+    d.arrow(290, 66, 440, 66, "call", ly=54)
+    d.arrow(700, 66, 850, 66, "call", ly=54)
+    d.text(570, 150, "What happens to the result", T, INK, True)
+    row(d, [("Tool result", "text someone else wrote", "gray"), ("Screen", "looks for known tricks", "amber")], y=170, h=96, total=660, gap=40)
+    d.box(770, 170, 340, 44, "", "Clean: agent reads it", "green")
+    d.box(770, 222, 340, 44, "", "Match: blocked and logged", "red")
+    d.arrow(690, 208, 770, 192)
+    d.arrow(690, 228, 770, 244)
     d.write()
 
 
 def payments():
-    d = D("payments", 1140, 420)
+    d = D("payments", 1140, 280)
     row(d, [("Tool asks", "this costs 3 cents", "gray"), ("Policy", "may it pay?", "amber"), ("Wallet signs", "only if approved", "green"),
-            ("Tool cashes it", "sends it to chain", "gray"), ("Ledger charges", "the amount paid", "amber")], gap=36, size=21)
-    d.text(570, 205, "If the tool reports anything but success", T, INK, True)
-    d.box(30, 240, 400, 140, "Wait", "keep the money held until\nthe signature expires", "gray")
-    d.box(530, 240, 250, 140, "Ask the chain", "did money move?", "blue")
-    d.box(860, 240, 250, 62, "", "Moved: charge", "amber")
-    d.box(860, 318, 250, 62, "", "Didn't move: release hold", "green")
-    d.arrow(430, 310, 530, 310)
-    d.arrow(780, 295, 860, 272)
-    d.arrow(780, 330, 860, 348)
+            ("Tool cashes it", "sends it to chain", "gray"), ("Ledger charges", "the amount paid", "amber")], y=20, h=88, gap=36, size=21)
+    d.text(570, 140, "If the tool reports anything but success", T, INK, True)
+    d.box(30, 160, 400, 100, "Wait", "keep the money held until\nthe signature expires", "gray")
+    d.box(530, 160, 250, 100, "Ask the chain", "did money move?", "blue")
+    d.box(860, 160, 250, 46, "", "Moved: charge", "amber")
+    d.box(860, 214, 250, 46, "", "Didn't move: release hold", "green")
+    d.arrow(430, 210, 530, 210)
+    d.arrow(780, 198, 860, 183)
+    d.arrow(780, 222, 860, 237)
     d.write()
 
 
 def runs():
-    d = D("runs", 1140, 360)
-    d.group(30, 20, 1080, 230, "Run: write the weekly report", "blue")
-    row(d, [("Model", "$0.02", "white"), ("Tool", "free", "white"), ("Payment", "$0.01", "white"), ("Model", "$0.03", "white")], x0=60, y=80, h=130, total=1020, gap=40)
-    cards(d, [("Read it", "what happened, step by step", "gray"), ("Total it", "$0.06, taken from the ledger", "purple"), ("Stop it", "kill just this job", "red")], 266, 80, gap=20)
+    d = D("runs", 1140, 276)
+    d.group(30, 20, 1080, 156, "Run: write the weekly report", "blue")
+    row(d, [("Model", "$0.02", "white"), ("Tool", "free", "white"), ("Payment", "$0.01", "white"), ("Model", "$0.03", "white")], x0=60, y=68, h=92, total=1020, gap=40)
+    cards(d, [("Read it", "what happened, step by step", "gray"), ("Total it", "$0.06, taken from the ledger", "purple"), ("Stop it", "kill just this job", "red")], 190, 72, gap=20)
     d.write()
 
 
 def sdk():
-    d = D("sdk", 1140, 400)
-    row(d, [("Your agent", "Python code", "white"), ("SDK", "small client", "blue"), ("Gateway", "says no, with a reason", "amber")], gap=60, h=110)
-    d.text(570, 188, "The refusal becomes a clear error", T, INK, True)
-    cards(d, [("BudgetExceeded", "stop for today", "red"), ("ScopeDenied", "try something else", "red"), ("Killed", "stop now", "red")], 215, 76)
-    cards(d, [("ApprovalRequired", "wait for a person", "gray"), ("SettlementPending", "don't pay again", "gray")], 306, 76)
+    d = D("sdk", 1140, 322)
+    row(d, [("Your agent", "Python code", "white"), ("SDK", "small client", "blue"), ("Gateway", "says no, with a reason", "amber")], y=20, gap=60, h=84)
+    d.text(570, 138, "The refusal becomes a clear error", T, INK, True)
+    cards(d, [("BudgetExceeded", "stop for today", "red"), ("ScopeDenied", "try something else", "red"), ("Killed", "stop now", "red")], 158, 70)
+    cards(d, [("ApprovalRequired", "wait for a person", "gray"), ("SettlementPending", "don't pay again", "gray")], 238, 70)
     d.write()
 
 
 def testing():
-    d = D("testing", 1140, 400)
+    d = D("testing", 1140, 304)
     rows = [("Fakes", "Fake provider, simulated chain.\nCovers crashes, races and dropped streams.", "Every change", "blue"),
             ("Local end to end", "Real local chain, stand-in USDC, scripted model.\nThe whole path, with no keys.", "Every change", "green"),
             ("Live", "Real provider and network.\nEarly, with more to come.", "By hand", "amber")]
-    y = 30
+    y = 20
     for t, s, w, c in rows:
-        d.box(30, y, 260, 104, t, "", c)
-        d.box(306, y, 620, 104, "", s, "white")
-        d.box(942, y, 168, 104, w, "", c, size=21)
-        y += 118
+        d.box(30, y, 260, 84, t, "", c)
+        d.box(306, y, 620, 84, "", s, "white")
+        d.box(942, y, 168, 84, w, "", c, size=21)
+        y += 96
     d.write()
 
 
@@ -365,7 +365,7 @@ def architecture():
     # Columns are 380 wide. Tiles carry their own margins, so they line up.
     def tile(name, w, h, title, sub, c, right=19):
         d = D(f"arch-{name}", w, h)
-        d.box(19, 2, w - 19 - right, h - 4, title, sub, c, size=30, sub_size=24)
+        d.box(19, 2, w - 19 - right, h - 4, title, sub, c, size=26, sub_size=21)
         return d
 
     def bar(d, y, x1, x2):
@@ -374,13 +374,13 @@ def architecture():
     def stub(d, x, y1, y2):
         d.o.append(f'<line x1="{x}" y1="{y1}" x2="{x}" y2="{y2}" stroke="{MUTED}" stroke-width="2.5"/>')
 
-    H, cols = 96, (190, 570, 950)
+    H, cols = 78, (190, 570, 950)
     tile("agent", 760, H, "Agent", "your code, with its own key", "blue", right=99).write()
     tile("operator", 380, H, "Operator", "sets limits by CLI", "gray").write()
 
-    d = D("arch-down", 1140, 40)
-    d.arrow(340, 2, 340, 38)
-    d.arrow(950, 2, 950, 38)
+    d = D("arch-down", 1140, 30)
+    d.arrow(340, 2, 340, 28)
+    d.arrow(950, 2, 950, 28)
     d.write()
 
     d = tile("gateway", 760, H, "Gateway", "one process that keeps the provider keys", "blue", right=99)
@@ -390,33 +390,33 @@ def architecture():
     d.arrow(0, H / 2, 19, H / 2)
     d.write()
 
-    d = D("arch-split", 1140, 74)
-    stub(d, 340, 2, 36)
-    bar(d, 36, cols[0], cols[2])
+    d = D("arch-split", 1140, 58)
+    stub(d, 340, 2, 28)
+    bar(d, 28, cols[0], cols[2])
     for x in cols:
-        d.arrow(x, 36, x, 72)
-    d.text(645, 26, "Every request passes all three", 24, MUTED)
+        d.arrow(x, 28, x, 56)
+    d.text(645, 21, "Every request passes all three", 24, MUTED)
     d.write()
 
     tile("policy", 380, H, "Policy", "may it do this?", "amber").write()
     tile("ledger", 380, H, "Ledger", "hold, then charge", "amber").write()
     tile("runs", 380, H, "Runs", "record every step", "amber").write()
 
-    d = D("arch-merge", 1140, 74)
+    d = D("arch-merge", 1140, 58)
     for x in cols:
-        stub(d, x, 2, 36)
-        d.arrow(x, 36, x, 72)
-    bar(d, 36, cols[0], cols[2])
-    d.text(380, 26, "Then it takes one of three paths", 24, MUTED)
+        stub(d, x, 2, 28)
+        d.arrow(x, 28, x, 56)
+    bar(d, 28, cols[0], cols[2])
+    d.text(380, 21, "Then it takes one of three paths", 24, MUTED)
     d.write()
 
     tile("models", 380, H, "Models", "proxy the call", "green").write()
     tile("tools", 380, H, "Tools", "check, then screen", "green").write()
     tile("payments", 380, H, "Payments", "wallet signs if approved", "green").write()
 
-    d = D("arch-out", 1140, 40)
+    d = D("arch-out", 1140, 30)
     for x in cols:
-        d.arrow(x, 2, x, 38)
+        d.arrow(x, 2, x, 28)
     d.write()
 
     tile("providers", 380, H, "Model providers", "OpenRouter, OpenAI…", "white").write()

@@ -4,7 +4,7 @@
 
 Agents use tools through MCP, the standard protocol for connecting them to outside services. We put the gateway in the middle, so a tool call gets the same treatment as a model call: it is checked, paid for and recorded.
 
-![Tool calls pass through the gateway, and results are screened before the agent reads them.](images/tools.png)
+<p align="center"><img src="images/tools.png" width="60%" alt="Tool calls pass through the gateway, and results are screened before the agent reads them."></p>
 
 An agent only sees the tools it is allowed to use. Anything else doesn't show up in its list, and calling it anyway is refused before the tool ever hears about it. The credentials for each tool stay on the gateway, so the agent never holds them.
 
