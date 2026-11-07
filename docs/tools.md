@@ -8,6 +8,8 @@ Agents use tools through MCP, the standard protocol for connecting them to outsi
 
 An agent only sees the tools it is allowed to use. Anything else doesn't show up in its list, and calling it anyway is refused before the tool ever hears about it. The credentials for each tool stay on the gateway, so the agent never holds them.
 
+Most MCP clients in use today still speak an older version of the protocol, with a handshake at the start. The gateway answers that handshake itself and upgrades each message, so those clients work unchanged.
+
 Tools can be free or priced. Free tools still get checked and logged. A priced tool is charged when it returns a result. If it fails, the money goes back.
 
 ## Reading tool output carefully

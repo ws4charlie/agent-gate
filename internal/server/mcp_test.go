@@ -364,7 +364,6 @@ func TestMCPProtocolRules(t *testing.T) {
 		code   int
 	}
 	for _, c := range []tc{
-		{"initialize is refused with the supported versions", "initialize", map[string]any{}, map[string]string{}, 400, mcp.CodeUnsupportedVer},
 		{"missing version header", "tools/list", nil, map[string]string{"MCP-Protocol-Version": ""}, 400, mcp.CodeHeaderMismatch},
 		{"header differs from _meta", "tools/list", nil, map[string]string{"MCP-Protocol-Version": "2025-11-25"}, 400, mcp.CodeHeaderMismatch},
 		{"method header differs from body", "tools/list", nil, map[string]string{"Mcp-Method": "tools/call"}, 400, mcp.CodeHeaderMismatch},
@@ -375,11 +374,6 @@ func TestMCPProtocolRules(t *testing.T) {
 		if code, _ := rpcErr(t, b); resp.StatusCode != c.status || code != c.code {
 			t.Errorf("%s: %d %s", c.name, resp.StatusCode, b)
 		}
-	}
-	// initialize names what is supported
-	_, b := m.rpc("initialize", map[string]any{}, nil)
-	if !strings.Contains(string(b), mcp.ProtocolVersion) {
-		t.Fatalf("initialize error must name the supported version: %s", b)
 	}
 	// unsupported version, consistently stated
 	m2 := map[string]any{"io.modelcontextprotocol/protocolVersion": "1999-01-01", "io.modelcontextprotocol/clientCapabilities": map[string]any{}}
@@ -687,4 +681,41 @@ func TestDeadToolHoldIsReleasedByReconciler_I6(t *testing.T) {
 		t.Fatalf("a closed tool hold is audited as kind mcp: %+v %v", rows, err)
 	}
 	e.noActiveHolds()
+}
+
+// A handshake-era client works without a session, and the upstream and the
+// policy check still see only the modern protocol.
+func TestMCPLegacyClientIsAdaptedAtTheEdge(t *testing.T) {
+	m := newMCPEnv(t, 10*usd, nil)
+	m.scopeTools("fake/echo")
+	legacy := func(id int, method, params string) (*http.Response, []byte) {
+		body := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":%q,"params":%s}`, id, method, params)
+		return m.env.do("/mcp/fake", body, map[string]string{"Accept": "application/json, text/event-stream"})
+	}
+	resp, b := legacy(1, "initialize", `{"protocolVersion":"2025-06-18","capabilities":{}}`)
+	if resp.StatusCode != 200 || resp.Header.Get("Mcp-Session-Id") != "" || !strings.Contains(string(b), "2025-06-18") {
+		t.Fatalf("initialize: %d %v %s", resp.StatusCode, resp.Header, b)
+	}
+	if n := len(m.up.Calls()); n != 0 {
+		t.Fatalf("initialize reached the upstream: %d calls", n)
+	}
+	if resp, b = legacy(2, "tools/list", `{}`); resp.StatusCode != 200 || !strings.Contains(string(b), "echo") || strings.Contains(string(b), "stream") {
+		t.Fatalf("tools/list must be filtered by scope: %d %s", resp.StatusCode, b)
+	}
+	if resp, b = legacy(3, "tools/call", `{"name":"echo","arguments":{"text":"hi"}}`); resp.StatusCode != 200 || strings.Contains(string(b), `"error"`) {
+		t.Fatalf("in scope: %d %s", resp.StatusCode, b)
+	}
+	before := len(m.up.Calls())
+	if _, b = legacy(4, "tools/call", `{"name":"stream","arguments":{}}`); !strings.Contains(string(b), `"error"`) {
+		t.Fatalf("out of scope must be refused: %s", b)
+	}
+	calls := m.up.Calls()
+	if len(calls) != before {
+		t.Fatal("a refused call reached the upstream")
+	}
+	for _, c := range calls {
+		if c.Header.Get("MCP-Protocol-Version") != mcp.ProtocolVersion {
+			t.Fatalf("upstream saw version %q", c.Header.Get("MCP-Protocol-Version"))
+		}
+	}
 }
