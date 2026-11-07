@@ -10,9 +10,12 @@
 // params._meta, mirrored into the MCP-Protocol-Version, Mcp-Method and
 // Mcp-Name headers. So the gateway is stateless too: it keeps no per-client
 // MCP state, ignores Mcp-Session-Id, and answers GET and DELETE with 405.
-// `initialize` (the 2025-11-25 and earlier handshake) is refused with an error
-// that names the versions this gateway speaks, as the spec recommends for a
-// server that supports only the modern revision.
+//
+// Many real clients still speak the handshake revisions (2025-11-25 and
+// earlier). The gateway adapts them at its edge and stays stateless: it answers
+// `initialize` itself, without a session, and upgrades every later message to
+// 2026-07-28 before checking and forwarding it. Upstreams only ever see the
+// modern revision.
 package mcp
 
 import (
@@ -21,14 +24,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 )
 
 // ProtocolVersion is the one revision the gateway speaks.
 const ProtocolVersion = "2026-07-28"
 
+// LegacyVersions are the handshake revisions adapted at the gateway's edge,
+// oldest first.
+var LegacyVersions = []string{"2025-03-26", "2025-06-18", "2025-11-25"}
+
 // Supported lists the versions named in UnsupportedProtocolVersion errors.
-var Supported = []string{ProtocolVersion}
+var Supported = append(append([]string{}, LegacyVersions...), ProtocolVersion)
 
 // JSON-RPC and MCP error codes. -32020..-32022 are defined by the 2026-07-28
 // spec; the spec reserves -32020..-32099 for itself, so the gateway's own
@@ -112,7 +120,6 @@ const (
 // Check applies the Streamable HTTP request rules of 2026-07-28 to a parsed
 // request and returns the HTTP status and error to answer with, or nil.
 //
-//   - initialize: refused, naming the supported versions (400)
 //   - the version must be in _meta and in MCP-Protocol-Version, equal (400, -32020 / -32602)
 //   - an unsupported version gets UnsupportedProtocolVersion with the list (400, -32022)
 //   - Mcp-Method must equal the body's method; Mcp-Name must equal params.name
@@ -124,11 +131,6 @@ const (
 // body says something else. The gateway decides policy from the body, so a
 // header that disagrees with it is rejected, not trusted.
 func Check(h http.Header, r Request) (int, *Error) {
-	if r.Method == "initialize" {
-		return http.StatusBadRequest, &Error{Code: CodeUnsupportedVer,
-			Message: "initialize is not supported: this gateway speaks MCP " + ProtocolVersion + ", which has no handshake; send the version in params._meta and the MCP-Protocol-Version header",
-			Data:    map[string]any{"supported": Supported}}
-	}
 	hv := h.Get("MCP-Protocol-Version")
 	if hv == "" {
 		return http.StatusBadRequest, &Error{Code: CodeHeaderMismatch, Message: "missing MCP-Protocol-Version header"}
@@ -170,6 +172,80 @@ func Check(h http.Header, r Request) (int, *Error) {
 		return http.StatusBadRequest, &Error{Code: CodeHeaderMismatch, Message: "Mcp-Name does not match the request"}
 	}
 	return 0, nil
+}
+
+// Legacy reports a message from a handshake-era client: it has no version in
+// params._meta, and its version header is absent or names a legacy revision.
+func Legacy(h http.Header, r Request) bool {
+	var p struct {
+		Meta map[string]json.RawMessage `json:"_meta"`
+	}
+	_ = json.Unmarshal(r.Params, &p)
+	if _, ok := p.Meta[metaVersion]; ok {
+		return false
+	}
+	hv := h.Get("MCP-Protocol-Version")
+	return hv == "" || slices.Contains(LegacyVersions, hv)
+}
+
+// InitializeResponse answers a legacy `initialize` at the gateway. It offers
+// the client's version when the gateway knows it, else the newest legacy one,
+// and no session: every later message stands on its own.
+func InitializeResponse(r Request) []byte {
+	var p struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	_ = json.Unmarshal(r.Params, &p)
+	version := LegacyVersions[len(LegacyVersions)-1]
+	if slices.Contains(LegacyVersions, p.ProtocolVersion) {
+		version = p.ProtocolVersion
+	}
+	b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": r.ID, "result": map[string]any{
+		"protocolVersion": version,
+		"capabilities":    map[string]any{"tools": map[string]any{}},
+		"serverInfo":      map[string]string{"name": "agentgate", "version": "0.1.0"},
+	}})
+	return b
+}
+
+// Upgrade rewrites a legacy message as 2026-07-28: it adds the _meta fields to
+// the body and sets the mirrored headers from that body, so everything after
+// it, policy included, sees one protocol. It reports the new body.
+func Upgrade(h http.Header, r Request, body []byte) ([]byte, error) {
+	var msg map[string]json.RawMessage
+	if err := json.Unmarshal(body, &msg); err != nil {
+		return nil, err
+	}
+	params := map[string]json.RawMessage{}
+	if len(r.Params) > 0 && string(r.Params) != "null" {
+		if err := json.Unmarshal(r.Params, &params); err != nil {
+			return nil, err
+		}
+	}
+	meta := map[string]json.RawMessage{}
+	if raw, ok := params["_meta"]; ok {
+		_ = json.Unmarshal(raw, &meta)
+	}
+	meta[metaVersion], _ = json.Marshal(ProtocolVersion)
+	if _, ok := meta[metaCaps]; !ok {
+		meta[metaCaps] = json.RawMessage("{}")
+	}
+	params["_meta"], _ = json.Marshal(meta)
+	msg["params"], _ = json.Marshal(params)
+	h.Set("MCP-Protocol-Version", ProtocolVersion)
+	h.Set("Mcp-Method", r.Method)
+	h.Del("Mcp-Name")
+	for key, methods := range map[string][]string{"name": {"tools/call", "prompts/get"}, "uri": {"resources/read"}} {
+		if !slices.Contains(methods, r.Method) {
+			continue
+		}
+		var v string
+		if err := json.Unmarshal(params[key], &v); err != nil {
+			return nil, err
+		}
+		h.Set("Mcp-Name", EncodeHeaderValue(v))
+	}
+	return json.Marshal(msg)
 }
 
 // DecodeHeaderValue undoes the =?base64?...?= form used for header values that

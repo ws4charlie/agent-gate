@@ -155,6 +155,21 @@ func (c *call) mcp(name string) {
 		c.protoFail(http.StatusBadRequest, perr, audit.StatusBadRequest)
 		return
 	}
+	if mcp.Legacy(c.r.Header, req) {
+		if req.Method == "initialize" {
+			c.ev.Model = req.Method
+			c.relayJSON(mcp.InitializeResponse(req))
+			c.finish(audit.StatusOK)
+			return
+		}
+		if body, err = mcp.Upgrade(c.r.Header, req, body); err == nil {
+			req, perr = mcp.Parse(body)
+		}
+		if err != nil || perr != nil {
+			c.protoFail(http.StatusBadRequest, &mcp.Error{Code: mcp.CodeInvalidParams, Message: "params are not usable"}, audit.StatusBadRequest)
+			return
+		}
+	}
 	if status, e := mcp.Check(c.r.Header, req); e != nil {
 		c.protoFail(status, e, audit.StatusBadRequest)
 		return

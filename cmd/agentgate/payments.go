@@ -265,7 +265,14 @@ func paidtoolCmd(ctx context.Context, args []string, stdout io.Writer) error {
 		return fmt.Errorf("paidtool: unknown network %q", *network)
 	}
 	ver := x402.NewVerifier(cfg)
-	hs := &http.Server{Addr: *listen, Handler: paidtool.Handler(ver), ReadHeaderTimeout: 10 * time.Second}
+	handler := http.Handler(paidtool.Handler(ver))
+	if key := strings.TrimSpace(os.Getenv("FIRECRAWL_API_KEY")); key != "" {
+		mux := http.NewServeMux()
+		mux.Handle("/", handler)
+		mux.Handle("POST /mcp/search", paidtool.SearchMCP(ver, &paidtool.Searcher{Key: key}))
+		handler = mux
+	}
+	hs := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {

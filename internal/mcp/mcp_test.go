@@ -1,6 +1,7 @@
 package mcp_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -80,9 +81,65 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
-func TestCheckLegacyInitializeNamesVersions(t *testing.T) {
-	st, e := mcp.Check(http.Header{}, mcp.Request{JSONRPC: "2.0", ID: []byte("1"), Method: "initialize"})
-	if st != 400 || e == nil || e.Code != mcp.CodeUnsupportedVer || !strings.Contains(e.Message, mcp.ProtocolVersion) {
-		t.Fatalf("%d %v", st, e)
+func TestLegacyMessagesAreDetectedByMissingMeta(t *testing.T) {
+	legacy := mcp.Request{JSONRPC: "2.0", ID: []byte("1"), Method: "tools/list", Params: []byte(`{}`)}
+	modern := mcp.Request{JSONRPC: "2.0", ID: []byte("1"), Method: "tools/list",
+		Params: []byte(`{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}`)}
+	h := http.Header{}
+	if !mcp.Legacy(h, legacy) || mcp.Legacy(h, modern) {
+		t.Fatal("missing _meta must mean legacy, and only then")
+	}
+	h.Set("MCP-Protocol-Version", "2025-06-18")
+	if !mcp.Legacy(h, legacy) {
+		t.Fatal("a legacy version header is legacy")
+	}
+	h.Set("MCP-Protocol-Version", "1999-01-01")
+	if mcp.Legacy(h, legacy) {
+		t.Fatal("an unknown version must not be adapted")
+	}
+}
+
+func TestInitializeOffersAKnownVersionAndNoSession(t *testing.T) {
+	for in, want := range map[string]string{"2025-06-18": "2025-06-18", "1999-01-01": "2025-11-25"} {
+		b := mcp.InitializeResponse(mcp.Request{ID: []byte("7"), Params: []byte(`{"protocolVersion":"` + in + `"}`)})
+		var out struct {
+			ID     int `json:"id"`
+			Result struct {
+				ProtocolVersion string `json:"protocolVersion"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(b, &out); err != nil || out.ID != 7 || out.Result.ProtocolVersion != want {
+			t.Fatalf("%s: %s", in, b)
+		}
+	}
+}
+
+func TestUpgradePassesTheModernChecks(t *testing.T) {
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"go"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"file:///a"}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+	} {
+		r, perr := mcp.Parse([]byte(body))
+		if perr != nil {
+			t.Fatal(perr)
+		}
+		h := http.Header{}
+		h.Set("Mcp-Name", "forged")
+		out, err := mcp.Upgrade(h, r, []byte(body))
+		if err != nil {
+			t.Fatalf("%s: %v", body, err)
+		}
+		up, perr := mcp.Parse(out)
+		if perr != nil {
+			t.Fatalf("%s: %v", out, perr)
+		}
+		if st, e := mcp.Check(h, up); e != nil {
+			t.Fatalf("%s: %d %v", out, st, e)
+		}
+		if mcp.Legacy(h, up) {
+			t.Fatalf("still legacy: %s", out)
+		}
 	}
 }
