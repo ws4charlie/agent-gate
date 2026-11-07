@@ -6,16 +6,26 @@ Testing something that spends money has an obvious problem: you don't want to sp
 
 <p align="center"><img src="images/testing.png" width="60%" alt="Three levels of testing: fakes, local end to end and live."></p>
 
-There are three levels.
+## Three levels of testing
 
-**Fakes.** A fake model provider and a simulated blockchain inside the test. These are fast and cover the logic, including the unpleasant cases such as crashes, dropped streams and two requests racing each other.
+### Fakes
 
-**Local end to end.** A real local blockchain node with a stand-in USDC, plus a scripted model server that answers over real HTTP. The gateway doesn't know the difference and has no special test mode. This shows the whole path works, from request to on-chain receipt and back into the books. CI runs this on every change.
+A fake model provider and a simulated blockchain. They're fast and cover the unpleasant cases, such as crashes, dropped streams and two requests racing each other.
 
-LiteScraper can also record its real results and replay them later, so testing a real agent locally spends no search credits and never hits a rate limit.
+### Local end to end
 
-**Live.** Real providers and real networks. This is the thin part so far: testing against OpenRouter has only just started, and payments have settled on a public testnet only in a small run. More is coming.
+A real local blockchain node with a stand-in USDC, plus a scripted model server that answers over real HTTP. The gateway can't tell the difference and has no special test mode. This shows the whole path works, and CI runs it on every change.
 
-We also keep a set of scripted scenarios with an expected verdict for each one, such as "this should be refused for being over budget". They include plenty of requests that should be allowed, because a gateway that refuses everything would otherwise look perfect.
+LiteScraper can record real results and replay them later, so testing a real agent locally spends no search credits and never hits a rate limit.
 
-Be careful how you read a clean score. We wrote the scenarios alongside the rules, so passing shows the rules do what we meant. It says nothing about how they would hold up against an attacker who has never seen them. Local tests prove our accounting, not how a real provider or Circle's real USDC behaves.
+### Live
+
+Real providers and real networks. This is the thin part so far: testing against OpenRouter has only just started, and settlement on a public testnet is still small. More is coming.
+
+## Scripted scenarios
+
+Each scenario has an expected verdict, such as "this should be refused for being over budget". Many are requests that should be allowed, because otherwise a gateway that refuses everything would look perfect.
+
+## What a clean score doesn't show
+
+We wrote the scenarios alongside the rules, so passing shows the rules do what we meant, not how they hold up against an unfamiliar attacker. Local tests prove our accounting, not how a real provider or Circle's real USDC behaves.
