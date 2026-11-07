@@ -19,8 +19,8 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/x402"
 )
 
-// SearchPrice is one search in USDC atomic units ($0.01).
-var SearchPrice = big.NewInt(10_000)
+// LiteCrawlerPrice is one search in USDC atomic units ($0.01).
+var LiteCrawlerPrice = big.NewInt(10_000)
 
 const (
 	defaultSearchURL = "https://api.firecrawl.dev/v2/search"
@@ -30,14 +30,15 @@ const (
 	maxUpstreamBody  = 4 << 20
 )
 
-// Searcher runs a web search against Firecrawl. It is the real service behind
-// the paid search tool; x402 is the layer this repository adds in front of it.
+// LiteCrawler is this repository's demo paid tool: a reseller. It charges an
+// agent through x402 and runs the search on Firecrawl, which it pays separately
+// with an API key. Firecrawl never sees the x402 payment or a signature.
 //
 // With Cache set, a result already on disk is returned without calling
 // Firecrawl, and a new one is saved. With Replay as well, Firecrawl is never
 // called and a query that was not recorded fails. Local testing then spends no
 // credits and cannot hit the rate limit. Failed searches are not recorded.
-type Searcher struct {
+type LiteCrawler struct {
 	Key    string
 	URL    string // default: Firecrawl's search endpoint
 	Client *http.Client
@@ -51,12 +52,12 @@ type recording struct {
 	Text  string `json:"text"`
 }
 
-func (s *Searcher) recordingPath(query string, limit int) string {
+func (s *LiteCrawler) recordingPath(query string, limit int) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%s", limit, strings.TrimSpace(query))))
 	return filepath.Join(s.Cache, hex.EncodeToString(sum[:])+".json")
 }
 
-func (s *Searcher) recorded(query string, limit int) (string, bool) {
+func (s *LiteCrawler) recorded(query string, limit int) (string, bool) {
 	b, err := os.ReadFile(s.recordingPath(query, limit))
 	if err != nil {
 		return "", false
@@ -68,7 +69,7 @@ func (s *Searcher) recorded(query string, limit int) (string, bool) {
 	return r.Text, true
 }
 
-func (s *Searcher) record(query string, limit int, text string) error {
+func (s *LiteCrawler) record(query string, limit int, text string) error {
 	if err := os.MkdirAll(s.Cache, 0o700); err != nil {
 		return err
 	}
@@ -80,7 +81,7 @@ func (s *Searcher) record(query string, limit int, text string) error {
 }
 
 // Search returns the top results as plain text, one block per result.
-func (s *Searcher) Search(ctx context.Context, query string, limit int) (string, error) {
+func (s *LiteCrawler) Search(ctx context.Context, query string, limit int) (string, error) {
 	if limit <= 0 {
 		limit = defaultResults
 	}
@@ -105,7 +106,7 @@ func (s *Searcher) Search(ctx context.Context, query string, limit int) (string,
 	return text, nil
 }
 
-func (s *Searcher) fetch(ctx context.Context, query string, limit int) (string, error) {
+func (s *LiteCrawler) fetch(ctx context.Context, query string, limit int) (string, error) {
 	body, err := json.Marshal(map[string]any{"query": query, "limit": limit})
 	if err != nil {
 		return "", err
@@ -154,11 +155,11 @@ func (s *Searcher) fetch(ctx context.Context, query string, limit int) (string, 
 	return strings.Join(blocks, "\n\n"), nil
 }
 
-// SearchMCP is a small MCP server with one paid tool. Discovery is free, so a
+// LiteCrawlerMCP is a small MCP server with one paid tool. Discovery is free, so a
 // client can start up and list tools; only tools/call goes through x402.
-func SearchMCP(v *x402.Verifier, s *Searcher) http.Handler {
-	return searchMCP(func(next http.Handler) http.Handler {
-		return v.Protect(SearchPrice, "Web search", next)
+func LiteCrawlerMCP(v *x402.Verifier, s *LiteCrawler) http.Handler {
+	return liteCrawlerMCP(func(next http.Handler) http.Handler {
+		return v.Protect(LiteCrawlerPrice, "Web search", next)
 	}, s)
 }
 
@@ -175,7 +176,7 @@ type rpcRequest struct {
 	} `json:"params"`
 }
 
-func searchMCP(protect func(http.Handler) http.Handler, s *Searcher) http.Handler {
+func liteCrawlerMCP(protect func(http.Handler) http.Handler, s *LiteCrawler) http.Handler {
 	paid := protect(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var in rpcRequest
 		_ = json.NewDecoder(r.Body).Decode(&in)
@@ -205,7 +206,7 @@ func searchMCP(protect func(http.Handler) http.Handler, s *Searcher) http.Handle
 			reply(w, in.ID, map[string]any{
 				"protocolVersion": in.Params.ProtocolVersion,
 				"capabilities":    map[string]any{"tools": map[string]any{}},
-				"serverInfo":      map[string]string{"name": "agentgate-search", "version": "0.1.0"},
+				"serverInfo":      map[string]string{"name": "litecrawler", "version": "0.1.0"},
 			})
 		case "ping":
 			reply(w, in.ID, map[string]any{})
