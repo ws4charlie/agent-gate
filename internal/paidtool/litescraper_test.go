@@ -32,7 +32,7 @@ const oneResult = `{"success":true,"data":{"web":[{"title":"Go","url":"https://g
 func call(t *testing.T, h http.Handler, body string) (int, map[string]any) {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/mcp/search", strings.NewReader(body)))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/mcp/litescraper", strings.NewReader(body)))
 	var out map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)
 	return rec.Code, out
@@ -46,7 +46,7 @@ func refuse(http.Handler) http.Handler {
 }
 
 func TestDiscoveryIsFreeButCallsArePaid(t *testing.T) {
-	h := searchMCP(refuse, &Searcher{Key: "test-key"})
+	h := liteScraperMCP(refuse, &LiteScraper{Key: "test-key"})
 	code, out := call(t, h, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`)
 	if code != http.StatusOK || out["result"].(map[string]any)["protocolVersion"] != "2025-06-18" {
 		t.Fatalf("initialize: %d %v", code, out)
@@ -64,7 +64,7 @@ func TestDiscoveryIsFreeButCallsArePaid(t *testing.T) {
 }
 
 func TestBadCallIsRefusedBeforePayment(t *testing.T) {
-	h := searchMCP(refuse, &Searcher{Key: "test-key"})
+	h := liteScraperMCP(refuse, &LiteScraper{Key: "test-key"})
 	for _, body := range []string{
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"  "}}}`,
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"other","arguments":{"query":"go"}}}`,
@@ -79,7 +79,7 @@ func TestBadCallIsRefusedBeforePayment(t *testing.T) {
 func TestSearchReturnsResultsAndCapsLimit(t *testing.T) {
 	var seen map[string]any
 	up := firecrawl(t, http.StatusOK, oneResult, &seen)
-	h := searchMCP(open, &Searcher{Key: "test-key", URL: up.URL})
+	h := liteScraperMCP(open, &LiteScraper{Key: "test-key", URL: up.URL})
 	_, out := call(t, h, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"go","limit":500}}}`)
 	text := out["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
 	if !strings.Contains(text, "https://go.dev") || !strings.Contains(text, "The Go language") {
@@ -95,7 +95,7 @@ func TestSearchReturnsResultsAndCapsLimit(t *testing.T) {
 func TestUpstreamFailureIsNotCharged(t *testing.T) {
 	for _, status := range []int{http.StatusTooManyRequests, http.StatusUnauthorized} {
 		up := firecrawl(t, status, `{"error":"Bearer test-key is bad"}`, nil)
-		h := searchMCP(open, &Searcher{Key: "test-key", URL: up.URL})
+		h := liteScraperMCP(open, &LiteScraper{Key: "test-key", URL: up.URL})
 		code, out := call(t, h, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"go"}}}`)
 		if code < 400 || out["error"] == nil {
 			t.Fatalf("upstream %d: answered %d %v", status, code, out)
@@ -114,7 +114,7 @@ func TestRecordThenReplayWithoutCallingUpstream(t *testing.T) {
 	}))
 	t.Cleanup(up.Close)
 	dir := t.TempDir()
-	rec := &Searcher{Key: "test-key", URL: up.URL, Cache: dir}
+	rec := &LiteScraper{Key: "test-key", URL: up.URL, Cache: dir}
 	first, err := rec.Search(t.Context(), "go", 3)
 	if err != nil {
 		t.Fatal(err)
@@ -123,7 +123,7 @@ func TestRecordThenReplayWithoutCallingUpstream(t *testing.T) {
 		t.Fatalf("a recorded search called upstream again: calls=%d err=%v", calls.Load(), err)
 	}
 	up.Close()
-	play := &Searcher{URL: "http://127.0.0.1:1", Cache: dir, Replay: true}
+	play := &LiteScraper{URL: "http://127.0.0.1:1", Cache: dir, Replay: true}
 	if got, err := play.Search(t.Context(), "go", 3); err != nil || got != first {
 		t.Fatalf("replay: %q %v", got, err)
 	}
@@ -138,7 +138,7 @@ func TestRecordThenReplayWithoutCallingUpstream(t *testing.T) {
 func TestFailedSearchIsNotRecorded(t *testing.T) {
 	up := firecrawl(t, http.StatusTooManyRequests, `{}`, nil)
 	dir := t.TempDir()
-	s := &Searcher{Key: "test-key", URL: up.URL, Cache: dir}
+	s := &LiteScraper{Key: "test-key", URL: up.URL, Cache: dir}
 	if _, err := s.Search(t.Context(), "go", 3); err == nil {
 		t.Fatal("want an error")
 	}

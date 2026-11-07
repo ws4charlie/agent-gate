@@ -38,6 +38,14 @@ We take a reported success at its word because a tool gains nothing by claiming 
 
 The cost of waiting is that a failed payment takes a few minutes to come back. We accept that, because the alternative is giving back money that has already left.
 
+## LiteScraper, the demo seller
+
+Real paid tools want real money, and our wallet only works on testnets. So the repository includes its own paid search tool, LiteScraper, to play the seller.
+
+LiteScraper is a small reseller. It charges the agent through x402 in test USDC, which goes to our own address. It then runs the search on Firecrawl with an ordinary API key. The search results are real, but Firecrawl never sees a payment or a signature.
+
+This proves the gateway's payment path works on a public network. It doesn't prove it works with a seller we don't control.
+
 ## Good to know
 
 This runs on testnets only, practice networks where the tokens have no real value. The wallet refuses to work on mainnet.

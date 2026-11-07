@@ -180,8 +180,8 @@ func paidtoolCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	listen := fs.String("listen", "127.0.0.1:9402", "listen address")
 	network := fs.String("network", "sim", "sim | anvil | base-sepolia")
 	payTo := fs.String("pay-to", "", "address that receives payment (required)")
-	searchCache := fs.String("search-cache", "", "directory of recorded search results; a new search is saved there")
-	searchReplay := fs.Bool("search-replay", false, "answer only from --search-cache and never call Firecrawl")
+	scraperCache := fs.String("litescraper-cache", "", "directory of recorded LiteScraper results; a new search is saved there")
+	scraperReplay := fs.Bool("litescraper-replay", false, "answer only from --litescraper-cache and never call Firecrawl")
 	fund := fs.String("fund", "", "sim and anvil: mint this many USDC to --fund-address at startup, e.g. 5")
 	fundAddr := fs.String("fund-address", "", "sim and anvil: the payer address to fund")
 	if err := fs.Parse(args); err != nil {
@@ -268,13 +268,13 @@ func paidtoolCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	ver := x402.NewVerifier(cfg)
 	handler := http.Handler(paidtool.Handler(ver))
-	if key := strings.TrimSpace(os.Getenv("FIRECRAWL_API_KEY")); key != "" || *searchReplay {
-		if *searchReplay && *searchCache == "" {
-			return errors.New("paidtool: --search-replay needs --search-cache")
+	if key := strings.TrimSpace(os.Getenv("FIRECRAWL_API_KEY")); key != "" || *scraperReplay {
+		if *scraperReplay && *scraperCache == "" {
+			return errors.New("paidtool: --litescraper-replay needs --litescraper-cache")
 		}
 		mux := http.NewServeMux()
 		mux.Handle("/", handler)
-		mux.Handle("POST /mcp/search", paidtool.SearchMCP(ver, &paidtool.Searcher{Key: key, Cache: *searchCache, Replay: *searchReplay}))
+		mux.Handle("POST /mcp/litescraper", paidtool.LiteScraperMCP(ver, &paidtool.LiteScraper{Key: key, Cache: *scraperCache, Replay: *scraperReplay}))
 		handler = mux
 	}
 	hs := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
