@@ -180,8 +180,8 @@ func paidtoolCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	listen := fs.String("listen", "127.0.0.1:9402", "listen address")
 	network := fs.String("network", "sim", "sim | anvil | base-sepolia")
 	payTo := fs.String("pay-to", "", "address that receives payment (required)")
-	crawlerCache := fs.String("litecrawler-cache", "", "directory of recorded LiteCrawler results; a new search is saved there")
-	crawlerReplay := fs.Bool("litecrawler-replay", false, "answer only from --litecrawler-cache and never call Firecrawl")
+	scraperCache := fs.String("litescraper-cache", "", "directory of recorded LiteScraper results; a new search is saved there")
+	scraperReplay := fs.Bool("litescraper-replay", false, "answer only from --litescraper-cache and never call Firecrawl")
 	fund := fs.String("fund", "", "sim and anvil: mint this many USDC to --fund-address at startup, e.g. 5")
 	fundAddr := fs.String("fund-address", "", "sim and anvil: the payer address to fund")
 	if err := fs.Parse(args); err != nil {
@@ -268,13 +268,13 @@ func paidtoolCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	ver := x402.NewVerifier(cfg)
 	handler := http.Handler(paidtool.Handler(ver))
-	if key := strings.TrimSpace(os.Getenv("FIRECRAWL_API_KEY")); key != "" || *crawlerReplay {
-		if *crawlerReplay && *crawlerCache == "" {
-			return errors.New("paidtool: --litecrawler-replay needs --litecrawler-cache")
+	if key := strings.TrimSpace(os.Getenv("FIRECRAWL_API_KEY")); key != "" || *scraperReplay {
+		if *scraperReplay && *scraperCache == "" {
+			return errors.New("paidtool: --litescraper-replay needs --litescraper-cache")
 		}
 		mux := http.NewServeMux()
 		mux.Handle("/", handler)
-		mux.Handle("POST /mcp/litecrawler", paidtool.LiteCrawlerMCP(ver, &paidtool.LiteCrawler{Key: key, Cache: *crawlerCache, Replay: *crawlerReplay}))
+		mux.Handle("POST /mcp/litescraper", paidtool.LiteScraperMCP(ver, &paidtool.LiteScraper{Key: key, Cache: *scraperCache, Replay: *scraperReplay}))
 		handler = mux
 	}
 	hs := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
