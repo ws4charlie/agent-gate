@@ -342,7 +342,7 @@ func (c *call) unknown(reason, tx string) {
 		c.ev.Usage.UpstreamID = tx
 	}
 	if c.rpc {
-		c.writeRPCError(http.StatusAccepted, "settlement_pending", "the payment may have settled; the ledger will resolve it from the chain",
+		c.writeRPCError(http.StatusOK, "settlement_pending", "the payment may have settled; the ledger will resolve it from the chain",
 			map[string]any{"request_id": c.ev.RequestID, "reason": reason})
 		c.finish(StatusSettlementPending)
 		return

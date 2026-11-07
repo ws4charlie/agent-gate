@@ -115,7 +115,10 @@ func searchMCP(protect func(http.Handler) http.Handler, s *Searcher) http.Handle
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		text, err := s.Search(r.Context(), in.Params.Arguments.Query, in.Params.Arguments.Limit)
 		if err != nil {
-			reply(w, in.ID, map[string]any{"isError": true, "content": textContent(err.Error())})
+			// An HTTP failure tells x402 not to settle: a failed search costs nothing.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": in.ID, "error": map[string]any{"code": -32000, "message": err.Error()}})
 			return
 		}
 		reply(w, in.ID, map[string]any{"content": textContent(text)})
