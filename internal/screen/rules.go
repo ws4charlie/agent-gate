@@ -44,9 +44,10 @@ var (
 		re(`(?i)</?(system|assistant|tool_result|function_results|instructions?)>`),
 	}
 
-	// A URL that carries data out: an image or link whose query is a long
-	// value, or "send <secret> to <url>" in either order.
-	mdExfilRe     = re(`!\[[^\]]*\]\(\s*https?://[^)\s]*\?[^)\s]*=[^)\s]{16,}`)
+	// A URL that carries data out: an image whose query has one long encoded
+	// value (see mdExfil), or "send <secret> to <url>" in either order.
+	mdImageRe     = re(`!\[[^\]]*\]\(\s*https?://[^)\s?]*\?([^)\s#]*)`)
+	payloadRe     = regexp.MustCompile(`^[A-Za-z0-9%+/_.=-]{16,}$`)
 	mdTemplateRe  = re(`!\[[^\]]*\]\(\s*https?://[^)\s]*(\{\{|%7B%7B|\$\{)`)
 	secretQueryRe = re(`https?://[^\s"')]*[?&](?:token|secret|password|api_?key|auth|session|cookie|data|payload)=[A-Za-z0-9%+/=_.-]{24,}`)
 	sendThenURLRe = re(`\b(send|post|upload|forward|exfiltrate|leak|transmit|email|submit|append)\b[^\n]{0,120}\b(secrets?|tokens?|passwords?|credentials?|api[ _-]?keys?|private keys?|\.env|cookies?|conversation|chat history|system prompt|ssh keys?)\b[^\n]{0,120}https?://`)
@@ -145,7 +146,7 @@ func scanPlain(s string) (rule, detail string, hit bool) {
 		}
 	}
 	switch {
-	case mdExfilRe.MatchString(s), mdTemplateRe.MatchString(s), secretQueryRe.MatchString(s),
+	case mdExfil(s), mdTemplateRe.MatchString(s), secretQueryRe.MatchString(s),
 		sendThenURLRe.MatchString(norm), urlThenSendRe.MatchString(norm):
 		return RuleExfilURL, "a URL that would carry data out", true
 	}
@@ -191,4 +192,26 @@ func decodedForms(s string) []string {
 		}
 	}
 	return out
+}
+
+// mdExfil reports an image whose query carries a long encoded value. A run
+// of short parameters (an image CDN's ?w=3840&q=90&fm=webp), a resize recipe
+// (?x-oss-process=image/resize,p_40) and an image proxy's encoded address
+// (?url=https%3A%2F%2F...) are not payloads. Every parameter is checked, so
+// adding a harmless one does not hide a payload.
+func mdExfil(s string) bool {
+	for _, m := range mdImageRe.FindAllStringSubmatch(s, -1) {
+		for _, kv := range strings.Split(m[1], "&") {
+			_, v, ok := strings.Cut(kv, "=")
+			if !ok || !payloadRe.MatchString(v) {
+				continue
+			}
+			lv := strings.ToLower(v)
+			if strings.HasPrefix(lv, "http%3a%2f%2f") || strings.HasPrefix(lv, "https%3a%2f%2f") {
+				continue
+			}
+			return true
+		}
+	}
+	return false
 }
