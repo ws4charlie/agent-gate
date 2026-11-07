@@ -2,29 +2,32 @@
 
 [中文](zh/policy.md)
 
-An API key with a budget treats an agent as a billing line. We treat it more like a bank customer: it has an identity, it has limits, and someone can freeze the account.
+An API key with a budget treats an agent as a billing line. We treat it like a bank customer: it has an identity, it has limits, and someone can freeze the account.
 
 <p align="center"><img src="images/policy.png" width="60%" alt="Five checks in order. The first failure decides."></p>
 
-For each agent you decide:
+## What you control
 
 - which models and tools it may use, and who it may pay
 - how much it may spend in a day
 - how fast it may spend, which catches an agent stuck in a loop
-- how large a single spend can be before a person has to approve it
+- how large a single spend can be before a person must approve it
 
-Anything you don't list is refused. An agent with no list of payees can't pay anyone.
+Anything you don't list is refused. An agent can't approve its own requests or switch off its limits, because that takes direct database access, which it never has.
 
-Every request is checked against these rules in the same order, and the first rule that fails gives the answer. The agent is told which rule stopped it, so it can change course instead of retrying blindly. Every decision is recorded, including the ones that said yes.
+## Rules run in order
 
-When a request needs approval, the money stays held and the request waits. A person looks at it and says yes or no. If the answer is yes, the agent sends the same request again and it runs once. An approval covers that exact request, so the agent can't swap in something else, and it expires if nobody uses it.
+The first rule that fails gives the answer. The agent is told which rule stopped it, so it can change course instead of retrying blindly. Yes and no decisions are both recorded.
 
-If an agent goes wrong, one command stops it. New requests are refused and anything it has running is cut off within about a second. You pay for what already happened.
+## When a person must approve
 
-Agents can't approve their own requests or switch their limits off, because those actions don't exist on the network. They need direct access to the database, and an agent never has that.
+The money stays held and the request waits for a decision. After a yes, the agent sends the same request again and it runs once. An approval covers only that request, can't be swapped for something else, and expires if nobody uses it.
+
+## One command stops an agent
+
+New requests are refused and running calls are cut off within about a second. You pay for what already happened.
 
 ## Where the limits are soft
 
-The per-task budget relies on the client being honest, since the client names the task. A hostile agent can invent a new task for each call.
-
-Budgets are checked against an estimate before a request runs. We give every request an output limit so the estimate holds, but a provider can still bill more than we expected, for example if our price table is out of date. Very large requests are also held at a fixed maximum, not their full worst case. So one call can occasionally land over budget. The account balance is the real ceiling.
+- **Task budgets rely on the client.** The client names the task, so a hostile agent can invent a new one for each call.
+- **Budget checks use an estimate.** If our price table is out of date or a request is very large, one call can occasionally land over budget. The account balance is the real ceiling.
