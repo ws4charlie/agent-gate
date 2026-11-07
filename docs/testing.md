@@ -12,6 +12,8 @@ There are three levels.
 
 **Local end to end.** A real local blockchain node with a stand-in USDC, plus a scripted model server that answers over real HTTP. The gateway doesn't know the difference and has no special test mode. This shows the whole path works, from request to on-chain receipt and back into the books. CI runs this on every change.
 
+Paid search can also record its real results and replay them later, so testing a real agent locally spends no search credits and never hits a rate limit.
+
 **Live.** Real providers and real networks. This is the thin part so far: testing against OpenRouter has only just started, and payments have settled on a public testnet only in a small run. More is coming.
 
 We also keep a set of scripted scenarios with an expected verdict for each one, such as "this should be refused for being over budget". They include plenty of requests that should be allowed, because a gateway that refuses everything would otherwise look perfect.

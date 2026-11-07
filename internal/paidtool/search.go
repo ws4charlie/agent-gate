@@ -3,12 +3,16 @@ package paidtool
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -28,10 +32,51 @@ const (
 
 // Searcher runs a web search against Firecrawl. It is the real service behind
 // the paid search tool; x402 is the layer this repository adds in front of it.
+//
+// With Cache set, a result already on disk is returned without calling
+// Firecrawl, and a new one is saved. With Replay as well, Firecrawl is never
+// called and a query that was not recorded fails. Local testing then spends no
+// credits and cannot hit the rate limit. Failed searches are not recorded.
 type Searcher struct {
 	Key    string
 	URL    string // default: Firecrawl's search endpoint
 	Client *http.Client
+	Cache  string // directory of recorded results; empty: off
+	Replay bool
+}
+
+type recording struct {
+	Query string `json:"query"`
+	Limit int    `json:"limit"`
+	Text  string `json:"text"`
+}
+
+func (s *Searcher) recordingPath(query string, limit int) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%s", limit, strings.TrimSpace(query))))
+	return filepath.Join(s.Cache, hex.EncodeToString(sum[:])+".json")
+}
+
+func (s *Searcher) recorded(query string, limit int) (string, bool) {
+	b, err := os.ReadFile(s.recordingPath(query, limit))
+	if err != nil {
+		return "", false
+	}
+	var r recording
+	if json.Unmarshal(b, &r) != nil {
+		return "", false
+	}
+	return r.Text, true
+}
+
+func (s *Searcher) record(query string, limit int, text string) error {
+	if err := os.MkdirAll(s.Cache, 0o700); err != nil {
+		return err
+	}
+	b, err := json.Marshal(recording{Query: query, Limit: limit, Text: text})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.recordingPath(query, limit), b, 0o600)
 }
 
 // Search returns the top results as plain text, one block per result.
@@ -40,6 +85,27 @@ func (s *Searcher) Search(ctx context.Context, query string, limit int) (string,
 		limit = defaultResults
 	}
 	limit = min(limit, maxResults)
+	if s.Cache != "" {
+		if text, ok := s.recorded(query, limit); ok {
+			return text, nil
+		}
+		if s.Replay {
+			return "", errors.New("no recorded result for this search")
+		}
+	}
+	text, err := s.fetch(ctx, query, limit)
+	if err != nil {
+		return "", err
+	}
+	if s.Cache != "" {
+		if err := s.record(query, limit, text); err != nil {
+			return "", errors.New("could not record the search result")
+		}
+	}
+	return text, nil
+}
+
+func (s *Searcher) fetch(ctx context.Context, query string, limit int) (string, error) {
 	body, err := json.Marshal(map[string]any{"query": query, "limit": limit})
 	if err != nil {
 		return "", err
