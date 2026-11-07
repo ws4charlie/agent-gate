@@ -251,7 +251,7 @@ func (c *call) queueApproval(h ledger.Hold, req policy.Request, idem, fp string,
 func (c *call) respondApprovalRequired(a approval.Approval) {
 	c.ev.Err = policy.RuleApprovalThreshold
 	if c.rpc { // a tool call: the answer is a JSON-RPC error carrying the approval id
-		c.writeRPCError(http.StatusAccepted, "approval_required", "a human must approve this tool call; replay it with the same Idempotency-Key after approval",
+		c.writeRPCError(http.StatusOK, "approval_required", "a human must approve this tool call; replay it with the same Idempotency-Key after approval",
 			map[string]any{"approval_id": a.ID, "request_id": c.ev.RequestID, "amount": a.Amount.String(), "expires_at": a.ExpiresAt.UTC().Format(time.RFC3339)})
 		c.finish(StatusApprovalRequired)
 		return

@@ -60,13 +60,22 @@ var (
 
 func re(p string) *regexp.Regexp { return regexp.MustCompile(p) }
 
+// zeroWidthRun is how many zero-width characters in a row count as hiding
+// something. Real pages carry them one at a time (documentation sites put one
+// in every heading link), while data encoded in them needs them side by side.
+const zeroWidthRun = 2
+
+// zeroWidth reports the characters that are harmless alone and render as
+// nothing. They are removed before the text rules run.
+func zeroWidth(r rune) bool {
+	return r == 0x200B || r == 0x200C || r == 0x2060 || r == 0x180E || r == 0xFEFF
+}
+
 // hidden is the set of characters that render as nothing (or reorder text) and
 // so let a human reviewer see one thing while the model reads another. ZWJ
 // (U+200D) is left out: emoji sequences need it.
 func hidden(r rune) bool {
 	switch {
-	case r == 0x200B || r == 0x200C || r == 0x2060 || r == 0x180E:
-		return true // zero-width space / non-joiner / word joiner / mongolian vowel separator
 	case r >= 0x200E && r <= 0x200F, r >= 0x202A && r <= 0x202E, r >= 0x2066 && r <= 0x2069:
 		return true // direction marks and bidi overrides / isolates
 	case r >= 0x2061 && r <= 0x2064:
@@ -83,14 +92,30 @@ func hidden(r rune) bool {
 // characters first (they also hide the others), then phrases, markers, URLs,
 // then encoded forms, which are decoded once and re-scanned.
 func scanText(s string) (rule, detail string, hit bool) {
+	run := 0
 	for i, r := range s {
 		if r == 0xFEFF && i == 0 {
 			continue // a byte-order mark at the start is an encoding artefact
 		}
-		if r == 0xFEFF || hidden(r) {
+		if zeroWidth(r) {
+			if run++; run >= zeroWidthRun {
+				return RuleHiddenUnicode, "a run of invisible characters", true
+			}
+			continue
+		}
+		run = 0
+		if hidden(r) {
 			return RuleHiddenUnicode, "invisible or direction-changing character", true
 		}
 	}
+	// Rules read the text a model would act on, so a zero-width character
+	// cannot split a flagged phrase and slip past them.
+	s = strings.Map(func(r rune) rune {
+		if zeroWidth(r) {
+			return -1
+		}
+		return r
+	}, s)
 	if rule, detail, hit = scanPlain(s); hit {
 		return
 	}

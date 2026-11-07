@@ -88,15 +88,18 @@ func TestSearchReturnsResultsAndCapsLimit(t *testing.T) {
 	}
 }
 
-func TestUpstreamFailureIsAToolError(t *testing.T) {
-	up := firecrawl(t, http.StatusUnauthorized, `{"error":"Bearer test-key is bad"}`, nil)
-	h := searchMCP(open, &Searcher{Key: "test-key", URL: up.URL})
-	_, out := call(t, h, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"go"}}}`)
-	res := out["result"].(map[string]any)
-	if res["isError"] != true {
-		t.Fatalf("result = %v", res)
-	}
-	if b, _ := json.Marshal(res); strings.Contains(string(b), "test-key") {
-		t.Fatalf("the upstream reply leaked to the caller: %s", b)
+// A failed search must answer with an HTTP error: that is what stops x402 from
+// settling, so the agent pays nothing for it.
+func TestUpstreamFailureIsNotCharged(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusUnauthorized} {
+		up := firecrawl(t, status, `{"error":"Bearer test-key is bad"}`, nil)
+		h := searchMCP(open, &Searcher{Key: "test-key", URL: up.URL})
+		code, out := call(t, h, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"go"}}}`)
+		if code < 400 || out["error"] == nil {
+			t.Fatalf("upstream %d: answered %d %v", status, code, out)
+		}
+		if b, _ := json.Marshal(out); strings.Contains(string(b), "test-key") {
+			t.Fatalf("the upstream reply leaked to the caller: %s", b)
+		}
 	}
 }
