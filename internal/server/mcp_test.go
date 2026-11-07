@@ -276,7 +276,7 @@ func TestMCPOverThresholdWaitsForApproval(t *testing.T) {
 	m.setScope(func(s *policy.Scope) { s.ApprovalThreshold = 1_000_000 })
 	resp, b := m.call("echo", map[string]any{"text": "x"}, map[string]string{"Idempotency-Key": "ap1"})
 	code, data := rpcErr(t, b)
-	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != 200 || code != mcp.CodeApproval || data["approval_id"] == nil {
+	if resp.StatusCode != 200 || code != mcp.CodeApproval || data["approval_id"] == nil {
 		t.Fatalf("%d %s", resp.StatusCode, b)
 	}
 	if m.up.ToolCalls() != 0 || m.heldNanos() != 2_000_000 {

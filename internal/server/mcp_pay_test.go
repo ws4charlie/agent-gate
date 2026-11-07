@@ -26,6 +26,7 @@ import (
 // payMCPEnv is a gateway with one MCP server whose tools/call is behind x402:
 // it answers HTTP 402 until the request carries a valid payment.
 type payMCPEnv struct {
+	fail atomic.Bool // the tool fails after the payment header arrives
 	*env
 	sim   *x402.Sim
 	w     *wallet.Wallet
@@ -51,6 +52,10 @@ func newPayMCPEnv(t *testing.T) *payMCPEnv {
 	pe.text.Store("paid answer")
 	ver := x402.NewVerifier(x402.Config{Network: x402.NetworkLocal, Token: sim.Token, TokenName: "USDC", TokenVersion: "2", PayTo: pe.payTo, Chain: sim.Chain})
 	answer := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if pe.fail.Load() {
+			rw.WriteHeader(http.StatusBadGateway)
+			return
+		}
 		b, _ := io.ReadAll(r.Body)
 		var m struct {
 			ID json.RawMessage `json:"id"`
@@ -137,6 +142,24 @@ func TestPaymentHoldFollowsTheSignatureWindow(t *testing.T) {
 	}
 	if want := (60*time.Second + x402.DefaultAuthMargin).Seconds(); secs < want-20 || secs > want {
 		t.Fatalf("hold lasts %.0fs, want about %.0fs", secs, want)
+	}
+}
+
+// A tool that fails after being offered payment moves no money. The agent gets
+// an answer it can read, because an MCP client ignores the body of a 202 and
+// would wait for ever, and the hold stays until the chain can settle it.
+func TestMCPToolFailureIsNotChargedAndStillAnswers(t *testing.T) {
+	p := newPayMCPEnv(t)
+	p.fail.Store(true)
+	resp, b := p.call("mp-fail")
+	if resp.StatusCode != 200 || !strings.Contains(string(b), "settlement_pending") {
+		t.Fatalf("%d %s", resp.StatusCode, b)
+	}
+	if p.payeeBal() != 0 {
+		t.Fatalf("payee was paid %d", p.payeeBal())
+	}
+	if bal := p.balance(); bal.Balance != 10*usd || bal.Held != 10_000_000 {
+		t.Fatalf("balance %+v", bal)
 	}
 }
 

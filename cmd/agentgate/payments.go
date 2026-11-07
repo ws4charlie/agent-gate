@@ -180,6 +180,8 @@ func paidtoolCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	listen := fs.String("listen", "127.0.0.1:9402", "listen address")
 	network := fs.String("network", "sim", "sim | anvil | base-sepolia")
 	payTo := fs.String("pay-to", "", "address that receives payment (required)")
+	searchCache := fs.String("search-cache", "", "directory of recorded search results; a new search is saved there")
+	searchReplay := fs.Bool("search-replay", false, "answer only from --search-cache and never call Firecrawl")
 	fund := fs.String("fund", "", "sim and anvil: mint this many USDC to --fund-address at startup, e.g. 5")
 	fundAddr := fs.String("fund-address", "", "sim and anvil: the payer address to fund")
 	if err := fs.Parse(args); err != nil {
@@ -266,10 +268,13 @@ func paidtoolCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	ver := x402.NewVerifier(cfg)
 	handler := http.Handler(paidtool.Handler(ver))
-	if key := strings.TrimSpace(os.Getenv("FIRECRAWL_API_KEY")); key != "" {
+	if key := strings.TrimSpace(os.Getenv("FIRECRAWL_API_KEY")); key != "" || *searchReplay {
+		if *searchReplay && *searchCache == "" {
+			return errors.New("paidtool: --search-replay needs --search-cache")
+		}
 		mux := http.NewServeMux()
 		mux.Handle("/", handler)
-		mux.Handle("POST /mcp/search", paidtool.SearchMCP(ver, &paidtool.Searcher{Key: key}))
+		mux.Handle("POST /mcp/search", paidtool.SearchMCP(ver, &paidtool.Searcher{Key: key, Cache: *searchCache, Replay: *searchReplay}))
 		handler = mux
 	}
 	hs := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second}

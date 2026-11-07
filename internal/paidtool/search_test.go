@@ -5,7 +5,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -88,15 +90,59 @@ func TestSearchReturnsResultsAndCapsLimit(t *testing.T) {
 	}
 }
 
-func TestUpstreamFailureIsAToolError(t *testing.T) {
-	up := firecrawl(t, http.StatusUnauthorized, `{"error":"Bearer test-key is bad"}`, nil)
-	h := searchMCP(open, &Searcher{Key: "test-key", URL: up.URL})
-	_, out := call(t, h, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"go"}}}`)
-	res := out["result"].(map[string]any)
-	if res["isError"] != true {
-		t.Fatalf("result = %v", res)
+// A failed search must answer with an HTTP error: that is what stops x402 from
+// settling, so the agent pays nothing for it.
+func TestUpstreamFailureIsNotCharged(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusUnauthorized} {
+		up := firecrawl(t, status, `{"error":"Bearer test-key is bad"}`, nil)
+		h := searchMCP(open, &Searcher{Key: "test-key", URL: up.URL})
+		code, out := call(t, h, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"query":"go"}}}`)
+		if code < 400 || out["error"] == nil {
+			t.Fatalf("upstream %d: answered %d %v", status, code, out)
+		}
+		if b, _ := json.Marshal(out); strings.Contains(string(b), "test-key") {
+			t.Fatalf("the upstream reply leaked to the caller: %s", b)
+		}
 	}
-	if b, _ := json.Marshal(res); strings.Contains(string(b), "test-key") {
-		t.Fatalf("the upstream reply leaked to the caller: %s", b)
+}
+
+func TestRecordThenReplayWithoutCallingUpstream(t *testing.T) {
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		io.WriteString(w, oneResult)
+	}))
+	t.Cleanup(up.Close)
+	dir := t.TempDir()
+	rec := &Searcher{Key: "test-key", URL: up.URL, Cache: dir}
+	first, err := rec.Search(t.Context(), "go", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := rec.Search(t.Context(), "go", 3); err != nil || again != first || calls.Load() != 1 {
+		t.Fatalf("a recorded search called upstream again: calls=%d err=%v", calls.Load(), err)
+	}
+	up.Close()
+	play := &Searcher{URL: "http://127.0.0.1:1", Cache: dir, Replay: true}
+	if got, err := play.Search(t.Context(), "go", 3); err != nil || got != first {
+		t.Fatalf("replay: %q %v", got, err)
+	}
+	if _, err := play.Search(t.Context(), "not recorded", 3); err == nil {
+		t.Fatal("replay must fail on a query it has not seen")
+	}
+	if _, err := play.Search(t.Context(), "go", 4); err == nil {
+		t.Fatal("a different limit is a different search")
+	}
+}
+
+func TestFailedSearchIsNotRecorded(t *testing.T) {
+	up := firecrawl(t, http.StatusTooManyRequests, `{}`, nil)
+	dir := t.TempDir()
+	s := &Searcher{Key: "test-key", URL: up.URL, Cache: dir}
+	if _, err := s.Search(t.Context(), "go", 3); err == nil {
+		t.Fatal("want an error")
+	}
+	if left, _ := os.ReadDir(dir); len(left) != 0 {
+		t.Fatalf("recorded a failure: %v", left)
 	}
 }
