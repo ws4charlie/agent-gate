@@ -14,15 +14,15 @@ Two rules carry the design:
 ## Architecture
 
 <p align="center">
-<a href="docs/sdk.md"><img src="docs/images/arch-agent.png" width="38.66%" alt="Agent"></a><a href="docs/policy.md"><img src="docs/images/arch-operator.png" width="19.33%" alt="Operator"></a><br>
-<img src="docs/images/arch-down.png" width="58%" alt=""><br>
-<a href="docs/gateway.md"><img src="docs/images/arch-gateway.png" width="38.66%" alt="Gateway"></a><a href="docs/ledger.md"><img src="docs/images/arch-postgres.png" width="19.33%" alt="Postgres"></a><br>
-<img src="docs/images/arch-split.png" width="58%" alt=""><br>
-<a href="docs/policy.md"><img src="docs/images/arch-policy.png" width="19.33%" alt="Policy"></a><a href="docs/ledger.md"><img src="docs/images/arch-ledger.png" width="19.33%" alt="Ledger"></a><a href="docs/runs.md"><img src="docs/images/arch-runs.png" width="19.33%" alt="Runs"></a><br>
-<img src="docs/images/arch-merge.png" width="58%" alt=""><br>
-<a href="docs/gateway.md"><img src="docs/images/arch-models.png" width="19.33%" alt="Models"></a><a href="docs/tools.md"><img src="docs/images/arch-tools.png" width="19.33%" alt="Tools"></a><a href="docs/payments.md"><img src="docs/images/arch-payments.png" width="19.33%" alt="Payments"></a><br>
-<img src="docs/images/arch-out.png" width="58%" alt=""><br>
-<a href="docs/gateway.md"><img src="docs/images/arch-providers.png" width="19.33%" alt="Model providers"></a><a href="docs/tools.md"><img src="docs/images/arch-mcp.png" width="19.33%" alt="MCP tools"></a><a href="docs/payments.md"><img src="docs/images/arch-chain.png" width="19.33%" alt="Blockchain"></a>
+<a href="docs/sdk.md"><img src="docs/images/arch-agent.png" width="48%" alt="Agent"></a><a href="docs/policy.md"><img src="docs/images/arch-operator.png" width="24%" alt="Operator"></a><br>
+<img src="docs/images/arch-down.png" width="72%" alt=""><br>
+<a href="docs/gateway.md"><img src="docs/images/arch-gateway.png" width="48%" alt="Gateway"></a><a href="docs/ledger.md"><img src="docs/images/arch-postgres.png" width="24%" alt="Postgres"></a><br>
+<img src="docs/images/arch-split.png" width="72%" alt=""><br>
+<a href="docs/policy.md"><img src="docs/images/arch-policy.png" width="24%" alt="Policy"></a><a href="docs/ledger.md"><img src="docs/images/arch-ledger.png" width="24%" alt="Ledger"></a><a href="docs/runs.md"><img src="docs/images/arch-runs.png" width="24%" alt="Runs"></a><br>
+<img src="docs/images/arch-merge.png" width="72%" alt=""><br>
+<a href="docs/gateway.md"><img src="docs/images/arch-models.png" width="24%" alt="Models"></a><a href="docs/tools.md"><img src="docs/images/arch-tools.png" width="24%" alt="Tools"></a><a href="docs/payments.md"><img src="docs/images/arch-payments.png" width="24%" alt="Payments"></a><br>
+<img src="docs/images/arch-out.png" width="72%" alt=""><br>
+<a href="docs/gateway.md"><img src="docs/images/arch-providers.png" width="24%" alt="Model providers"></a><a href="docs/tools.md"><img src="docs/images/arch-mcp.png" width="24%" alt="MCP tools"></a><a href="docs/payments.md"><img src="docs/images/arch-chain.png" width="24%" alt="Blockchain"></a>
 </p>
 
 Click a box to open its page.
