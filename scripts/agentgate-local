@@ -95,8 +95,10 @@ up() {
     p=$(port_of "$s")
     if [ -n "$(pid_on "$p")" ]; then say "✅" "$s" "already running on :$p"; continue; fi
     work "$s" "starting on :$p ..."
-    (cd "$REPO" && nohup bash -c "$(declare -p BIN TOOL_ADDR); $(declare -f start_cmd); start_cmd $s" \
-      >>"$LOGS/$s.log" 2>&1 &)
+    # The whole background job writes to the log and reads nothing, so no
+    # process keeps this command's output open (a pipe would never close).
+    (cd "$REPO" && exec nohup bash -c "$(declare -p BIN TOOL_ADDR); $(declare -f start_cmd); start_cmd $s") \
+      >>"$LOGS/$s.log" 2>&1 </dev/null &
     if wait_port "$p" 15; then result "✅" "$s" "started on :$p"
     else result "❌" "$s" "did not start, see $LOGS/$s.log"; tail -5 "$LOGS/$s.log"; return 1; fi
   done
