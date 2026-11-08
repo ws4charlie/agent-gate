@@ -54,6 +54,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = walletCmd(args[1:], stdout)
 	case "paidtool":
 		err = paidtoolCmd(ctx, args[1:], stdout)
+	case "console":
+		err = consoleCmd(ctx, args[1:], stdout)
 	case "help", "-h", "--help":
 		usage(stdout)
 	default:
@@ -85,7 +87,8 @@ commands:
   reconcile   close expired holds once
   prices      sync: refresh configs/prices.json from OpenRouter
   wallet      new | address: the agent wallet key (testnet only)
-  paidtool    run the paid x402 endpoint (--network sim | anvil | base-sepolia)`)
+  paidtool    run the paid x402 endpoint (--network sim | anvil | base-sepolia)
+  console     the local web console: overview, controls, research tasks`)
 }
 
 func migrate(ctx context.Context, args []string, stdout io.Writer) error {

@@ -33,7 +33,7 @@ AgentGate 是一道架在 AI Agent 和所有花钱动作之间的闸门。模型
 
 <p align="center"><img src="docs/zh/images/request-flow.png" width="68%" alt="每个请求都要经过认证、策略、冻结、执行、结算和记录。无论被拒绝、中途失败还是进程崩溃，这笔钱最后都会结算或退回。"></p>
 
-整个系统就是一个 Go 进程加一个 Postgres 数据库。运维人员用命令行直接写数据库，所以 Agent 没有任何网络接口可以批准自己的请求。
+整个系统就是一个 Go 进程加一个 Postgres 数据库。运维人员用命令行或本地控制台直接写数据库，所以网关没有任何网络接口能让 Agent 批准自己的请求。
 
 每个部分都有一篇短文，一两分钟就能读完：
 
@@ -45,6 +45,7 @@ AgentGate 是一道架在 AI Agent 和所有花钱动作之间的闸门。模型
 | [工具](docs/zh/tools.md) | 管工具权限，并筛查工具返回的内容 |
 | [支付](docs/zh/payments.md) | 用 USDC 给工具付款，信区块链，不信工具 |
 | [Run](docs/zh/runs.md) | 把一项工作的所有步骤串起来，方便查看或一起停止 |
+| [控制台](docs/zh/console.md) | 本地网页：看 Agent、改限额、跑任务 |
 | [Python SDK](docs/zh/sdk.md) | 给脚本和 Agent 用的轻量客户端 |
 | [测试](docs/zh/testing.md) | 怎么做到不花钱也能测试 |
 

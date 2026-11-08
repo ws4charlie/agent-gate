@@ -156,6 +156,27 @@ func (s *Store) Resume(ctx context.Context, ref string) (Agent, error) {
 	return s.setStatus(ctx, ref, policy.StatusActive, "status = 'killed'")
 }
 
+// SetScope replaces an agent's scope. The next request is judged by the new
+// one: the policy snapshot reads the scope on every request. Spend already
+// counted in the budget windows stays, so lowering a budget below today's
+// spend refuses the next request. A revoked agent cannot be changed.
+func (s *Store) SetScope(ctx context.Context, ref string, scope policy.Scope) (Agent, error) {
+	sj, err := json.Marshal(scope)
+	if err != nil {
+		return Agent{}, err
+	}
+	a, err := scan(s.pool.QueryRow(ctx, `UPDATE agents SET scope=$2
+		WHERE (id=$1 OR name=$1) AND status <> 'revoked' RETURNING `+agentCols, ref, sj))
+	if errors.Is(err, pgx.ErrNoRows) {
+		cur, gerr := s.Get(ctx, ref)
+		if gerr != nil {
+			return Agent{}, gerr
+		}
+		return Agent{}, fmt.Errorf("%w: agent %s is %s", ErrBadState, cur.Name, cur.Status)
+	}
+	return a, err
+}
+
 // setStatus moves an agent to `to` when `from` (a SQL condition) holds. If the
 // agent is already there, it returns it unchanged; any other state is ErrBadState.
 func (s *Store) setStatus(ctx context.Context, ref string, to policy.Status, from string) (Agent, error) {
