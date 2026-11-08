@@ -134,10 +134,12 @@ let tab = "overview", agentSel = "", evQuery = { agent: "", class: "", since: ""
 const evHref = (q) => "#events?" + new URLSearchParams(Object.entries(q).filter(([, v]) => v)).toString();
 const agentHref = (name) => "#agents/" + encodeURIComponent(name);
 document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => { location.hash = b.dataset.tab; }));
+let prevTab = "";
 function route() {
   const h = location.hash.replace(/^#/, "");
   const [path, qs = ""] = h.split("?");
   const [name, sub = ""] = path.split("/");
+  prevTab = tab;
   tab = ["overview", "agents", "tasks", "events"].includes(name) ? name : "overview";
   if (tab === "agents") agentSel = decodeURIComponent(sub);
   if (tab === "events") {
@@ -147,7 +149,10 @@ function route() {
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
   document.querySelectorAll(".tab").forEach((s) => s.classList.toggle("on", s.id === tab));
   if (tab === "tasks") loadRunTab();
-  if (tab === "events") { drawEventFilters(); loadEvents(); }
+  if (tab === "events") {
+    if (prevTab !== "events") { freshSince = seenAt; markSeen(); }
+    drawEventFilters(); loadEvents();
+  }
   if (tab === "agents" && overview) drawAgentsTab(overview);
   window.scrollTo(0, 0);
 }
@@ -747,11 +752,25 @@ async function loadEvents() {
   } catch (e) { /* the header shows the connection state */ }
 }
 // The badge counts problems in the last hour, whatever the filters say.
+// "New" means new since you last had the events page open, in this browser.
+// Opening the page is reading it: the badge clears, and the rows that were
+// new stay marked until you come back another time.
+const seenKey = "agentgate-events-seen";
+let seenAt = Date.now(), freshSince = Date.now();
+try { seenAt = Number(localStorage.getItem(seenKey)) || Date.now(); localStorage.setItem(seenKey, String(seenAt)); } catch { /* storage off */ }
+function markSeen() {
+  seenAt = Date.now();
+  try { localStorage.setItem(seenKey, String(seenAt)); } catch { /* storage off */ }
+  $("#ev-badge").classList.add("hide");
+}
 async function loadBadge() {
+  if (tab === "events") { markSeen(); return; }
   try {
-    const { events } = await api("/api/events?since=1h");
+    const secs = Math.max(1, Math.ceil((Date.now() - seenAt) / 1000));
+    const { events } = await api(`/api/events?since=${secs}s`);
     const badge = $("#ev-badge");
     badge.textContent = events.length; badge.classList.toggle("hide", !events.length);
+    badge.title = `${events.length} new since you last looked`;
   } catch (e) { /* the header shows the connection state */ }
 }
 // The money in an event row: charged, refused before it was paid, or settled
@@ -765,7 +784,7 @@ function amountCell(e) {
 }
 const when = (t) => new Date(t).toLocaleString([], { month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" });
 function drawEvents() {
-  setHTML($("#ev-body"), lastEvents.length ? lastEvents.map((e) => `<tr><td class="nowrap">${esc(when(e.at))}</td>
+  setHTML($("#ev-body"), lastEvents.length ? lastEvents.map((e) => `<tr class="${new Date(e.at) > freshSince ? "fresh" : ""}"><td class="nowrap" title="${new Date(e.at) > freshSince ? "New since you last looked" : ""}">${esc(when(e.at))}</td>
     <td>${e.agent ? `<a href="${esc(agentHref(e.agent))}">${esc(e.agent)}</a>` : `<span class="muted">—</span>`}</td>
     <td><span class="chip ${e.class === "refused" ? "warn" : e.class === "blocked" ? "blk" : e.class === "notice" ? "" : "bad"}">${esc(e.class)}</span></td>
     <td>${esc(e.kind)}</td><td>${esc(e.name)}</td><td class="nowrap">${amountCell(e)}</td><td>${esc(e.status)}</td><td class="muted">${linkChain(esc(e.detail))}</td></tr>`).join("")

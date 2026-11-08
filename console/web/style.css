@@ -261,3 +261,6 @@ a.tile.link:hover .s::after { opacity: 1; }
 .addr a:hover { color: var(--accent2); }
 .copy { background: none; border: 0; padding: 0 2px; font-size: 11px; color: var(--muted); opacity: .7; border-radius: 4px; }
 .copy:hover { opacity: 1; color: var(--text); background: rgba(255,255,255,.08); }
+#ev-body tr.fresh td:first-child { position: relative; }
+#ev-body tr.fresh td:first-child::before { content: ""; position: absolute; left: -2px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-radius: 50%; background: var(--accent2); }
+#ev-body tr.fresh { background: rgba(34,211,238,.05); }
