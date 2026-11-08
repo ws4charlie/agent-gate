@@ -160,6 +160,8 @@ main { padding: 8px 28px 60px; max-width: 1400px; margin: 0 auto; }
 .keygate h3, .keygate p { margin: 0; }
 .keygate pre { margin: 0; padding: 8px 12px; background: rgba(255,255,255,.06); border-radius: 8px; overflow-x: auto; font-size: 13px; }
 .keygate .bad { color: var(--bad); }
+.keygate .cmdrow { display: flex; gap: 8px; align-items: center; }
+.keygate .cmdrow pre { flex: 1; min-width: 0; }
 
 @media (max-width: 900px) {
   .runlayout, .two { grid-template-columns: 1fr; }
