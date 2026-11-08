@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentGate Console</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo"></span>AgentGate <b>Console</b></div>
+  <nav id="tabs">
+    <button data-tab="overview" class="on">Overview</button>
+    <button data-tab="run">Run</button>
+    <button data-tab="events">Events <span id="ev-badge" class="badge hide">0</span></button>
+  </nav>
+  <div class="live"><span class="dot"></span><span id="clock">connecting…</span></div>
+</header>
+
+<main>
+  <!-- Overview -->
+  <section id="overview" class="tab on">
+    <div class="tiles" id="tiles"></div>
+    <h2>Agents</h2>
+    <div class="agents" id="agents"></div>
+    <div class="two">
+      <div class="card"><h3>Model spend · 7 days</h3><div id="models" class="bars"></div></div>
+      <div class="card"><h3>Tool &amp; payment spend · 7 days</h3><div id="tools" class="bars"></div></div>
+    </div>
+  </section>
+
+  <!-- Run -->
+  <section id="run" class="tab">
+    <div class="runlayout">
+      <aside class="card">
+        <div class="row between"><h3>Templates</h3><button class="ghost small" id="new-tmpl">+ New</button></div>
+        <div id="tmpl-list" class="tmpl-list"></div>
+      </aside>
+      <div class="runmain">
+        <div class="card" id="launcher"></div>
+        <div class="card" id="runview"><p class="muted">Pick a template, set the topic, press Run. Every call goes through the gateway under the template's own agent and budget.</p></div>
+        <div class="card"><h3>Recent runs</h3><div id="runlist"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Events -->
+  <section id="events" class="tab">
+    <div class="card">
+      <div class="row between"><h3>Refusals, errors and blocks</h3>
+        <div class="filters" id="ev-filters">
+          <button data-f="all" class="on">All</button><button data-f="refused">Refused</button>
+          <button data-f="error">Errors</button><button data-f="blocked">Blocked</button>
+        </div>
+      </div>
+      <table class="tbl"><thead><tr><th>Time</th><th>Agent</th><th>Class</th><th>Kind</th><th>Name</th><th>Status</th><th>Detail</th></tr></thead>
+        <tbody id="ev-body"></tbody></table>
+    </div>
+  </section>
+</main>
+
+<div id="modal" class="modal hide"><div class="sheet" id="sheet"></div></div>
+<div id="toast" class="toast hide"></div>
+<script src="app.js"></script>
+</body>
+</html>

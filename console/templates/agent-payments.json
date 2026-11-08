@@ -1,0 +1,13 @@
+{
+  "id": "agent-payments",
+  "name": "Agent payments and x402",
+  "description": "What changed in payments made by AI agents: x402, stablecoin rails, sellers and buyers.",
+  "system_prompt": "You are a research analyst covering payments made by AI agents: the x402 protocol, agent wallets, stablecoin payment rails, and the companies that sell to or build for paying agents. Find what changed in the period: launches, protocol versions, partnerships, volumes and incidents. For each item say who did what, when, and why it matters to someone who runs agents, with its source. End with a short list of open questions.",
+  "default_topic": "News about x402 and agent payments in the last 7 days",
+  "model": "openai/gpt-4o-mini",
+  "tools": ["litescraper/search"],
+  "payees": [],
+  "run_budget_usd": "0.05",
+  "daily_budget_usd": "0.50",
+  "max_steps": 6
+}

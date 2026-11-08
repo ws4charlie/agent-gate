@@ -2,6 +2,7 @@ package agents_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -131,6 +132,32 @@ func TestCreateAuthenticateAndStatus(t *testing.T) {
 	}
 	if list, _ := r.st.List(ctx); len(list) != 1 || list[0].Status != policy.StatusRevoked {
 		t.Fatalf("list %+v", list)
+	}
+}
+
+func TestSetScope(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	secret, a := r.agent("bot", policy.Scope{Models: []string{"m"}, DailyBudget: 5})
+	got, err := r.st.SetScope(ctx, "bot", policy.Scope{Models: []string{"m", "n"}, Tools: []string{"t"}, DailyBudget: 9})
+	if err != nil || got.ID != a.ID || got.Scope.DailyBudget != 9 || len(got.Scope.Models) != 2 {
+		t.Fatalf("%+v %v", got, err)
+	}
+	snap, err := r.st.Snapshot(ctx, a.ID, "")
+	if err != nil || snap.Scope.DailyBudget != 9 || snap.Scope.Tools[0] != "t" {
+		t.Fatalf("the next request does not see the new scope: %+v %v", snap.Scope, err)
+	}
+	if au, _ := r.st.Authenticate(ctx, secret); au.Scope.DailyBudget != 9 {
+		t.Fatalf("authenticate scope %+v", au.Scope)
+	}
+	if _, err := r.st.SetScope(ctx, "nobody", policy.Scope{}); err != agents.ErrNotFound {
+		t.Fatalf("missing agent: %v", err)
+	}
+	if _, err := r.st.Revoke(ctx, "bot"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.st.SetScope(ctx, "bot", policy.DefaultScope()); !errors.Is(err, agents.ErrBadState) {
+		t.Fatalf("a revoked agent's scope changed: %v", err)
 	}
 }
 

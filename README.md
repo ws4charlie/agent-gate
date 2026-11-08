@@ -31,7 +31,7 @@ Click a box to open its page.
 
 <p align="center"><img src="docs/images/request-flow.png" width="68%" alt="Every request is authenticated, checked by policy, held, executed, settled and audited. Refusals, failures and crashes all end with the funds settled or returned."></p>
 
-It is one Go process and one Postgres database. Operators use a CLI that writes to the database, so an agent has no HTTP route to approve its own requests.
+It is one Go process and one Postgres database. Operators use a CLI, or a local console, that writes to the database directly, so the gateway has no HTTP route an agent could use to approve its own requests.
 
 Read more about each part. Each page takes a minute or two:
 
@@ -43,6 +43,7 @@ Read more about each part. Each page takes a minute or two:
 | [Tools](docs/tools.md) | Controls tool access and screens what comes back |
 | [Payments](docs/payments.md) | Pays for tools in USDC, trusting the chain over the tool |
 | [Runs](docs/runs.md) | Groups one job's steps so you can read or stop them together |
+| [Console](docs/console.md) | A local page to watch agents, change their limits and run tasks |
 | [Python SDK](docs/sdk.md) | A small client for scripts and agents |
 | [Testing](docs/testing.md) | How it's tested without spending money |
 

@@ -1,0 +1,13 @@
+{
+  "id": "agent-security",
+  "name": "AI agent security incidents",
+  "description": "Incidents and research on attacks against AI agents: prompt injection, tool abuse, leaked keys, runaway spend.",
+  "system_prompt": "You are a security analyst who tracks attacks on AI agents and the tools they use. Find recent incidents, disclosed vulnerabilities and research: prompt injection through tool output, data exfiltration, abuse of MCP servers, leaked credentials, runaway spend. For each item give what happened, who was affected, the attack path, the fix if any, and the date, each with its source. Mark each item as an incident in the wild, a disclosed vulnerability, or research. End with the defences an operator should check first.",
+  "default_topic": "AI agent security incidents and vulnerabilities disclosed in the last 14 days",
+  "model": "openai/gpt-4o-mini",
+  "tools": ["litescraper/search"],
+  "payees": [],
+  "run_budget_usd": "0.05",
+  "daily_budget_usd": "0.50",
+  "max_steps": 6
+}
