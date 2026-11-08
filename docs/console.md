@@ -2,7 +2,7 @@
 
 [中文](zh/console.md)
 
-The console is a local web page for the person who runs the gateway. It shows what every agent is doing and spending, lets you change their limits, and runs research tasks from templates.
+The console is a local web page for the person who runs the gateway. It shows what every agent is doing and spending, lets you change their limits, and runs research tasks with your own agents.
 
 ## See every agent at a glance
 
@@ -16,11 +16,13 @@ Every count is a link. Clicking an agent's errors opens the events page already 
 
 From an agent's page you can rename it, set its budgets and allowlists, or kill it and bring it back. A rename keeps its key working. The change applies to the agent's next request. There is no separate copy of the rules: the console writes the same policy the gateway already enforces.
 
-## Run research tasks
+## Run research tasks with your own agents
 
-A task is a reusable research job, a bit like a skill: instructions, one model, the tools it may use, and two budgets, one per run and one per day. A few public research tasks ship with it. You can add your own, edit any task in place (a built-in one can be reset to how it shipped), and drag the list into the order you like.
+A task is a reusable research job: what to look into, the instructions, and which of your agents does it. Three public tasks ship with it. Two are run by GPT Researcher, which is good at reading many sources and summing them up. The one about x402 is run by Claude Code, which can also read code and say what AgentGate should change. You can add your own tasks, edit any task in place (a built-in one can be reset to how it shipped), and drag the list into the order you like.
 
-Each task runs as its own agent. Every model call, search and payment goes through the gateway with that agent's key, so the budgets are ordinary policy, the spend shows on the agent's own page, and a run can be stopped like any other run. Each run can look into something different without changing the task. While it runs you watch each step arrive; when it ends you read the report, what each tool returned and a trace of every message to and from the model. These files stay on this computer, readable only by your user, and you can delete a run when you no longer need it.
+The console does not do the research itself. It starts the agent's runner, a small program on this machine that holds the agent's key, and gives it a run id. Every model call, search and payment goes through the gateway as that agent and carries the run id, so the agent's own limits apply: its per-task budget caps each run, its daily budget caps the day, and a run can be stopped like any other. The runner gets only the run's details from the console, never the console's own secrets, and Claude Code runs with an empty settings folder of its own, so your everyday Claude Code is untouched.
+
+While a run goes you watch its steps arrive; when it ends you read the report, the full trace and the log. These files stay on this computer, readable only by your user, and you can delete a run when you no longer need it.
 
 ## Who can use it
 

@@ -46,19 +46,16 @@ var webFS embed.FS
 // Config is how the console is started.
 type Config struct {
 	Gateway string // base URL of the gateway the tasks call, e.g. http://127.0.0.1:18090
-	Account string // ledger account the template agents spend from; "" disables running tasks
-	DataDir string // templates, template agent keys, run results
+	DataDir string // tasks and run results
+
+	// Runners name the program that runs each agent's tasks, by agent name:
+	// a wrapper that holds the agent's key and starts GPT Researcher, Claude
+	// Code or anything else that sends the run headers.
+	Runners map[string]string
 
 	WalletAddress string // optional: show this address's USDC balance
 	RPCURL        string // JSON-RPC endpoint for the wallet balance
 	USDC          string // USDC contract on that chain
-
-	KnownTools []string // tool names from the gateway's MCP and payments files, offered in forms
-
-	// DefaultPayees are the addresses the built-in templates may pay: the
-	// sellers of the paid tools this deployment trusts. A built-in template
-	// ships with no payee, since an address is a deployment's choice.
-	DefaultPayees []string
 }
 
 type Server struct {

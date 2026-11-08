@@ -1,8 +1,8 @@
 package main
 
 import (
+	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,12 +31,10 @@ func consoleCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	home, _ := os.UserHomeDir()
 	listen := c.fs.String("listen", envOr("AG_CONSOLE_LISTEN", "127.0.0.1:18095"), "address to listen on (loopback only)")
 	gateway := c.fs.String("gateway", envOr("AG_GATEWAY_URL", "http://127.0.0.1:8080"), "gateway base URL the console's tasks call")
-	account := c.fs.String("account", os.Getenv("AG_CONSOLE_ACCOUNT"), "ledger account the task agents spend from; empty: tasks cannot run")
-	dataDir := c.fs.String("data", envOr("AG_CONSOLE_DATA", filepath.Join(home, ".config", "agentgate", "console")), "tasks, task agent keys and run results")
-	paymentsPath := c.fs.String("payments", os.Getenv("AG_PAYMENTS"), "the gateway's payments file: paid tool names for the forms, and the wallet's network")
-	mcpPath := c.fs.String("mcp", os.Getenv("AG_MCP"), "the gateway's MCP file: server names for the forms")
+	dataDir := c.fs.String("data", envOr("AG_CONSOLE_DATA", filepath.Join(home, ".config", "agentgate", "console")), "tasks and run results")
+	runners := c.fs.String("runners", os.Getenv("AG_CONSOLE_RUNNERS"), "the program that runs each agent's tasks, as agent=path pairs separated by commas; empty: tasks cannot run")
+	paymentsPath := c.fs.String("payments", os.Getenv("AG_PAYMENTS"), "the gateway's payments file: the wallet's network")
 	walletAddr := c.fs.String("wallet-address", os.Getenv("AG_WALLET_ADDRESS"), "show this wallet's USDC balance (address only; no key is read)")
-	payees := c.fs.String("payees", os.Getenv("AG_CONSOLE_PAYEES"), "payee addresses the built-in tasks may pay, comma separated (the sellers of your paid tools)")
 	usdc := c.fs.String("usdc", "", "USDC contract for the wallet tile (default: Circle's, from the payments network)")
 	_, pool, err := c.open(ctx, args)
 	if err != nil {
@@ -52,36 +50,19 @@ func consoleCmd(ctx context.Context, args []string, stdout io.Writer) error {
 		return errors.New("--listen must be a loopback address: the console has no login")
 	}
 
-	cfg := console.Config{Gateway: *gateway, Account: *account, DataDir: *dataDir,
-		DefaultPayees: csv(*payees), WalletAddress: *walletAddr, RPCURL: os.Getenv("AG_RPC_URL"), USDC: *usdc}
+	run, err := parseRunners(*runners)
+	if err != nil {
+		return err
+	}
+	cfg := console.Config{Gateway: *gateway, DataDir: *dataDir, Runners: run,
+		WalletAddress: *walletAddr, RPCURL: os.Getenv("AG_RPC_URL"), USDC: *usdc}
 	if *paymentsPath != "" {
 		f, err := readPaymentsFile(*paymentsPath)
 		if err != nil {
 			return err
 		}
-		for name := range f.Tools {
-			cfg.KnownTools = append(cfg.KnownTools, name)
-		}
-		if cfg.USDC == "" {
-			cfg.USDC = usdcOn[f.Network]
-		}
+		cfg.USDC = cmp.Or(cfg.USDC, usdcOn[f.Network])
 	}
-	if *mcpPath != "" {
-		raw, err := os.ReadFile(*mcpPath)
-		if err != nil {
-			return err
-		}
-		var m struct {
-			Servers map[string]json.RawMessage `json:"servers"`
-		}
-		if err := json.Unmarshal(raw, &m); err != nil {
-			return fmt.Errorf("%s: %w", *mcpPath, err)
-		}
-		for name := range m.Servers {
-			cfg.KnownTools = append(cfg.KnownTools, name+"/")
-		}
-	}
-	sort.Strings(cfg.KnownTools)
 	if cfg.USDC == "" {
 		cfg.USDC = usdcOn["base-sepolia"]
 	}
@@ -97,8 +78,8 @@ func consoleCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "console on http://%s/#k=%s\n(gateway %s; the key in the link is also in %s)\n",
 		ln.Addr(), srv.Key(), *gateway, filepath.Join(*dataDir, "console.key"))
-	if *account == "" {
-		fmt.Fprintln(stdout, "no --account: the overview works, running tasks is off")
+	if len(run) == 0 {
+		fmt.Fprintln(stdout, "no --runners: the overview works, running tasks is off")
 	}
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -114,4 +95,27 @@ func consoleCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return hs.Shutdown(sctx)
+}
+
+// parseRunners reads "agent=path,agent=path". Each path must be a program.
+func parseRunners(v string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, pair := range strings.Split(v, ",") {
+		if pair = strings.TrimSpace(pair); pair == "" {
+			continue
+		}
+		name, path, ok := strings.Cut(pair, "=")
+		if !ok || name == "" || path == "" {
+			return nil, fmt.Errorf("--runners: %q is not agent=path", pair)
+		}
+		fi, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("--runners: %s: %w", name, err)
+		}
+		if fi.IsDir() || fi.Mode()&0o111 == 0 {
+			return nil, fmt.Errorf("--runners: %s: %s is not an executable file", name, path)
+		}
+		out[strings.TrimSpace(name)] = path
+	}
+	return out, nil
 }

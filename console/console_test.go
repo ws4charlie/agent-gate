@@ -4,14 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -55,34 +53,30 @@ func TestBuiltinTemplatesAreValid(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(b) < 3 {
-		t.Fatalf("%d built-in templates", len(b))
+		t.Fatalf("%d built-in tasks", len(b))
 	}
 	for id, tm := range b {
 		if err := tm.validate(); err != nil {
 			t.Errorf("%s: %v", id, err)
 		}
-		sc := tm.scope()
-		if sc.DailyBudget <= 0 || sc.TaskBudget <= 0 || len(sc.Models) != 1 {
-			t.Errorf("%s: scope %+v must cap every run and every day", id, sc)
+		if tm.Runner != "gpt-researcher" && tm.Runner != "claude-code" {
+			t.Errorf("%s: runner %q", id, tm.Runner)
 		}
 	}
 }
 
 func TestTemplateValidate(t *testing.T) {
-	ok := Template{ID: "x", Name: "X", SystemPrompt: "p", Model: "m", RunBudget: "0.05", DailyBudget: "1"}
-	if err := ok.validate(); err != nil || ok.MaxSteps != defaultMaxSteps {
-		t.Fatalf("%v %d", err, ok.MaxSteps)
+	ok := Template{ID: "x", Name: "X", SystemPrompt: "p", DefaultTopic: "q", Runner: "gpt-researcher"}
+	if err := ok.validate(); err != nil {
+		t.Fatal(err)
 	}
 	for name, mut := range map[string]func(*Template){
-		"bad id":          func(t *Template) { t.ID = "../x" },
-		"wildcard model":  func(t *Template) { t.Model = "claude-*" },
-		"no run budget":   func(t *Template) { t.RunBudget = "" },
-		"run over daily":  func(t *Template) { t.RunBudget = "2" },
-		"wildcard tool":   func(t *Template) { t.Tools = []string{"*"} },
-		"bad payee":       func(t *Template) { t.Payees = []string{"0x12"} },
-		"too many steps":  func(t *Template) { t.MaxSteps = 99 },
-		"empty prompt":    func(t *Template) { t.SystemPrompt = " " },
-		"negative budget": func(t *Template) { t.DailyBudget = "-1" },
+		"bad id":       func(t *Template) { t.ID = "../x" },
+		"empty prompt": func(t *Template) { t.SystemPrompt = " " },
+		"no question":  func(t *Template) { t.DefaultTopic = "" },
+		"no runner":    func(t *Template) { t.Runner = "" },
+		"bad runner":   func(t *Template) { t.Runner = "a b" },
+		"long prompt":  func(t *Template) { t.SystemPrompt = strings.Repeat("x", 9000) },
 	} {
 		tm := ok
 		mut(&tm)
@@ -92,89 +86,28 @@ func TestTemplateValidate(t *testing.T) {
 	}
 }
 
-func TestParseGatewayError(t *testing.T) {
-	e := parseGatewayError(403, []byte(`{"error":{"type":"policy_denied","code":"policy_denied","rule":"budget_task","message":"over"}}`)).(*gatewayError)
-	if e.Code != "policy_denied" || e.Rule != "budget_task" || !e.refusal() {
-		t.Fatalf("gateway shape: %+v", e)
-	}
-	e = parseGatewayError(400, []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"bad","data":{"code":"bad_request"}}}`)).(*gatewayError)
-	if e.Code != "bad_request" || e.refusal() {
-		t.Fatalf("JSON-RPC shape: %+v", e)
-	}
-	e = parseGatewayError(502, []byte(`<html>`)).(*gatewayError)
-	if e.Code != "http_502" {
-		t.Fatalf("other: %+v", e)
-	}
-}
-
-func TestLastSSEData(t *testing.T) {
-	got := lastSSEData([]byte("event: message\ndata: {\"a\":1}\n\ndata: {\"b\":\ndata: 2}\n\n"))
-	if string(got) != `{"b":2}` {
-		t.Fatalf("%q", got)
-	}
-}
-
-// fakeGateway answers like the gateway: one model call that asks for the
-// search tool, a paid MCP search, then the final answer. With refuse set it
-// refuses the tool call the way policy does.
-func fakeGateway(t *testing.T, refuse bool) (*httptest.Server, *atomic.Int32) {
-	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") == "" || r.Header.Get("X-AgentGate-Run") == "" ||
-			r.Header.Get("X-AgentGate-Task") != r.Header.Get("X-AgentGate-Run") || r.Header.Get("Idempotency-Key") == "" {
-			t.Errorf("%s: missing gateway headers %v", r.URL.Path, r.Header)
-		}
-		body, _ := io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/mcp/litescraper":
-			var req struct {
-				Method string `json:"method"`
-			}
-			_ = json.Unmarshal(body, &req)
-			if req.Method == "tools/list" {
-				io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"search","description":"Search the web","inputSchema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}]}}`)
-				return
-			}
-			if refuse {
-				io.WriteString(w, `{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"payee not allowed","data":{"code":"scope_payee","rule":"scope_payee"}}}`)
-				return
-			}
-			io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"Result: https://example.com/a says X"}]}}`)
-		case "/v1/chat/completions":
-			n := calls.Add(1)
-			var req struct {
-				Tools []json.RawMessage `json:"tools"`
-			}
-			_ = json.Unmarshal(body, &req)
-			if n == 1 {
-				if len(req.Tools) != 1 || !strings.Contains(string(req.Tools[0]), `"litescraper__search"`) {
-					t.Errorf("tools offered: %s", req.Tools)
-				}
-				io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"litescraper__search","arguments":"{\"query\":\"x\"}"}}]}}]}`)
-				return
-			}
-			io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"# Report\n\nX [a](https://example.com/a)"}}]}`)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(srv.Close)
-	return srv, &calls
-}
-
-func newTestServer(t *testing.T, gateway string) *Server {
+// fakeRunner writes an executable that plays an agent's runner.
+func fakeRunner(t *testing.T, body string) string {
 	t.Helper()
-	pool := dbtest.New(t)
-	led := ledger.New(pool)
-	acct, err := led.CreateAccount(context.Background(), "console")
-	if err != nil {
+	path := filepath.Join(t.TempDir(), "runner")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := led.Deposit(context.Background(), acct, money.Nanos(5e9), "dep", ""); err != nil {
-		t.Fatal(err)
-	}
-	s, err := New(Config{Gateway: gateway, Account: acct, DataDir: t.TempDir()}, pool)
+	return path
+}
+
+// goodRunner checks what the console hands it, reports a step and writes a report.
+const goodRunner = `case "$AG_RUN_ID" in run_*) ;; *) echo "bad run id"; exit 3 ;; esac
+[ -n "$AG_TOPIC" ] || exit 4
+case "$AG_INSTRUCTIONS" in *"Today is"*) ;; *) exit 5 ;; esac
+[ -z "$PROVIDER_SECRET" ] || { echo "a console secret leaked"; exit 6; }
+echo "▸ looking into $AG_TOPIC"
+echo "some log line"
+printf '# Report\n\nX [a](https://example.com/a)\n' > "$AG_RUN_DIR/report.md"`
+
+func newTestServer(t *testing.T, runners map[string]string) *Server {
+	t.Helper()
+	s, err := New(Config{Gateway: "http://127.0.0.1:1", DataDir: t.TempDir(), Runners: runners}, dbtest.New(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +124,7 @@ func apiReq(s *Server, method, path, body string) *http.Request {
 }
 
 func TestAPINeedsKey(t *testing.T) {
-	s := newTestServer(t, "http://127.0.0.1:1")
+	s := newTestServer(t, nil)
 	h := s.Handler()
 	for _, key := range []string{"", "wrong", s.Key() + "x"} {
 		r := apiReq(s, "PUT", "/api/agents/x/scope", `{"daily_budget_usd":"1000"}`)
@@ -220,19 +153,23 @@ func TestAPINeedsKey(t *testing.T) {
 	}
 }
 
-func startAndWait(t *testing.T, s *Server, h http.Handler, body string) runMeta {
+func start(t *testing.T, s *Server, h http.Handler, body string) runMeta {
 	t.Helper()
-	r := apiReq(s, "POST", "/api/runs", body)
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
+	h.ServeHTTP(w, apiReq(s, "POST", "/api/runs", body))
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("start: %d %s", w.Code, w.Body)
 	}
 	var m runMeta
 	_ = json.Unmarshal(w.Body.Bytes(), &m)
+	return m
+}
+
+func wait(t *testing.T, s *Server, id string) runMeta {
+	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		got, _, err := s.loadRun(m.ID)
+		got, _, err := s.loadRun(id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -242,83 +179,103 @@ func startAndWait(t *testing.T, s *Server, h http.Handler, body string) runMeta 
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("run did not finish")
-	return m
+	return runMeta{}
 }
 
-func TestRunWritesReportThroughGateway(t *testing.T) {
-	gw, calls := fakeGateway(t, false)
-	s := newTestServer(t, gw.URL)
+func startAndWait(t *testing.T, s *Server, h http.Handler, body string) runMeta {
+	t.Helper()
+	return wait(t, s, start(t, s, h, body).ID)
+}
+
+// A task runs as the agent it names: the console starts that agent's runner
+// with the run id, the question and the instructions, and nothing else from
+// its own environment.
+func TestRunStartsTheAgentsRunner(t *testing.T) {
+	t.Setenv("PROVIDER_SECRET", "sk-should-not-leak")
+	s := newTestServer(t, map[string]string{"gpt-researcher": fakeRunner(t, goodRunner)})
 	h := s.Handler()
 	m := startAndWait(t, s, h, `{"template_id":"agent-security","topic":"test topic"}`)
-	if m.Status != stDone || calls.Load() != 2 {
-		t.Fatalf("status %s (%s), %d model calls", m.Status, m.Error, calls.Load())
+	if m.Status != stDone || m.Agent != "gpt-researcher" {
+		_, ev, _ := s.loadRun(m.ID)
+		t.Fatalf("status %s (%s), agent %s, events %+v", m.Status, m.Error, m.Agent, ev)
+	}
+	_, events, _ := s.loadRun(m.ID)
+	var steps []string
+	for _, e := range events {
+		if e.Type == "step" {
+			steps = append(steps, e.Text)
+		}
+	}
+	if len(steps) != 1 || steps[0] != "looking into test topic" {
+		t.Fatalf("steps %q", steps)
 	}
 	dir := filepath.Join(s.cfg.DataDir, "runs", m.ID)
-	report, err := os.ReadFile(filepath.Join(dir, "report.md"))
-	if err != nil || !strings.Contains(string(report), "https://example.com/a") {
-		t.Fatalf("report %q %v", report, err)
+	if log, _ := os.ReadFile(filepath.Join(dir, "log.txt")); !strings.Contains(string(log), "some log line") {
+		t.Fatalf("log %q", log)
 	}
-	if tools, _ := os.ReadFile(filepath.Join(dir, "tools.md")); !strings.Contains(string(tools), "litescraper/search") {
-		t.Fatalf("tools.md %q", tools)
-	}
-	// The template's agent exists with the template's limits, and its key is
-	// kept only in the data directory, readable by the owner alone.
-	a, err := s.agents.Get(context.Background(), "console-agent-security")
-	if err != nil || a.Scope.TaskBudget <= 0 || a.Scope.DailyBudget <= 0 || a.Scope.Models[0] != "openai/gpt-4o-mini" {
-		t.Fatalf("agent %+v %v", a, err)
-	}
-	if fi, err := os.Stat(filepath.Join(s.cfg.DataDir, "keys", "agent-security.key")); err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("key file %v %v", fi, err)
-	}
-	// A second run reuses the agent and its key.
-	if m2 := startAndWait(t, s, h, `{"template_id":"agent-security"}`); m2.Status != stDone || m2.Topic == "" {
-		t.Fatalf("second run %+v", m2)
-	}
-	// The report is served as plain text, never as HTML.
-	r := apiReq(s, "GET", "/api/runs/"+m.ID+"/files/report.md", "")
+	// The report is served as plain text, never as HTML; other files are not served.
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != 200 || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/plain") {
+	h.ServeHTTP(w, apiReq(s, "GET", "/api/runs/"+m.ID+"/files/report.md", ""))
+	if w.Code != 200 || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/plain") || !strings.Contains(w.Body.String(), "example.com") {
 		t.Fatalf("file: %d %s", w.Code, w.Header().Get("Content-Type"))
 	}
-	r = apiReq(s, "GET", "/api/runs/"+m.ID+"/files/meta.json", "")
 	w = httptest.NewRecorder()
-	h.ServeHTTP(w, r)
+	h.ServeHTTP(w, apiReq(s, "GET", "/api/runs/"+m.ID+"/files/meta.json", ""))
 	if w.Code != 404 {
 		t.Fatalf("a file outside the result list was served: %d", w.Code)
 	}
+	// A task whose agent has no runner here cannot start.
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, apiReq(s, "POST", "/api/runs", `{"template_id":"agent-payments"}`))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("claude-code task without its runner: %d", w.Code)
+	}
 }
 
-func TestRefusedToolIsToldToTheModel(t *testing.T) {
-	gw, calls := fakeGateway(t, true)
-	s := newTestServer(t, gw.URL)
-	m := startAndWait(t, s, s.Handler(), `{"template_id":"agent-security","topic":"t"}`)
-	// The refusal goes back to the model as the tool result; the model then
-	// answers, so the run completes and the event log names the rule.
-	if m.Status != stDone || calls.Load() != 2 {
-		t.Fatalf("status %s, %d calls", m.Status, calls.Load())
+func TestRunOutcomes(t *testing.T) {
+	s := newTestServer(t, map[string]string{
+		"gpt-researcher": fakeRunner(t, `echo "▸ started"`), // exits without a report
+		"claude-code":    fakeRunner(t, `exit 1`),
+	})
+	h := s.Handler()
+	if m := startAndWait(t, s, h, `{"template_id":"agent-security"}`); m.Status != stFailed {
+		t.Fatalf("no report: %s", m.Status)
 	}
-	_, events, _ := s.loadRun(m.ID)
-	found := false
-	for _, e := range events {
-		if e.Type == "refused" && strings.Contains(e.Text, "scope_payee") {
-			found = true
-		}
+	// A runner that stops after the gateway refused its run is "refused", with the reason.
+	m := start(t, s, h, `{"template_id":"agent-payments"}`)
+	if _, err := s.pool.Exec(context.Background(), `INSERT INTO audit_events (request_id, agent_id, run_id, kind, model, status, err, at)
+		VALUES ('r1', 'a1', $1, 'model', 'claude-haiku-5-5', 'policy_denied', 'budget_task: over the per-task budget', now())`, m.ID); err != nil {
+		t.Fatal(err)
 	}
-	if !found {
-		t.Fatalf("no refusal event: %+v", events)
+	if m = wait(t, s, m.ID); m.Status != stRefused || !strings.Contains(m.Error, "budget_task") {
+		t.Fatalf("refused: %s %q", m.Status, m.Error)
+	}
+}
+
+func TestKillStopsTheRunner(t *testing.T) {
+	s := newTestServer(t, map[string]string{"gpt-researcher": fakeRunner(t, `echo "▸ working"; sleep 30`)})
+	h := s.Handler()
+	m := start(t, s, h, `{"template_id":"agent-security"}`)
+	time.Sleep(200 * time.Millisecond)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, apiReq(s, "POST", "/api/runs/"+m.ID+"/kill", ""))
+	if w.Code != 200 {
+		t.Fatalf("kill: %d %s", w.Code, w.Body)
+	}
+	t0 := time.Now()
+	if got := wait(t, s, m.ID); got.Status != stKilled || time.Since(t0) > 5*time.Second {
+		t.Fatalf("after kill: %s in %s", got.Status, time.Since(t0))
 	}
 }
 
 func TestOverviewQueries(t *testing.T) {
-	gw, _ := fakeGateway(t, false)
-	s := newTestServer(t, gw.URL)
-	startAndWait(t, s, s.Handler(), `{"template_id":"agent-security","topic":"t"}`)
+	s := newTestServer(t, map[string]string{"gpt-researcher": fakeRunner(t, goodRunner)})
+	newAgent(t, s, "gpt-researcher")
 	ov, err := s.overview(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ov.Agents) != 1 || !ov.Agents[0].Console || len(ov.Agents[0].Hourly) != 24 || !ov.Run.Enabled {
+	if len(ov.Agents) != 1 || len(ov.Agents[0].Hourly) != 24 || !ov.Run.Enabled || ov.Run.Runners[0] != "gpt-researcher" {
 		t.Fatalf("%+v", ov)
 	}
 	if _, err := s.events(context.Background(), eventFilter{Limit: 10}); err != nil {
@@ -326,19 +283,37 @@ func TestOverviewQueries(t *testing.T) {
 	}
 }
 
-func TestRunNeedsAccount(t *testing.T) {
+func TestRunNeedsRunners(t *testing.T) {
 	s := &Server{cfg: Config{Gateway: "http://127.0.0.1:1"}}
 	if rr := s.runReady(); rr.Enabled {
-		t.Fatal("tasks enabled without an account")
+		t.Fatal("tasks enabled without a runner")
 	}
+}
+
+// newAgent makes an agent with its own funded account.
+func newAgent(t *testing.T, s *Server, name string) string {
+	t.Helper()
+	ctx := context.Background()
+	led := ledger.New(s.pool)
+	acct, err := led.CreateAccount(ctx, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := led.Deposit(ctx, acct, money.Nanos(5e9), "dep-"+name, ""); err != nil {
+		t.Fatal(err)
+	}
+	_, a, err := s.agents.Create(ctx, acct, name, policy.Scope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a.ID
 }
 
 // A count on the overview links to the event feed filtered the same way, so the
 // two must agree on what an error, a refusal and a block are.
 func TestEventFiltersMatchCounts(t *testing.T) {
-	gw, _ := fakeGateway(t, false)
-	s := newTestServer(t, gw.URL)
-	startAndWait(t, s, s.Handler(), `{"template_id":"agent-security","topic":"t"}`)
+	s := newTestServer(t, nil)
+	newAgent(t, s, "me")
 	ctx := context.Background()
 	ov, err := s.overview(ctx)
 	if err != nil {
@@ -404,7 +379,7 @@ func TestEventFiltersMatchCounts(t *testing.T) {
 
 // A built-in task can be edited in place and reset; the operator's order sticks.
 func TestEditResetAndOrderTasks(t *testing.T) {
-	s := newTestServer(t, "http://127.0.0.1:1")
+	s := newTestServer(t, nil)
 	h := s.Handler()
 	call := func(method, path, body string, want int) []byte {
 		t.Helper()
@@ -458,10 +433,9 @@ func TestEditResetAndOrderTasks(t *testing.T) {
 	call("PUT", "/api/templates/order", `{"ids":["../x"]}`, 400)
 }
 
-// Renaming keeps task agents' names, and a finished run can be deleted.
+// Old task agents keep their names, and a finished run can be deleted.
 func TestRenameAndDeleteRun(t *testing.T) {
-	gw, _ := fakeGateway(t, false)
-	s := newTestServer(t, gw.URL)
+	s := newTestServer(t, map[string]string{"gpt-researcher": fakeRunner(t, goodRunner)})
 	h := s.Handler()
 	id := startAndWait(t, s, h, `{"template_id":"agent-security","topic":"t"}`).ID
 	call := func(method, path, body string) int {
@@ -469,13 +443,8 @@ func TestRenameAndDeleteRun(t *testing.T) {
 		h.ServeHTTP(w, apiReq(s, method, path, body))
 		return w.Code
 	}
-	acct, err := ledger.New(s.pool).CreateAccount(context.Background(), "cc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := s.agents.Create(context.Background(), acct, "claude-code-1", policy.Scope{}); err != nil {
-		t.Fatal(err)
-	}
+	newAgent(t, s, "claude-code-1")
+	newAgent(t, s, "console-agent-security") // a task agent made by an older console
 	for _, c := range []struct {
 		path, name string
 		want       int

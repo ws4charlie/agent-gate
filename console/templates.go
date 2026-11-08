@@ -11,34 +11,26 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-
-	"github.com/ws4charlie/agent-gate/internal/policy"
 )
 
-// A Template is a reusable research task: its own system prompt, model, tools
-// and budgets. Each template runs as its own agent (agentPrefix + id), so its
-// limits are the gateway's ordinary policy and its spend shows on its own row.
+// A Template is a task: what to look into, the instructions, and which of
+// the operator's agents does it (its runner). The agent's own limits apply:
+// its per-task budget caps each run, its daily budget caps the day. The API
+// still calls tasks templates.
 type Template struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name"`
-	Description  string   `json:"description"`
-	SystemPrompt string   `json:"system_prompt"`
-	DefaultTopic string   `json:"default_topic"`
-	Model        string   `json:"model"`
-	Tools        []string `json:"tools"`  // "server/tool" for MCP tools, a bare name for a paid x402 tool
-	Payees       []string `json:"payees"` // addresses the paid tools may be paid to
-	RunBudget    string   `json:"run_budget_usd"`
-	DailyBudget  string   `json:"daily_budget_usd"`
-	MaxSteps     int      `json:"max_steps"`
-	Builtin      bool     `json:"builtin"`
-	Edited       bool     `json:"edited"` // a built-in the operator changed; deleting it restores the built-in
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	SystemPrompt string `json:"system_prompt"` // the task's instructions
+	DefaultTopic string `json:"default_topic"` // what a run looks into unless told otherwise
+	Runner       string `json:"runner"`        // the agent that runs it, e.g. gpt-researcher
+	Builtin      bool   `json:"builtin"`
+	Edited       bool   `json:"edited"` // a built-in the operator changed; deleting it restores the built-in
 }
 
-const (
-	agentPrefix     = "console-"
-	defaultMaxSteps = 6
-	maxMaxSteps     = 20
-)
+// agentPrefix marked the agents older consoles made for each task. Such
+// names stay reserved so they cannot be confused with an operator's agent.
+const agentPrefix = "console-"
 
 var (
 	errInvalid    = errors.New("invalid")
@@ -76,7 +68,7 @@ func ensureDirs(dir string) error {
 	if dir == "" {
 		return errors.New("console: no data directory")
 	}
-	for _, d := range []string{dir, filepath.Join(dir, "templates"), filepath.Join(dir, "keys"), filepath.Join(dir, "runs")} {
+	for _, d := range []string{dir, filepath.Join(dir, "templates"), filepath.Join(dir, "runs")} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return err
 		}
@@ -98,9 +90,6 @@ func (s *Server) templates() ([]Template, error) {
 	}
 	byID := map[string]Template{}
 	for id, t := range b {
-		if len(t.Payees) == 0 {
-			t.Payees = nonNil(s.cfg.DefaultPayees)
-		}
 		byID[id] = t
 	}
 	files, err := filepath.Glob(filepath.Join(s.cfg.DataDir, "templates", "*.json"))
@@ -197,59 +186,25 @@ func (s *Server) template(id string) (Template, error) {
 	return Template{}, fmt.Errorf("%w: %s", errNoTemplate, id)
 }
 
-// validate fills defaults and checks every field the runner and policy use.
+// validate checks every field a run uses.
 func (t *Template) validate() error {
 	t.Name = strings.TrimSpace(t.Name)
-	t.Model = strings.TrimSpace(t.Model)
-	t.Tools, t.Payees = clean(t.Tools), clean(t.Payees)
-	if t.MaxSteps == 0 {
-		t.MaxSteps = defaultMaxSteps
-	}
+	t.Runner = strings.TrimSpace(t.Runner)
 	switch {
 	case !templateIDRe.MatchString(t.ID):
 		return fmt.Errorf("%w: id must be lower-case letters, digits and '-', at most 40", errInvalid)
 	case t.Name == "":
 		return fmt.Errorf("%w: name is empty", errInvalid)
 	case strings.TrimSpace(t.SystemPrompt) == "":
-		return fmt.Errorf("%w: system prompt is empty", errInvalid)
-	case t.Model == "" || strings.ContainsAny(t.Model, "*, "):
-		return fmt.Errorf("%w: model must be one exact model name", errInvalid)
-	case t.MaxSteps < 1 || t.MaxSteps > maxMaxSteps:
-		return fmt.Errorf("%w: max steps must be 1-%d", errInvalid, maxMaxSteps)
+		return fmt.Errorf("%w: instructions are empty", errInvalid)
+	case strings.TrimSpace(t.DefaultTopic) == "":
+		return fmt.Errorf("%w: say what a run looks into", errInvalid)
+	case !runnerNameRe.MatchString(t.Runner):
+		return fmt.Errorf("%w: pick the agent that runs it", errInvalid)
 	case len(t.SystemPrompt) > 8000 || len(t.DefaultTopic) > 2000 || len(t.Description) > 500:
 		return fmt.Errorf("%w: text too long", errInvalid)
 	}
-	for _, tool := range t.Tools {
-		if strings.Contains(tool, "*") || strings.Count(tool, "/") > 1 {
-			return fmt.Errorf("%w: tool %q: name one tool, no wildcards", errInvalid, tool)
-		}
-	}
-	for _, p := range t.Payees {
-		if !payeeRe.MatchString(p) {
-			return fmt.Errorf("%w: payee %q is not a 0x address", errInvalid, p)
-		}
-	}
-	run, err := parseUSD(t.RunBudget)
-	if err != nil || run <= 0 {
-		return fmt.Errorf("%w: run budget must be a USD amount above 0", errInvalid)
-	}
-	daily, err := parseUSD(t.DailyBudget)
-	if err != nil || daily <= 0 {
-		return fmt.Errorf("%w: daily budget must be a USD amount above 0", errInvalid)
-	}
-	if run > daily {
-		return fmt.Errorf("%w: run budget is above the daily budget", errInvalid)
-	}
 	return nil
-}
-
-// scope is the template's policy: one model, its tools and payees, a daily
-// budget and a per-run budget (each run is its own X-AgentGate-Task).
-func (t Template) scope() policy.Scope {
-	run, _ := parseUSD(t.RunBudget)
-	daily, _ := parseUSD(t.DailyBudget)
-	return policy.Scope{Models: []string{t.Model}, Tools: nonNil(t.Tools), Payees: nonNil(t.Payees),
-		DailyBudget: daily, TaskBudget: run}
 }
 
 func (s *Server) handleTemplates(w http.ResponseWriter, _ *http.Request) {
@@ -258,13 +213,11 @@ func (s *Server) handleTemplates(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, statusFor(err), err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"templates": all, "known_tools": nonNil(s.cfg.KnownTools),
-		"default_payees": nonNil(s.cfg.DefaultPayees)})
+	writeJSON(w, http.StatusOK, map[string]any{"templates": all, "runners": s.runnerNames()})
 }
 
 // handleSaveTemplate creates or replaces a task. Saving a built-in keeps the
-// operator's version beside it (deleting that restores the built-in). If the
-// task's agent exists, its scope is updated at once.
+// operator's version beside it (deleting that restores the built-in).
 func (s *Server) handleSaveTemplate(w http.ResponseWriter, r *http.Request) {
 	var t Template
 	if err := readJSON(r, &t); err != nil {
@@ -287,15 +240,11 @@ func (s *Server) handleSaveTemplate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, statusFor(err), err)
 		return
 	}
-	if _, err := s.agents.SetScope(r.Context(), agentPrefix+t.ID, t.scope()); err != nil && !isNotFound(err) {
-		writeErr(w, statusFor(err), fmt.Errorf("task saved, but its agent's scope was not updated: %w", err))
-		return
-	}
 	writeJSON(w, http.StatusOK, t)
 }
 
 // handleDeleteTemplate deletes one of the operator's tasks, or resets an
-// edited built-in to the version that ships. The agent and its runs stay.
+// edited built-in to the version that ships. Its past runs stay.
 func (s *Server) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !templateIDRe.MatchString(id) {
@@ -309,17 +258,6 @@ func (s *Server) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
 		}
 		writeErr(w, statusFor(err), err)
 		return
-	}
-	if b, err := builtins(); err == nil {
-		if t, ok := b[id]; ok {
-			if len(t.Payees) == 0 {
-				t.Payees = nonNil(s.cfg.DefaultPayees)
-			}
-			if _, err := s.agents.SetScope(r.Context(), agentPrefix+id, t.scope()); err != nil && !isNotFound(err) {
-				writeErr(w, statusFor(err), fmt.Errorf("task reset, but its agent's scope was not updated: %w", err))
-				return
-			}
-		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

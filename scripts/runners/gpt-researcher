@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Runs one console task with GPT Researcher, through the AgentGate gateway.
+#
+# The console starts this with a small environment:
+#   AG_RUN_ID, AG_RUN_DIR, AG_TOPIC, AG_INSTRUCTIONS, AG_GATEWAY_URL
+# Your wrapper adds:
+#   AGENT_KEY     the gateway key of the agent this runs as
+#   GPTR_PYTHON   a Python with gpt-researcher installed
+# Optional: GPTR_MODEL (default openai/gpt-4o-mini), GPTR_MCP (default "litescraper firecrawl").
+#
+# Writes report.md to AG_RUN_DIR. Lines starting with "▸ " are progress the
+# console shows as steps; everything else goes to the run's log.
+set -euo pipefail
+: "${AGENT_KEY:?}" "${GPTR_PYTHON:?}" "${AG_RUN_ID:?}" "${AG_RUN_DIR:?}" "${AG_TOPIC:?}" "${AG_GATEWAY_URL:?}"
+M=${GPTR_MODEL:-openai/gpt-4o-mini}
+export OPENAI_API_KEY="$AGENT_KEY" OPENAI_BASE_URL="$AG_GATEWAY_URL/v1" RETRIEVER=mcp MCP_STRATEGY=fast \
+  FAST_LLM="openai:$M" SMART_LLM="openai:$M" STRATEGIC_LLM="openai:$M" \
+  EMBEDDING=huggingface:sentence-transformers/all-MiniLM-L6-v2 MAX_ITERATIONS=2 MAX_SUBTOPICS=2 TOTAL_WORDS=900 \
+  ANONYMIZED_TELEMETRY=false PYTHONUNBUFFERED=1
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# GPT Researcher logs "INFO: [time] message"; those messages become steps.
+"$GPTR_PYTHON" -I "$here/gpt_researcher_run.py" 2>&1 |
+  sed -u -E $'s/\x1b\\[[0-9;]*m//g; s/^INFO:[[:space:]]+\\[[0-9:]+\\][[:space:]]+/▸ /'
