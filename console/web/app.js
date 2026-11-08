@@ -94,6 +94,10 @@ async function api(path, opts = {}) {
   if (!r.ok) throw new Error((body && body.error) || text || r.statusText);
   return body;
 }
+// An address opens on its token transfers: payees and the wallet move USDC,
+// not ETH, so the explorer's default tab would look empty.
+const explorerURL = (ex, kind, v) => `${ex}/${kind}/${v}${kind === "address" ? "#tokentxns" : ""}`;
+
 // Addresses and transaction hashes: short, linked to the block explorer in a
 // new tab, with a button that copies the full value.
 function chainLink(v) {
@@ -101,7 +105,7 @@ function chainLink(v) {
   const shortV = v.slice(0, 6) + "…" + v.slice(-4);
   const ex = overview && overview.explorer;
   const text = ex
-    ? `<a href="${esc(ex)}/${kind}/${esc(v)}" target="_blank" rel="noopener noreferrer" title="Open ${esc(v)} in the block explorer">${esc(shortV)}</a>`
+    ? `<a href="${esc(explorerURL(ex, kind, v))}" target="_blank" rel="noopener noreferrer" title="Open ${esc(v)} in the block explorer">${esc(shortV)}</a>`
     : `<span title="${esc(v)}">${esc(shortV)}</span>`;
   return `<span class="addr">${text}<button class="copy" data-copy="${esc(v)}" title="Copy the full ${kind === "tx" ? "transaction hash" : "address"}" aria-label="Copy">⧉</button></span>`;
 }
@@ -224,7 +228,7 @@ function drawOverview(o) {
   ];
   if (o.wallet) spend.push({ k: "Wallet USDC", text: o.wallet.usdc ? "$" + trimUSD(o.wallet.usdc) : "—",
     s: o.wallet.error ? o.wallet.error : short(o.wallet.address), g: "var(--pay)",
-    href: o.explorer ? `${o.explorer}/address/${o.wallet.address}` : "", ext: true });
+    href: o.explorer ? explorerURL(o.explorer, "address", o.wallet.address) : "", ext: true });
   drawTiles($("#ov-spend"), "ovs", spend);
   drawTiles($("#ov-activity"), "ova", activityTiles(T, ""));
   drawBars($("#ov-models"), o.models, "var(--model)");
