@@ -601,8 +601,8 @@ function drawRun(r) {
   const nSteps = r.events.filter((e) => e.type === "step").length;
   const stepsHTML = r.events.map((e, i) => evLine({ ...e, i })).join("");
   const calls = r.steps.length ? `<div class="calls"><span class="muted">Through the gateway:</span> ${callSummary(r.steps)}</div>` : "";
-  const gw = r.gateway_events.length ? `<h3 style="margin-top:14px">The gateway said no</h3><table class="tbl"><tbody>${r.gateway_events.map((e) =>
-    `<tr><td class="nowrap">${esc(hhmmss(e.at))}</td><td><span class="chip ${e.class === "refused" ? "warn" : e.class === "blocked" ? "blk" : "bad"}">${esc(e.class)}</span></td><td>${esc(e.name)}</td><td>${esc(e.status)}</td><td class="muted">${linkChain(esc(e.detail))}</td></tr>`).join("")}</tbody></table>` : "";
+  const gw = r.gateway_events.length ? `<h3 style="margin-top:14px">Problems during this run</h3><table class="tbl"><tbody>${r.gateway_events.map((e) =>
+    `<tr><td class="nowrap">${esc(hhmmss(e.at))}</td><td><span class="chip ${e.class === "refused" ? "warn" : e.class === "blocked" ? "blk" : e.class === "notice" ? "" : "bad"}">${esc(e.class)}</span></td><td>${esc(e.name)}</td><td class="nowrap">${amountCell(e)}</td><td>${esc(e.status)}</td><td class="muted">${detailCell(e)}</td></tr>`).join("")}</tbody></table>` : "";
   const files = r.files.length ? `<div class="files">${r.files.map((f) => {
       const [label, what] = fileInfo[f.name] || [f.name, ""];
       return `<button class="file ${openFile === f.name ? "on" : ""}" data-f="${esc(f.name)}" title="${esc(what)}">${esc(label)} <span class="muted">${(f.size / 1024).toFixed(1)} KB</span></button>`;
@@ -646,6 +646,19 @@ async function deleteRun(id) {
 const fileCache = {}, fileText = {};
 function bindDownload(id, name, text) {
   fileText[id + name] = text;
+  // A long file opens as a preview; the button unfolds it and folds it back.
+  const box = $("#filebox .report"), more = $("#filebox [data-more]");
+  if (box && more) {
+    if (box.scrollHeight <= box.clientHeight + 4) { box.classList.remove("clamp"); more.remove(); }
+    else {
+      const label = more.textContent;
+      more.onclick = () => {
+        const open = !box.classList.toggle("clamp");
+        more.textContent = open ? "Show less" : label;
+        if (!open) box.scrollIntoView({ block: "nearest" });
+      };
+    }
+  }
   const b = $("#filebox [data-dl]");
   if (!b) return;
   b.onclick = () => {
@@ -665,7 +678,7 @@ async function showFile(id, name) {
     openFile = name;
     const [label, what] = fileInfo[name] || [name, ""];
     const body = name.endsWith(".md") ? markdown(text) : `<pre>${esc(text)}</pre>`;
-    fileCache[id + name] = `<div class="row between" style="margin-top:12px"><span><b>${esc(label)}</b> <span class="muted">· ${esc(what)}</span></span><button class="ghost small" data-dl="${esc(name)}">Download</button></div><div class="report">${body}</div>`;
+    fileCache[id + name] = `<div class="row between" style="margin-top:12px"><span><b>${esc(label)}</b> <span class="muted">· ${esc(what)}</span></span><button class="ghost small" data-dl="${esc(name)}">Download</button></div><div class="report clamp">${body}</div><button class="linkbtn more" data-more>Show full ${name.endsWith(".md") ? "report" : "file"}</button>`;
     $("#filebox").innerHTML = fileCache[id + name];
     bindDownload(id, name, text);
     $("#runview").querySelectorAll("[data-f]").forEach((b) => b.classList.toggle("on", b.dataset.f === name));
@@ -775,6 +788,14 @@ async function loadBadge() {
 }
 // The money in an event row: charged, refused before it was paid, or settled
 // on chain before the gateway could record it.
+// Plain words for statuses that come without a detail of their own.
+const statusHelp = {
+  client_disconnected: "The agent closed the request before the reply finished; what the model already produced is billed.",
+  settlement_pending: "Paid, but the seller's confirmation did not come back; the reconciler records it later.",
+  upstream_error: "The model provider returned an error.",
+};
+const detailCell = (e) => linkChain(esc(e.detail || statusHelp[e.status] || ""));
+
 function amountCell(e) {
   if (!e.amount || !e.amount.nanos) return `<span class="muted">—</span>`;
   const v = esc(fmtUSD(e.amount));
@@ -787,7 +808,7 @@ function drawEvents() {
   setHTML($("#ev-body"), lastEvents.length ? lastEvents.map((e) => `<tr class="${new Date(e.at) > freshSince ? "fresh" : ""}"><td class="nowrap" title="${new Date(e.at) > freshSince ? "New since you last looked" : ""}">${esc(when(e.at))}</td>
     <td>${e.agent ? `<a href="${esc(agentHref(e.agent))}">${esc(e.agent)}</a>` : `<span class="muted">—</span>`}</td>
     <td><span class="chip ${e.class === "refused" ? "warn" : e.class === "blocked" ? "blk" : e.class === "notice" ? "" : "bad"}">${esc(e.class)}</span></td>
-    <td>${esc(e.kind)}</td><td>${esc(e.name)}</td><td class="nowrap">${amountCell(e)}</td><td>${esc(e.status)}</td><td class="muted">${linkChain(esc(e.detail))}</td></tr>`).join("")
+    <td>${esc(e.kind)}</td><td>${esc(e.name)}</td><td class="nowrap">${amountCell(e)}</td><td>${esc(e.status)}</td><td class="muted">${detailCell(e)}</td></tr>`).join("")
     : `<tr><td colspan="8" class="muted">Nothing here. Good.</td></tr>`);
 }
 
