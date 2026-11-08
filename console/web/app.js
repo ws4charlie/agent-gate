@@ -178,6 +178,8 @@ function drawTiles(box, id, tiles) {
   }
   tiles.forEach((t, i) => {
     $(`#${id}s${i}`).textContent = t.s || "";
+    // A problem count takes its event colour once it is not zero.
+    $(`#${id}v${i}`).className = "v" + (t.c && t.n > 0 ? " " + t.c : "");
     if (t.text !== undefined) $(`#${id}v${i}`).textContent = t.text;
     else countTo($(`#${id}v${i}`), id + i, t.n, t.f);
   });
@@ -187,9 +189,9 @@ function activityTiles(x, agent) {
   const q = (cls) => evHref({ agent, class: cls, since: "24h" });
   return [
     { k: "Calls", n: x.calls_24h, f: intNum, s: agent ? "every request" : x.active_agents + " active agents", g: "var(--ok)", href: agent ? "" : "#agents" },
-    { k: "Refused", n: x.refused_24h, f: intNum, s: "said no on purpose", g: "var(--warn)", href: q("refused") },
-    { k: "Errors", n: x.errors_24h, f: intNum, s: "upstream and internal", g: "var(--bad)", href: q("error") },
-    { k: "Blocked", n: x.blocked_24h, f: intNum, s: "tool output screened", g: "var(--block)", href: q("blocked") },
+    { k: "Refused", n: x.refused_24h, f: intNum, s: "said no on purpose", g: "var(--warn)", c: "warn", href: q("refused") },
+    { k: "Errors", n: x.errors_24h, f: intNum, s: "upstream and internal", g: "var(--bad)", c: "bad", href: q("error") },
+    { k: "Blocked", n: x.blocked_24h, f: intNum, s: "tool output screened", g: "var(--block)", c: "blk", href: q("blocked") },
   ];
 }
 
@@ -286,12 +288,14 @@ function drawAgentDetail(a) {
   const limit = (u, word) => (u.nanos ? `${esc(fmtUSD(u))} ${word}` : "");
   const limits = [limit(sc.daily_budget, "per day"), limit(sc.task_budget, "per task"), limit(sc.velocity_per_minute, "per minute"),
     sc.approval_threshold.nanos ? "approval above " + esc(fmtUSD(sc.approval_threshold)) : ""].filter(Boolean).join(" · ") || "no spending limits";
+  // Actions sit next to what they act on: Kill beside the agent's name, Edit
+  // beside what it is allowed to do (the one place limits are changed).
   const html = `
     <div class="card dhead">
-      <div><div class="name big">${statusDot(a)}${esc(a.name)} ${a.console ? `<span class="chip acc">template</span>` : ""}${a.status !== "active" ? ` <span class="chip bad">${esc(a.status)}</span>` : ""}</div>
-        <div class="muted">last seen ${esc(ago(a.last_seen))} · balance ${esc(fmtUSD(a.available))}</div></div>
-      <div class="row"><button class="ghost" data-edit="${esc(a.id)}">Limits &amp; allowlists</button>
-        ${a.status === "active" ? `<button class="btn danger" data-kill="${esc(a.id)}">Kill</button>` : a.status === "killed" ? `<button class="btn go" data-resume="${esc(a.id)}">Resume</button>` : ""}</div>
+      <div class="row wrap"><span class="name big">${statusDot(a)}${esc(a.name)}</span>
+        ${a.console ? `<span class="chip acc">template</span>` : ""}${a.status !== "active" ? `<span class="chip bad">${esc(a.status)}</span>` : ""}
+        ${a.status === "active" ? `<button class="btn danger small" data-kill="${esc(a.id)}">Kill</button>` : a.status === "killed" ? `<button class="btn go small" data-resume="${esc(a.id)}">Resume</button>` : ""}</div>
+      <div class="muted">last seen ${esc(ago(a.last_seen))} · balance ${esc(fmtUSD(a.available))}</div>
     </div>
     <div class="groups">
       <div class="group"><h2>Spend</h2><div class="card">${budgetLine(a)}
@@ -299,17 +303,17 @@ function drawAgentDetail(a) {
           <span class="muted"><span style="color:var(--model)">■</span> model ${esc(fmtUSD(k.model))} <span style="color:var(--tool)">■</span> tool ${esc(fmtUSD(k.tool))} <span style="color:var(--pay)">■</span> pay ${esc(fmtUSD(k.payment))}</span></div></div></div>
       <div class="group"><h2>Activity · last 24 hours</h2><div class="tiles" id="ag-activity"></div></div>
     </div>
-    <div class="card"><div class="row between"><h3>Spend per hour · last 24 hours</h3><span class="muted">peak ${esc(usdNum(peak))}/h</span></div>
-      ${spark(a.hourly, a.status === "active" ? "#22d3ee" : "#f87171", 90)}
-      <div class="row between axis"><span>24 hours ago</span><span>12 hours ago</span><span>now</span></div></div>
-    <div class="card"><h3>Model spend · 7 days</h3><div id="ag-models" class="bars"></div></div>
-    <div class="card"><h3>Tool &amp; payment spend · 7 days</h3><div id="ag-tools" class="bars"></div></div>
-    <div class="card allowed"><div class="row between"><h3>Allowed</h3><button class="ghost small" data-edit="${esc(a.id)}">Edit</button></div>
+    <div class="card allowed"><div class="row"><h3>Allowed</h3><button class="ghost small" data-edit="${esc(a.id)}">Edit</button></div>
       <div class="arow"><span class="muted">Models</span><div class="tags">${tagList(sc.models, "")}</div></div>
       <div class="arow"><span class="muted">Tools</span><div class="tags">${tagList(sc.tools, "t")}</div></div>
       <div class="arow"><span class="muted">Payees</span><div class="tags">${tagList(sc.payees, "p", short)}</div></div>
       <div class="arow"><span class="muted">Limits</span><div>${limits}</div></div>
-    </div>`;
+    </div>
+    <div class="card"><div class="row between"><h3>Spend per hour · last 24 hours</h3><span class="muted">peak ${esc(usdNum(peak))}/h</span></div>
+      ${spark(a.hourly, a.status === "active" ? "#22d3ee" : "#f87171", 90)}
+      <div class="row between axis"><span>24 hours ago</span><span>12 hours ago</span><span>now</span></div></div>
+    <div class="card"><h3>Model spend · 7 days</h3><div id="ag-models" class="bars"></div></div>
+    <div class="card"><h3>Tool &amp; payment spend · 7 days</h3><div id="ag-tools" class="bars"></div></div>`;
   const body = $("#agents-body");
   if (setHTML(body, html)) {
     body.querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", () => editAgent(b.dataset.edit)));
