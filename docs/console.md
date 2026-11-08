@@ -14,13 +14,13 @@ Every count is a link. Clicking an agent's errors opens the events page already 
 
 ## Change limits without the command line
 
-From a card you can set an agent's budgets and allowlists, or kill it and bring it back. The change applies to the agent's next request. There is no separate copy of the rules: the console writes the same policy the gateway already enforces.
+From an agent's page you can rename it, set its budgets and allowlists, or kill it and bring it back. A rename keeps its key working. The change applies to the agent's next request. There is no separate copy of the rules: the console writes the same policy the gateway already enforces.
 
 ## Run research tasks
 
 A task is a reusable research job, a bit like a skill: instructions, one model, the tools it may use, and two budgets, one per run and one per day. A few public research tasks ship with it. You can add your own, edit any task in place (a built-in one can be reset to how it shipped), and drag the list into the order you like.
 
-Each task runs as its own agent. Every model call, search and payment goes through the gateway with that agent's key, so the budgets are ordinary policy, the spend shows on the agent's own page, and a run can be stopped like any other run. Each run can look into something different without changing the task. While it runs you watch each step arrive; when it ends you read the report, the raw tool results and the full transcript.
+Each task runs as its own agent. Every model call, search and payment goes through the gateway with that agent's key, so the budgets are ordinary policy, the spend shows on the agent's own page, and a run can be stopped like any other run. Each run can look into something different without changing the task. While it runs you watch each step arrive; when it ends you read the report, the raw search results and the full conversation with the model. These files stay on this computer, readable only by your user, and you can delete a run when you no longer need it.
 
 ## Who can use it
 

@@ -460,3 +460,26 @@ func TestRegistryCancel(t *testing.T) {
 		t.Fatalf("cancelled %d", n)
 	}
 }
+
+func TestRename(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	secret, a := r.agent("claude-code-1", policy.Scope{})
+	r.agent("other", policy.Scope{})
+	got, err := r.st.Rename(ctx, "claude-code-1", "claude-code")
+	if err != nil || got.ID != a.ID || got.Name != "claude-code" {
+		t.Fatalf("rename: %+v %v", got, err)
+	}
+	if au, err := r.st.Authenticate(ctx, secret); err != nil || au.Name != "claude-code" {
+		t.Fatalf("the key must keep working: %+v %v", au, err)
+	}
+	if _, err := r.st.Rename(ctx, "claude-code", "other"); !errors.Is(err, agents.ErrNameTaken) {
+		t.Fatalf("taken name: %v", err)
+	}
+	if _, err := r.st.Rename(ctx, "claude-code", "bad name"); !errors.Is(err, agents.ErrBadName) {
+		t.Fatalf("bad name: %v", err)
+	}
+	if _, err := r.st.Rename(ctx, "nobody", "x"); !errors.Is(err, agents.ErrNotFound) {
+		t.Fatalf("missing: %v", err)
+	}
+}

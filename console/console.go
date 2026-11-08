@@ -125,6 +125,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("PUT /api/agents/{ref}/scope", s.handleSetScope)
 	api.HandleFunc("POST /api/agents/{ref}/kill", s.handleKill)
 	api.HandleFunc("POST /api/agents/{ref}/resume", s.handleResume)
+	api.HandleFunc("PUT /api/agents/{ref}/name", s.handleRename)
 
 	api.HandleFunc("GET /api/templates", s.handleTemplates)
 	api.HandleFunc("POST /api/templates", s.handleSaveTemplate)
@@ -136,6 +137,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/runs/{id}", s.handleRun)
 	api.HandleFunc("POST /api/runs/{id}/kill", s.handleKillRun)
 	api.HandleFunc("GET /api/runs/{id}/files/{name}", s.handleRunFile)
+	api.HandleFunc("DELETE /api/runs/{id}", s.handleDeleteRun)
 	return guard(mux)
 }
 
@@ -221,8 +223,10 @@ func statusFor(err error) int {
 	switch {
 	case errors.Is(err, agents.ErrNotFound), errors.Is(err, runs.ErrNotFound), errors.Is(err, errNoTemplate):
 		return http.StatusNotFound
-	case errors.Is(err, agents.ErrBadState), errors.Is(err, errInvalid):
+	case errors.Is(err, agents.ErrBadState), errors.Is(err, agents.ErrBadName), errors.Is(err, errInvalid):
 		return http.StatusBadRequest
+	case errors.Is(err, agents.ErrNameTaken):
+		return http.StatusConflict
 	case errors.Is(err, context.DeadlineExceeded):
 		return http.StatusGatewayTimeout
 	}

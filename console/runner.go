@@ -83,7 +83,7 @@ func (s *Server) runReady() runReady {
 	case s.cfg.Gateway == "":
 		rr.Enabled, rr.Reason = false, "start the console with --gateway"
 	case s.cfg.Account == "":
-		rr.Enabled, rr.Reason = false, "start the console with --account: the ledger account template agents spend from"
+		rr.Enabled, rr.Reason = false, "start the console with --account: the ledger account that task agents spend from"
 	}
 	return rr
 }
