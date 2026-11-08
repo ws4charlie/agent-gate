@@ -49,11 +49,24 @@ function askForKey() {
     $("#keyinput").focus();
   }
 }
+// The page cannot read the key file (that is the point of the key), so it can
+// only copy the command that does.
+$("#keycopy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText($("#keycmd").textContent);
+    $("#keycopy").textContent = "Copied";
+  } catch { $("#keycopy").textContent = "Select and copy it"; }
+  setTimeout(() => { $("#keycopy").textContent = "Copy command"; }, 2000);
+});
 $("#keyform").addEventListener("submit", async (e) => {
   e.preventDefault();
   const raw = $("#keyinput").value.trim();
-  const m = raw.match(/(?:k=)?([A-Za-z0-9_-]{32,})\s*$/);
   const err = $("#keyerr");
+  if (/^pbcopy\b/.test(raw)) {
+    err.textContent = "That is the command, not the key. Run it in Terminal first, then paste again.";
+    err.classList.remove("hide"); $("#keyinput").value = ""; return;
+  }
+  const m = raw.match(/(?:k=)?([A-Za-z0-9_-]{32,})\s*$/);
   if (!m) { err.textContent = "That does not look like a console key."; err.classList.remove("hide"); return; }
   const r = await fetch("/api/overview", { headers: { "X-Console-Key": m[1] } }).catch(() => null);
   if (!r || r.status === 401) {
