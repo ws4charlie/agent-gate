@@ -3,9 +3,10 @@
   <!-- the gate: two brackets every call passes between -->
   <path d="M20 10 H11 V54 H20" fill="none" stroke="#7c5cff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
   <path d="M44 10 H53 V54 H44" fill="none" stroke="#7c5cff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
-  <!-- the agent: a round head with a visor and an antenna -->
-  <path d="M32 23 V18" stroke="#22d3ee" stroke-width="4" stroke-linecap="round"/>
+  <!-- the agent: a robot head with two eyes and an antenna -->
+  <path d="M32 22 V18" stroke="#22d3ee" stroke-width="4" stroke-linecap="round"/>
   <circle cx="32" cy="15.5" r="3.2" fill="#22d3ee"/>
-  <rect x="20" y="22" width="24" height="20" rx="10" fill="#22d3ee"/>
-  <rect x="24" y="29" width="16" height="6" rx="3" fill="#0b1020"/>
+  <rect x="20" y="23" width="24" height="19" rx="6" fill="#22d3ee"/>
+  <circle cx="27.5" cy="32.5" r="3" fill="#0b1020"/>
+  <circle cx="36.5" cy="32.5" r="3" fill="#0b1020"/>
 </svg>
