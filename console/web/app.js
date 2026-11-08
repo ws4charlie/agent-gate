@@ -751,13 +751,22 @@ async function loadBadge() {
     badge.textContent = events.length; badge.classList.toggle("hide", !events.length);
   } catch (e) { /* the header shows the connection state */ }
 }
+// The money in an event row: charged, refused before it was paid, or settled
+// on chain before the gateway could record it.
+function amountCell(e) {
+  if (!e.amount || !e.amount.nanos) return `<span class="muted">—</span>`;
+  const v = esc(fmtUSD(e.amount));
+  if (e.amount_note === "not_paid") return `<span class="muted" title="The gateway refused it, so nothing was paid"><s>${v}</s> not paid</span>`;
+  if (e.amount_note === "settled_late") return `${v} <span class="muted" title="Paid on chain; the gateway recorded it when it reconciled">paid</span>`;
+  return v;
+}
 const when = (t) => new Date(t).toLocaleString([], { month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" });
 function drawEvents() {
   setHTML($("#ev-body"), lastEvents.length ? lastEvents.map((e) => `<tr><td class="nowrap">${esc(when(e.at))}</td>
     <td>${e.agent ? `<a href="${esc(agentHref(e.agent))}">${esc(e.agent)}</a>` : `<span class="muted">—</span>`}</td>
     <td><span class="chip ${e.class === "refused" ? "warn" : e.class === "blocked" ? "blk" : e.class === "notice" ? "" : "bad"}">${esc(e.class)}</span></td>
-    <td>${esc(e.kind)}</td><td>${esc(e.name)}</td><td>${esc(e.status)}</td><td class="muted">${linkChain(esc(e.detail))}</td></tr>`).join("")
-    : `<tr><td colspan="7" class="muted">Nothing here. Good.</td></tr>`);
+    <td>${esc(e.kind)}</td><td>${esc(e.name)}</td><td class="nowrap">${amountCell(e)}</td><td>${esc(e.status)}</td><td class="muted">${linkChain(esc(e.detail))}</td></tr>`).join("")
+    : `<tr><td colspan="8" class="muted">Nothing here. Good.</td></tr>`);
 }
 
 // ---- start ----
