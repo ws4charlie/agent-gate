@@ -199,6 +199,37 @@ func (s *Server) handleKillRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": stKilled})
 }
 
+// handleDeleteRun removes a finished run's files from this machine: its
+// report, the raw tool results and the transcript. The gateway's own audit
+// rows (costs and statuses, no content) stay.
+func (s *Server) handleDeleteRun(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	dir, err := s.runDir(id)
+	if err != nil {
+		writeErr(w, statusFor(err), err)
+		return
+	}
+	s.mu.Lock()
+	tk := s.live[id]
+	s.mu.Unlock()
+	if tk != nil && tk.snapshot().Status == stRunning {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%w: the run is still going; kill it first", errInvalid))
+		return
+	}
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("%w: %s", runs.ErrNotFound, id))
+		return
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		writeErr(w, statusFor(err), err)
+		return
+	}
+	s.mu.Lock()
+	delete(s.live, id)
+	s.mu.Unlock()
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleRunFile(w http.ResponseWriter, r *http.Request) {
 	dir, err := s.runDir(r.PathValue("id"))
 	if err != nil {

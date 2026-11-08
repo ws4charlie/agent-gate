@@ -256,7 +256,7 @@ function drawAgentCards(agents) {
   const html = agents.length ? `<div class="agents">${agents.map((a) => `
     <div class="agent ${a.status !== "active" ? "killed" : ""}" data-go="${esc(agentHref(a.name))}" tabindex="0">
       <div class="row between"><span class="name">${statusDot(a)}${esc(a.name)}</span>
-        <span class="row">${a.console ? `<span class="chip acc">template</span>` : ""}${a.status !== "active" ? `<span class="chip bad">${esc(a.status)}</span>` : ""}<span class="chev">›</span></span></div>
+        <span class="row">${a.console ? `<span class="chip acc">task</span>` : ""}${a.status !== "active" ? `<span class="chip bad">${esc(a.status)}</span>` : ""}<span class="chev">›</span></span></div>
       ${budgetLine(a)}
       <div class="sub">7 days ${esc(fmtUSD(a.spend_7d.total))} · ${problemLinks(a)}</div>
     </div>`).join("")}</div>` : `<p class="muted">No agents yet.</p>`;
@@ -283,6 +283,13 @@ function spark(values, color, h = 38) {
 const tagList = (items, cls, fmt = (x) => x) => items.length ? items.map((x) => `<span class="tag ${cls}">${esc(fmt(x))}</span>`).join("") : `<span class="muted">none</span>`;
 const short = (p) => p.slice(0, 6) + "…" + p.slice(-4);
 
+// Agents can share one ledger account; say so rather than show the same
+// balance as if each had its own.
+function balanceText(a) {
+  const n = overview.agents.filter((x) => x.account_id === a.account_id).length;
+  return n > 1 ? `account balance ${esc(fmtUSD(a.available))}, shared by ${n} agents` : `balance ${esc(fmtUSD(a.available))}`;
+}
+
 function drawAgentDetail(a) {
   const sc = a.scope, k = a.spend_7d, peak = Math.max(...a.hourly);
   const limit = (u, word) => (u.nanos ? `${esc(fmtUSD(u))} ${word}` : "");
@@ -293,9 +300,9 @@ function drawAgentDetail(a) {
   const html = `
     <div class="card dhead">
       <div class="row wrap"><span class="name big">${statusDot(a)}${esc(a.name)}</span>
-        ${a.console ? `<span class="chip acc">template</span>` : ""}${a.status !== "active" ? `<span class="chip bad">${esc(a.status)}</span>` : ""}
+        ${a.console ? `<span class="chip acc">task</span>` : ""}${a.status !== "active" ? `<span class="chip bad">${esc(a.status)}</span>` : ""}
         ${a.status === "active" ? `<button class="btn danger small" data-kill="${esc(a.id)}">Kill</button>` : a.status === "killed" ? `<button class="btn go small" data-resume="${esc(a.id)}">Resume</button>` : ""}</div>
-      <div class="muted">last seen ${esc(ago(a.last_seen))} · balance ${esc(fmtUSD(a.available))}</div>
+      <div class="muted">last seen ${esc(ago(a.last_seen))} · ${balanceText(a)}</div>
     </div>
     <div class="groups">
       <div class="group"><h2>Spend</h2><div class="card">${budgetLine(a)}
@@ -343,8 +350,9 @@ const usdField = (u) => (u.nanos ? trimUSD(u.usd) : "");
 
 function editAgent(id) {
   const a = overview.agents.find((x) => x.id === id), sc = a.scope;
-  openModal(`<h3>${esc(a.name)} · limits and allowlists</h3>
+  openModal(`<h3>Edit ${esc(a.name)}</h3>
     <p class="muted" style="margin-top:-6px">Takes effect on the agent's next request. Empty amount = no limit. An empty allowlist allows nothing.</p>
+    <div class="field"><label>Name${a.console ? " · named after its task" : " · its key keeps working after a rename"}</label><input id="e-name" value="${esc(a.name)}" ${a.console ? "disabled" : ""}></div>
     <div class="grid3">
       <div class="field"><label>Daily budget (USD)</label><input id="e-daily" value="${esc(usdField(sc.daily_budget))}" placeholder="no limit"></div>
       <div class="field"><label>Per-task budget (USD)</label><input id="e-task" value="${esc(usdField(sc.task_budget))}" placeholder="no limit"></div>
@@ -354,15 +362,21 @@ function editAgent(id) {
     <div class="field"><label>Models (one per line; a trailing * is a prefix)</label><textarea id="e-models">${esc(sc.models.join("\n"))}</textarea></div>
     <div class="field"><label>Tools (server/tool for MCP, a name for a paid x402 tool)</label><textarea id="e-tools">${esc(sc.tools.join("\n"))}</textarea></div>
     <div class="field"><label>Payees (0x addresses)</label><textarea id="e-payees">${esc(sc.payees.join("\n"))}</textarea></div>
-    ${a.console ? `<p class="muted">This is a template agent: saving the template sets these again.</p>` : ""}
+    ${a.console ? `<p class="muted">This agent belongs to a task. Editing the task sets these again.</p>` : ""}
     <div class="row between"><button class="ghost" id="e-cancel">Cancel</button><button class="btn" id="e-save">Save</button></div>`);
   $("#e-cancel").onclick = closeModal;
   $("#e-save").onclick = async () => {
     const body = { daily_budget_usd: $("#e-daily").value, task_budget_usd: $("#e-task").value, velocity_per_minute_usd: $("#e-vel").value,
       approval_threshold_usd: $("#e-appr").value, models: lines($("#e-models").value), tools: lines($("#e-tools").value), payees: lines($("#e-payees").value) };
+    const name = $("#e-name").value.trim();
     try {
+      if (!a.console && name !== a.name) {
+        await api(`/api/agents/${encodeURIComponent(id)}/name`, { method: "PUT", body: JSON.stringify({ name }) });
+        if (agentSel === a.name) history.replaceState(null, "", agentHref(name));
+        agentSel = agentSel === a.name ? name : agentSel;
+      }
       await api(`/api/agents/${encodeURIComponent(id)}/scope`, { method: "PUT", body: JSON.stringify(body) });
-      closeModal(); toast(`${a.name}: saved`); loadOverview();
+      closeModal(); toast(`${name}: saved`); loadOverview();
     } catch (e) { toast(e.message, true); }
   };
 }
@@ -429,10 +443,10 @@ function drawLauncher() {
     <div class="tags"><span class="tag">${esc(t.model)}</span>${t.tools.map((x) => `<span class="tag t">${esc(x)}</span>`).join("")}
       <span class="tag p">run ≤ $${esc(trimUSD(t.run_budget_usd))}</span><span class="tag p">day ≤ $${esc(trimUSD(t.daily_budget_usd))}</span><span class="tag">${t.max_steps} steps</span>
       <a class="tag a" href="${esc(agentHref(agent))}" title="Every call goes through the gateway as this agent, under its budgets">agent ${esc(agent)}</a></div>
-    <div class="field topic"><label for="topic">This run looks into</label><textarea id="topic" rows="2">${esc(t.default_topic)}</textarea>
-      <div class="hint">The task's instructions stay the same. Change this to point one run at something else.</div></div>
+    <p class="asks"><span class="muted">Each run looks into</span> ${esc(t.default_topic)} <button class="linkbtn" id="t-other">Ask something else once…</button></p>
     ${ready.enabled ? "" : `<p style="color:var(--warn)">${esc(ready.reason)}</p>`}`;
-  $("#go").onclick = () => startRun(t.id);
+  $("#go").onclick = () => startRun(t.id, t.default_topic);
+  $("#t-other").onclick = () => askOnce(t);
   $("#t-edit").onclick = () => editTemplate(t);
   if (t.edited) $("#t-reset").onclick = () => resetTemplate(t);
   else if (!t.builtin) $("#t-del").onclick = () => deleteTemplate(t);
@@ -485,10 +499,21 @@ async function resetTemplate(t) {
   catch (e) { toast(e.message, true); }
 }
 
-async function startRun(id) {
+// One run can look into something else; the task itself stays as it is.
+function askOnce(t) {
+  openModal(`<h3>${esc(t.name)} · one run</h3>
+    <p class="muted" style="margin-top:-6px">Same instructions, tools and budget. Only this run looks into what you write here; the task does not change.</p>
+    <div class="field"><label>This run looks into</label><textarea id="once-topic" rows="3">${esc(t.default_topic)}</textarea></div>
+    <div class="row between"><button class="ghost" id="once-cancel">Cancel</button><button class="btn go" id="once-go">▶ Run</button></div>`);
+  $("#once-topic").focus();
+  $("#once-cancel").onclick = closeModal;
+  $("#once-go").onclick = () => { const topic = $("#once-topic").value.trim(); if (!topic) return; closeModal(); startRun(t.id, topic); };
+}
+
+async function startRun(id, topic) {
   $("#go").disabled = true;
   try {
-    const r = await api("/api/runs", { method: "POST", body: JSON.stringify({ template_id: id, topic: $("#topic").value }) });
+    const r = await api("/api/runs", { method: "POST", body: JSON.stringify({ template_id: id, topic }) });
     toast("run started");
     watch(r.id);
     loadRunList();
@@ -496,43 +521,104 @@ async function startRun(id) {
   finally { const g = $("#go"); if (g) g.disabled = false; }
 }
 
-let runTimer = null, openFile = null, seenEvents = 0;
+let runTimer = null, openFile = null, seenEvents = 0, stepsOpen = null;
+const closedSteps = new Set();
 function watch(id) {
-  watching = id; openFile = null; seenEvents = 0;
+  watching = id; openFile = null; seenEvents = 0; stepsOpen = null; closedSteps.clear();
   clearTimeout(runTimer);
   pollRun();
+}
+function closeRun() {
+  watching = null; openFile = null; clearTimeout(runTimer);
+  $("#runview").classList.add("hide");
+  loadRunList();
 }
 async function pollRun() {
   if (!watching) return;
   try {
     const r = await api(`/api/runs/${watching}`);
+    if (r.id !== watching) return;
     drawRun(r);
     if (r.status === "running") runTimer = setTimeout(pollRun, 1200);
     else { loadRunList(); if (!openFile && r.files.find((f) => f.name === "report.md")) showFile(r.id, "report.md"); }
   } catch (e) { toast(e.message, true); }
 }
 
+// The steps of a run: what happened before the first model call, then one
+// group per model step holding the tool calls it made, then the ending.
+function groupSteps(events) {
+  const groups = [{ head: null, items: [] }];
+  for (const [i, e] of events.entries()) {
+    const startsStep = e.type === "model" && /^step \d+/.test(e.text);
+    if (startsStep) groups.push({ head: { ...e, i }, items: [] });
+    else if (e.type === "answer" || e.type === "done") groups.push({ head: null, items: [{ ...e, i }], tail: true });
+    else groups[groups.length - 1].items.push({ ...e, i });
+  }
+  return groups.filter((g) => g.head || g.items.length);
+}
+const evLine = (e) => `<div class="ev ${esc(e.type)}${e.i >= seenEvents ? " new" : ""}"><span class="t">${esc(hhmmss(e.at))}</span>${esc(e.text)}</div>`;
+
+// What each saved file is, in words, for the buttons.
+const fileInfo = {
+  "report.md": ["Report", "The answer the task wrote"],
+  "tools.md": ["Search results", "What each tool call returned, word for word"],
+  "transcript.json": ["Conversation", "Every message between the task and the model"],
+};
+
 function drawRun(r) {
   const running = r.status === "running";
-  const evs = r.events.map((e, i) => `<div class="ev ${esc(e.type)}${i >= seenEvents ? " new" : ""}"><span class="t">${esc(hhmmss(e.at))}</span>${esc(e.text)}</div>`).join("");
-  const gw = r.gateway_events.length ? `<h3 style="margin-top:14px">Gateway said</h3><table class="tbl"><tbody>${r.gateway_events.map((e) =>
-    `<tr><td>${esc(hhmmss(e.at))}</td><td><span class="chip ${e.class === "refused" ? "warn" : e.class === "blocked" ? "blk" : "bad"}">${esc(e.class)}</span></td><td>${esc(e.name)}</td><td>${esc(e.status)}</td><td class="muted">${esc(e.detail)}</td></tr>`).join("")}</tbody></table>` : "";
-  const steps = r.steps.length ? `<div class="tags" style="margin-top:6px">${r.steps.map((s) =>
-    `<span class="tag ${s.kind === "model" ? "" : s.kind === "payment" ? "p" : "t"}" title="${esc(s.status)}">${esc(s.kind)} ${esc(s.name || "…")} · ${esc(fmtUSD(s.cost))}${s.status !== "ok" && s.status !== "running" ? " · " + esc(s.status) : ""}</span>`).join("")}</div>` : "";
+  if (stepsOpen === null) stepsOpen = running;
+  const groups = groupSteps(r.events);
+  const nSteps = groups.filter((g) => g.head).length;
+  const stepsHTML = groups.map((g, gi) => g.head
+    ? (() => {
+        const n = g.items.filter((e) => e.type === "tool").length;
+        const more = n ? `<span class="more">${n} tool ${n === 1 ? "call" : "calls"}</span>` : "";
+        return g.items.length
+          ? `<details class="step" data-g="${gi}" ${closedSteps.has(gi) ? "" : "open"}><summary>${evLine(g.head).replace("</div>", more + "</div>")}</summary><div class="stepbody">${g.items.map(evLine).join("")}</div></details>`
+          : `<div class="step plain">${evLine(g.head)}</div>`;
+      })()
+    : g.items.map(evLine).join("")).join("");
+  const calls = r.steps.length ? `<div class="calls"><span class="muted">Gateway calls</span>${r.steps.map((s) =>
+    `<span class="tag ${s.kind === "model" ? "" : s.kind === "payment" ? "p" : "t"}" title="${esc(s.status)}">${esc(s.name || s.kind)} · ${esc(fmtUSD(s.cost))}${s.status !== "ok" && s.status !== "running" ? " · " + esc(s.status) : ""}</span>`).join("")}</div>` : "";
+  const gw = r.gateway_events.length ? `<h3 style="margin-top:14px">The gateway said no</h3><table class="tbl"><tbody>${r.gateway_events.map((e) =>
+    `<tr><td class="nowrap">${esc(hhmmss(e.at))}</td><td><span class="chip ${e.class === "refused" ? "warn" : e.class === "blocked" ? "blk" : "bad"}">${esc(e.class)}</span></td><td>${esc(e.name)}</td><td>${esc(e.status)}</td><td class="muted">${esc(e.detail)}</td></tr>`).join("")}</tbody></table>` : "";
+  const files = r.files.length ? `<div class="files">${r.files.map((f) => {
+      const [label, what] = fileInfo[f.name] || [f.name, ""];
+      return `<button class="file ${openFile === f.name ? "on" : ""}" data-f="${esc(f.name)}" title="${esc(what)}">${esc(label)} <span class="muted">${(f.size / 1024).toFixed(1)} KB</span></button>`;
+    }).join("")}
+    ${running ? "" : `<button class="ghost small del" id="r-del" title="Delete this run's files from this computer">Delete run</button>`}</div>
+    <p class="muted fine">Saved only on this computer, readable only by your user. Nothing here is sent anywhere.</p>` : "";
   $("#runview").classList.remove("hide");
   $("#runview").innerHTML = `<div class="row between"><div><h3 style="margin:0">Run · ${esc(when(r.started_at))}</h3><div class="muted" style="font-size:12px">${esc(r.topic)}</div></div>
       <div class="row"><span class="status ${esc(r.status)}">${running ? `<span class="spinner"></span> ` : ""}${esc(r.status)}</span>
-      <span class="chip">spent ${esc(fmtUSD(r.spend))}</span>${running ? `<button class="btn danger small" id="r-kill">Kill run</button>` : ""}</div></div>
+      <span class="chip">spent ${esc(fmtUSD(r.spend))}</span>${running ? `<button class="btn danger small" id="r-kill">Kill run</button>` : ""}
+      <button class="ghost small" id="r-close" title="Close">✕</button></div></div>
     ${r.error ? `<p style="color:var(--warn)">${esc(r.error)}</p>` : ""}
-    <div class="timeline">${evs}</div>${steps}${gw}
-    <div class="files">${r.files.map((f) => `<button class="file ${openFile === f.name ? "on" : ""}" data-f="${esc(f.name)}">📄 ${esc(f.name)} <span class="muted">${(f.size / 1024).toFixed(1)} KB</span></button>`).join("")}</div>
-    <div id="filebox"></div>`;
+    ${files}<div id="filebox"></div>
+    <details class="steps" id="r-steps" ${stepsOpen ? "open" : ""}><summary>Steps <span class="muted">· ${nSteps} model ${nSteps === 1 ? "step" : "steps"}</span></summary>
+      <div class="timeline">${stepsHTML}</div>${calls}</details>${gw}`;
   seenEvents = r.events.length;
+  $("#r-close").onclick = closeRun;
+  $("#r-steps").addEventListener("toggle", (e) => { stepsOpen = e.target.open; });
+  $("#runview").querySelectorAll("details.step").forEach((d) => d.addEventListener("toggle", () => {
+    if (d.open) closedSteps.delete(+d.dataset.g); else closedSteps.add(+d.dataset.g);
+  }));
   if (running) $("#r-kill").onclick = async () => {
     try { await api(`/api/runs/${r.id}/kill`, { method: "POST" }); toast("run killed"); } catch (e) { toast(e.message, true); }
   };
-  $("#runview").querySelectorAll("[data-f]").forEach((b) => b.addEventListener("click", () => showFile(r.id, b.dataset.f)));
+  if (!running && $("#r-del")) $("#r-del").onclick = () => deleteRun(r.id);
+  $("#runview").querySelectorAll("[data-f]").forEach((b) => b.addEventListener("click", () => {
+    if (openFile === b.dataset.f) { openFile = null; $("#filebox").innerHTML = ""; b.classList.remove("on"); return; }
+    showFile(r.id, b.dataset.f);
+  }));
   if (openFile && fileCache[r.id + openFile]) { $("#filebox").innerHTML = fileCache[r.id + openFile]; bindDownload(r.id, openFile, fileText[r.id + openFile]); }
+}
+
+async function deleteRun(id) {
+  if (!confirm("Delete this run's report, search results and conversation from this computer? Its cost stays in the gateway's records.")) return;
+  try { await api(`/api/runs/${id}`, { method: "DELETE" }); toast("run deleted"); closeRun(); }
+  catch (e) { toast(e.message, true); }
 }
 
 const fileCache = {}, fileText = {};
@@ -553,9 +639,11 @@ async function showFile(id, name) {
     const r = await fetch(`/api/runs/${id}/files/${name}`, { headers: { "X-Console-Key": consoleKey } });
     const text = await r.text();
     if (!r.ok) throw new Error(text);
+    if (id !== watching) return;
     openFile = name;
+    const [label, what] = fileInfo[name] || [name, ""];
     const body = name.endsWith(".md") ? markdown(text) : `<pre>${esc(text)}</pre>`;
-    fileCache[id + name] = `<div class="row between" style="margin-top:14px"><b>${esc(name)}</b><button class="ghost small" data-dl="${esc(name)}">download</button></div><div class="report">${body}</div>`;
+    fileCache[id + name] = `<div class="row between" style="margin-top:12px"><span><b>${esc(label)}</b> <span class="muted">· ${esc(what)}</span></span><button class="ghost small" data-dl="${esc(name)}">Download</button></div><div class="report">${body}</div>`;
     $("#filebox").innerHTML = fileCache[id + name];
     bindDownload(id, name, text);
     $("#runview").querySelectorAll("[data-f]").forEach((b) => b.classList.toggle("on", b.dataset.f === name));
@@ -563,7 +651,8 @@ async function showFile(id, name) {
 }
 
 // The list shows the picked task's runs only, so it does not repeat the task's
-// name; it shows what a run looked into only when that was changed.
+// name; it shows what a run looked into only when that was changed. Clicking
+// the open run again closes it.
 async function loadRunList() {
   const t = templates.find((x) => x.id === picked);
   if (!t) { $("#runlist").innerHTML = ""; return; }
@@ -573,7 +662,10 @@ async function loadRunList() {
       <span class="status ${esc(r.status)}">${esc(r.status)}</span><span class="muted">${esc(ago(r.started_at))}</span>
       <span class="topic">${r.topic !== t.default_topic ? esc(r.topic) : ""}</span><span>${esc(fmtUSD(r.spend))}</span></div>`).join("")
       : `<p class="muted">No runs yet. Press ▶ Run.</p>`;
-    $("#runlist").querySelectorAll(".runrow").forEach((el) => el.addEventListener("click", () => { watch(el.dataset.id); loadRunList(); }));
+    $("#runlist").querySelectorAll(".runrow").forEach((el) => el.addEventListener("click", () => {
+      if (el.dataset.id === watching) { closeRun(); return; }
+      watch(el.dataset.id); loadRunList();
+    }));
   } catch (e) { toast(e.message, true); }
 }
 
@@ -611,12 +703,13 @@ function drawEventFilters() {
   if (evQuery.agent && ![...sel.options].some((o) => o.value === evQuery.agent)) sel.insertAdjacentHTML("beforeend", `<option value="${esc(evQuery.agent)}">${esc(evQuery.agent)}</option>`);
   sel.value = evQuery.agent;
   document.querySelectorAll("#ev-filters button").forEach((b) => b.classList.toggle("on", b.dataset.f === evQuery.class));
-  $("#ev-since").classList.toggle("hide", !evQuery.since);
-  $("#ev-since").textContent = (evQuery.since === "24h" ? "last 24 hours" : "last " + evQuery.since) + " ✕";
+  const since = $("#ev-since");
+  if (evQuery.since && ![...since.options].some((o) => o.value === evQuery.since)) since.insertAdjacentHTML("beforeend", `<option value="${esc(evQuery.since)}">Last ${esc(evQuery.since)}</option>`);
+  since.value = evQuery.since;
 }
 $("#ev-agent").addEventListener("change", (e) => { location.hash = evHref({ ...evQuery, agent: e.target.value }); });
 document.querySelectorAll("#ev-filters button").forEach((b) => b.addEventListener("click", () => { location.hash = evHref({ ...evQuery, class: b.dataset.f }); }));
-$("#ev-since").addEventListener("click", () => { location.hash = evHref({ ...evQuery, since: "" }); });
+$("#ev-since").addEventListener("change", (e) => { location.hash = evHref({ ...evQuery, since: e.target.value }); });
 
 async function loadEvents() {
   try {

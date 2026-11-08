@@ -18,6 +18,7 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/db/dbtest"
 	"github.com/ws4charlie/agent-gate/internal/ledger"
 	"github.com/ws4charlie/agent-gate/internal/money"
+	"github.com/ws4charlie/agent-gate/internal/policy"
 )
 
 func TestGuard(t *testing.T) {
@@ -455,4 +456,43 @@ func TestEditResetAndOrderTasks(t *testing.T) {
 		t.Fatalf("order: %v", ids)
 	}
 	call("PUT", "/api/templates/order", `{"ids":["../x"]}`, 400)
+}
+
+// Renaming keeps task agents' names, and a finished run can be deleted.
+func TestRenameAndDeleteRun(t *testing.T) {
+	gw, _ := fakeGateway(t, false)
+	s := newTestServer(t, gw.URL)
+	h := s.Handler()
+	id := startAndWait(t, s, h, `{"template_id":"agent-security","topic":"t"}`).ID
+	call := func(method, path, body string) int {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, apiReq(s, method, path, body))
+		return w.Code
+	}
+	acct, err := ledger.New(s.pool).CreateAccount(context.Background(), "cc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.agents.Create(context.Background(), acct, "claude-code-1", policy.Scope{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		path, name string
+		want       int
+	}{
+		{"/api/agents/claude-code-1/name", "claude-code", 200},
+		{"/api/agents/claude-code/name", "console-x", 400},
+		{"/api/agents/console-agent-security/name", "mine", 400},
+		{"/api/agents/claude-code/name", "console-agent-security", 400},
+	} {
+		if got := call("PUT", c.path, `{"name":"`+c.name+`"}`); got != c.want {
+			t.Errorf("%s -> %s: %d, want %d", c.path, c.name, got, c.want)
+		}
+	}
+	if got := call("DELETE", "/api/runs/"+id, ""); got != 204 {
+		t.Fatalf("delete run: %d", got)
+	}
+	if got := call("GET", "/api/runs/"+id, ""); got != 404 {
+		t.Fatalf("deleted run still there: %d", got)
+	}
 }

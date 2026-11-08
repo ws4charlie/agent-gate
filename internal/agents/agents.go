@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ws4charlie/agent-gate/internal/money"
@@ -31,6 +32,7 @@ var (
 	ErrNotFound     = errors.New("agents: no such agent")
 	ErrBadName      = errors.New("agents: name must be 1-64 characters of letters, digits, '.', '_' or '-'")
 	ErrBadState     = errors.New("agents: wrong state for this change")
+	ErrNameTaken    = errors.New("agents: another agent has this name")
 )
 
 var nameRE = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
@@ -179,6 +181,28 @@ func (s *Store) SetScope(ctx context.Context, ref string, scope policy.Scope) (A
 
 // setStatus moves an agent to `to` when `from` (a SQL condition) holds. If the
 // agent is already there, it returns it unchanged; any other state is ErrBadState.
+// Rename changes an agent's name. The key, id, scope and history stay, so
+// clients that hold the key keep working.
+func (s *Store) Rename(ctx context.Context, ref, name string) (Agent, error) {
+	if !nameRE.MatchString(name) {
+		return Agent{}, ErrBadName
+	}
+	a, err := scan(s.pool.QueryRow(ctx, `UPDATE agents SET name=$2
+		WHERE (id=$1 OR name=$1) AND status <> 'revoked' RETURNING `+agentCols, ref, name))
+	var pe *pgconn.PgError
+	switch {
+	case errors.As(err, &pe) && pe.Code == "23505":
+		return Agent{}, fmt.Errorf("%w: %s", ErrNameTaken, name)
+	case errors.Is(err, pgx.ErrNoRows):
+		cur, gerr := s.Get(ctx, ref)
+		if gerr != nil {
+			return Agent{}, gerr
+		}
+		return Agent{}, fmt.Errorf("%w: agent %s is %s", ErrBadState, cur.Name, cur.Status)
+	}
+	return a, err
+}
+
 func (s *Store) setStatus(ctx context.Context, ref string, to policy.Status, from string) (Agent, error) {
 	a, err := scan(s.pool.QueryRow(ctx, `UPDATE agents SET status=$2, status_at=now()
 		WHERE (id=$1 OR name=$1) AND `+from+` RETURNING `+agentCols, ref, string(to)))

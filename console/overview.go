@@ -561,6 +561,34 @@ func (s *Server) handleSetScope(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"id": a.ID, "name": a.Name, "scope": viewScope(a.Scope)})
 }
 
+// handleRename renames an agent. A task's agent keeps the name the task gives
+// it (the runner finds it by that name), and no other agent may take that form.
+func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	ref, name := r.PathValue("ref"), strings.TrimSpace(body.Name)
+	cur, err := s.agents.Get(r.Context(), ref)
+	if err != nil {
+		writeErr(w, statusFor(err), err)
+		return
+	}
+	if strings.HasPrefix(cur.Name, agentPrefix) || strings.HasPrefix(name, agentPrefix) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%w: names starting with %q belong to tasks", errInvalid, agentPrefix))
+		return
+	}
+	a, err := s.agents.Rename(r.Context(), cur.ID, name)
+	if err != nil {
+		writeErr(w, statusFor(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": a.ID, "name": a.Name})
+}
+
 func (s *Server) handleKill(w http.ResponseWriter, r *http.Request) {
 	s.setStatus(w, r, s.agents.Kill)
 }
