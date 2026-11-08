@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -42,6 +44,12 @@ func consoleCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	paymentsPath := c.fs.String("payments", os.Getenv("AG_PAYMENTS"), "the gateway's payments file: the wallet's network")
 	walletAddr := c.fs.String("wallet-address", os.Getenv("AG_WALLET_ADDRESS"), "show this wallet's USDC balance (address only; no key is read)")
 	usdc := c.fs.String("usdc", "", "USDC contract for the wallet tile (default: Circle's, from the payments network)")
+	tailnetListen := c.fs.String("tailnet-listen", os.Getenv("AG_CONSOLE_TAILNET_LISTEN"), "also serve over HTTPS on this machine's Tailscale address, e.g. 100.101.102.103:443; empty: this machine only")
+	tailnetHost := c.fs.String("tailnet-host", os.Getenv("AG_CONSOLE_TAILNET_HOST"), "this machine's name on the tailnet, e.g. agentgate.tail1234.ts.net")
+	tailnetCert := c.fs.String("tailnet-cert", os.Getenv("AG_CONSOLE_TAILNET_CERT"), "certificate file from `tailscale cert`")
+	tailnetKey := c.fs.String("tailnet-key", os.Getenv("AG_CONSOLE_TAILNET_KEY"), "key file from `tailscale cert`")
+	tailscaleSocket := c.fs.String("tailscale-socket", envOr("AG_TAILSCALE_SOCKET", "/var/run/tailscale/tailscaled.sock"), "tailscaled's LocalAPI socket, used to tell who is calling")
+	allow := c.fs.String("allow", os.Getenv("AG_CONSOLE_ALLOW"), "logins that may open the console over the tailnet, comma separated, e.g. you@gmail.com")
 	_, pool, err := c.open(ctx, args)
 	if err != nil {
 		return err
@@ -89,10 +97,22 @@ func consoleCmd(ctx context.Context, args []string, stdout io.Writer) error {
 		fmt.Fprintln(stdout, "no --runners: the overview works, running tasks is off")
 	}
 
+	servers := []*http.Server{hs}
+	errc := make(chan error, 2)
+	go func() { errc <- hs.Serve(ln) }()
+	if *tailnetListen != "" {
+		ts, tln, err := tailnetServer(srv, *tailnetListen, *tailnetHost, *tailnetCert, *tailnetKey, *tailscaleSocket, csv(*allow))
+		if err != nil {
+			hs.Close()
+			return err
+		}
+		servers = append(servers, ts)
+		go func() { errc <- ts.ServeTLS(tln, "", "") }()
+		fmt.Fprintf(stdout, "console on the tailnet at https://%s/ for %s\n", *tailnetHost, strings.Join(csv(*allow), ", "))
+	}
+
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	errc := make(chan error, 1)
-	go func() { errc <- hs.Serve(ln) }()
 	select {
 	case err := <-errc:
 		return err
@@ -101,7 +121,69 @@ func consoleCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	srv.Shutdown()
 	sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return hs.Shutdown(sctx)
+	for _, s := range servers {
+		_ = s.Shutdown(sctx)
+	}
+	return nil
+}
+
+// tailnetServer serves the console over HTTPS on a Tailscale address, to the
+// allowed logins only. The certificate comes from `tailscale cert` and is
+// read again when the files change, so a renewal needs no restart.
+func tailnetServer(srv *console.Server, listen, host, certFile, keyFile, socket string, allow []string) (*http.Server, net.Listener, error) {
+	h, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return nil, nil, fmt.Errorf("--tailnet-listen: %w", err)
+	}
+	if ip := net.ParseIP(h); ip == nil || !console.TailnetAddr(ip) {
+		return nil, nil, errors.New("--tailnet-listen must be this machine's Tailscale address (100.64.0.0/10 or fd7a:115c:a1e0::/48)")
+	}
+	switch {
+	case host == "" || !strings.HasSuffix(host, ".ts.net"):
+		return nil, nil, errors.New("--tailnet-host must be this machine's name on the tailnet, ending in .ts.net")
+	case certFile == "" || keyFile == "":
+		return nil, nil, errors.New("--tailnet-cert and --tailnet-key are needed: make them with `tailscale cert`")
+	case len(allow) == 0:
+		return nil, nil, errors.New("--allow must name at least one login: nobody else can open the console on the tailnet")
+	}
+	certs := &reloadingCert{cert: certFile, key: keyFile}
+	if _, err := certs.get(nil); err != nil {
+		return nil, nil, err
+	}
+	ln, err := net.Listen("tcp", listen)
+	if err != nil {
+		return nil, nil, err
+	}
+	ts := &http.Server{Handler: srv.TailnetHandler(host, allow, console.TailscaleWhois(socket)),
+		ReadHeaderTimeout: 10 * time.Second,
+		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: certs.get}}
+	return ts, ln, nil
+}
+
+// reloadingCert serves a key pair from disk, reading it again when the
+// certificate file changes.
+type reloadingCert struct {
+	cert, key string
+	mu        sync.Mutex
+	mod       time.Time
+	pair      *tls.Certificate
+}
+
+func (c *reloadingCert) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	fi, err := os.Stat(c.cert)
+	if err != nil {
+		return nil, fmt.Errorf("tailnet certificate: %w", err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pair == nil || !fi.ModTime().Equal(c.mod) {
+		pair, err := tls.LoadX509KeyPair(c.cert, c.key)
+		if err != nil {
+			return nil, fmt.Errorf("tailnet certificate: %w", err)
+		}
+		c.pair, c.mod = &pair, fi.ModTime()
+	}
+	return c.pair, nil
 }
 
 // parseRunners reads "agent=path,agent=path". Each path must be a program.
