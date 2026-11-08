@@ -264,3 +264,5 @@ a.tile.link:hover .s::after { opacity: 1; }
 #ev-body tr.fresh td:first-child { position: relative; }
 #ev-body tr.fresh td:first-child::before { content: ""; position: absolute; left: -2px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-radius: 50%; background: var(--accent2); }
 #ev-body tr.fresh { background: rgba(34,211,238,.05); }
+.report.clamp { max-height: 320px; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+.linkbtn.more { display: block; margin: 8px auto 0; padding: 4px 10px; }
