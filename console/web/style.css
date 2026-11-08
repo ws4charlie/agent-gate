@@ -140,7 +140,11 @@ main { padding: 8px 28px 60px; max-width: 1400px; margin: 0 auto; }
 .report h1 { font-size: 20px; } .report h2 { font-size: 17px; } .report h3 { font-size: 15px; }
 .report code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 5px; }
 .report pre { white-space: pre-wrap; }
-.runrow { display: grid; grid-template-columns: 90px 90px 1fr 80px; gap: 10px; padding: 8px 6px; border-bottom: 1px solid var(--line); cursor: pointer; border-radius: 8px; }
+.runrow { display: grid; grid-template-columns: 90px 90px 1fr 80px 28px; gap: 10px; align-items: center; padding: 8px 6px; border-bottom: 1px solid var(--line); cursor: pointer; border-radius: 8px; }
+.runrow .icon { background: none; border: 0; padding: 2px; opacity: .35; font-size: 14px; border-radius: 6px; }
+.runrow:hover .icon { opacity: .8; }
+.runrow .icon:hover { opacity: 1; background: rgba(248,113,113,.15); }
+.runpanel { margin: 4px 0 14px; padding: 16px 18px; border: 1px solid rgba(124,92,255,.45); border-radius: 12px; background: rgba(0,0,0,.18); animation: fadein .25s ease; }
 .runrow.on { background: rgba(124,92,255,.12); }
 .runrow .topic { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 .intro { margin: 22px 0 0; font-size: 15px; color: var(--text); max-width: 900px; }
@@ -155,7 +159,6 @@ main { padding: 8px 28px 60px; max-width: 1400px; margin: 0 auto; }
 .linkbtn { background: none; border: 0; padding: 0 0 0 6px; color: var(--accent2); font-size: 13px; }
 .linkbtn:hover { text-decoration: underline; }
 .fine { font-size: 12px; margin: 6px 0 0; }
-.files .del { margin-left: auto; }
 details.steps { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
 details > summary { cursor: pointer; list-style: none; }
 details > summary::-webkit-details-marker { display: none; }

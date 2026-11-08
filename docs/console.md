@@ -20,7 +20,7 @@ From an agent's page you can rename it, set its budgets and allowlists, or kill 
 
 A task is a reusable research job, a bit like a skill: instructions, one model, the tools it may use, and two budgets, one per run and one per day. A few public research tasks ship with it. You can add your own, edit any task in place (a built-in one can be reset to how it shipped), and drag the list into the order you like.
 
-Each task runs as its own agent. Every model call, search and payment goes through the gateway with that agent's key, so the budgets are ordinary policy, the spend shows on the agent's own page, and a run can be stopped like any other run. Each run can look into something different without changing the task. While it runs you watch each step arrive; when it ends you read the report, the raw search results and the full conversation with the model. These files stay on this computer, readable only by your user, and you can delete a run when you no longer need it.
+Each task runs as its own agent. Every model call, search and payment goes through the gateway with that agent's key, so the budgets are ordinary policy, the spend shows on the agent's own page, and a run can be stopped like any other run. Each run can look into something different without changing the task. While it runs you watch each step arrive; when it ends you read the report, what each tool returned and a trace of every message to and from the model. These files stay on this computer, readable only by your user, and you can delete a run when you no longer need it.
 
 ## Who can use it
 
