@@ -753,7 +753,7 @@ function amountCell(e) {
   if (!e.amount || !e.amount.nanos) return `<span class="muted">—</span>`;
   const v = esc(fmtUSD(e.amount));
   if (e.amount_note === "not_paid") return `<span class="muted" title="The gateway refused it, so nothing was paid"><s>${v}</s> not paid</span>`;
-  if (e.amount_note === "settled_late") return `${v} <span class="muted" title="Paid on chain; the gateway recorded it when it reconciled">settled later</span>`;
+  if (e.amount_note === "settled_late") return `${v} <span class="muted" title="Paid on chain; the gateway recorded it when it reconciled">paid</span>`;
   return v;
 }
 const when = (t) => new Date(t).toLocaleString([], { month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" });
