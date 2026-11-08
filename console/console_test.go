@@ -400,3 +400,59 @@ func TestEventFiltersMatchCounts(t *testing.T) {
 		t.Errorf("agent's own model spend: %+v", me.Models)
 	}
 }
+
+// A built-in task can be edited in place and reset; the operator's order sticks.
+func TestEditResetAndOrderTasks(t *testing.T) {
+	s := newTestServer(t, "http://127.0.0.1:1")
+	h := s.Handler()
+	call := func(method, path, body string, want int) []byte {
+		t.Helper()
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, apiReq(s, method, path, body))
+		if w.Code != want {
+			t.Fatalf("%s %s: %d %s", method, path, w.Code, w.Body)
+		}
+		return w.Body.Bytes()
+	}
+	list := func() []Template {
+		t.Helper()
+		var out struct{ Templates []Template }
+		if err := json.Unmarshal(call("GET", "/api/templates", "", 200), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Templates
+	}
+	find := func(id string) Template {
+		t.Helper()
+		for _, x := range list() {
+			if x.ID == id {
+				return x
+			}
+		}
+		t.Fatalf("no task %s", id)
+		return Template{}
+	}
+	orig := find("agent-security")
+	edited := orig
+	edited.Name = "Security, my way"
+	raw, _ := json.Marshal(edited)
+	call("POST", "/api/templates", string(raw), 200)
+	if got := find("agent-security"); got.Name != "Security, my way" || !got.Builtin || !got.Edited || len(list()) != 3 {
+		t.Fatalf("after edit: %+v (%d tasks)", got, len(list()))
+	}
+	call("DELETE", "/api/templates/agent-security", "", 204)
+	if got := find("agent-security"); got.Name != orig.Name || got.Edited {
+		t.Fatalf("after reset: %+v", got)
+	}
+	call("DELETE", "/api/templates/agent-security", "", 404)
+
+	call("PUT", "/api/templates/order", `{"ids":["ai-primary-market","agent-security"]}`, 204)
+	var ids []string
+	for _, x := range list() {
+		ids = append(ids, x.ID)
+	}
+	if strings.Join(ids, ",") != "ai-primary-market,agent-security,agent-payments" {
+		t.Fatalf("order: %v", ids)
+	}
+	call("PUT", "/api/templates/order", `{"ids":["../x"]}`, 400)
+}

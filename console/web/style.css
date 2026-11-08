@@ -68,7 +68,7 @@ main { padding: 8px 28px 60px; max-width: 1400px; margin: 0 auto; }
 .agent:hover { transform: translateY(-2px); border-color: rgba(124,92,255,.45); }
 .agent.killed { border-color: rgba(248,113,113,.5); background: rgba(248,113,113,.06); }
 .agent .name { font-weight: 650; font-size: 15px; }
-.chip { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 20px; border: 1px solid var(--line); color: var(--muted); }
+.chip { display: inline-block; white-space: nowrap; font-size: 11px; padding: 1px 8px; border-radius: 20px; border: 1px solid var(--line); color: var(--muted); }
 .chip.ok { color: var(--ok); border-color: rgba(52,211,153,.4); }
 .chip.bad { color: var(--bad); border-color: rgba(248,113,113,.45); }
 .chip.warn { color: var(--warn); border-color: rgba(251,191,36,.4); }
@@ -140,7 +140,22 @@ main { padding: 8px 28px 60px; max-width: 1400px; margin: 0 auto; }
 .report h1 { font-size: 20px; } .report h2 { font-size: 17px; } .report h3 { font-size: 15px; }
 .report code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 5px; }
 .report pre { white-space: pre-wrap; }
-.runrow { display: grid; grid-template-columns: 90px 1fr 110px 90px; gap: 10px; padding: 8px 6px; border-bottom: 1px solid var(--line); cursor: pointer; border-radius: 8px; }
+.runrow { display: grid; grid-template-columns: 90px 90px 1fr 80px; gap: 10px; padding: 8px 6px; border-bottom: 1px solid var(--line); cursor: pointer; border-radius: 8px; }
+.runrow.on { background: rgba(124,92,255,.12); }
+.runrow .topic { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.intro { margin: 22px 0 0; font-size: 15px; color: var(--text); max-width: 900px; }
+.tname { gap: 8px; }
+.tname h3 { margin: 0 6px 0 0; font-size: 17px; }
+.tdesc { margin: 6px 0 0; }
+#launcher .tags { margin: 10px 0 14px; }
+.tag.a { background: rgba(52,211,153,.12); color: #a7f3d0; text-decoration: none; }
+.tag.a:hover { text-decoration: underline; }
+.hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.topic textarea { min-height: 0; }
+.tmpl { cursor: grab; }
+.tmpl.dragging { opacity: .5; border-style: dashed; }
+.tmpl .grip { color: var(--muted); margin-right: 6px; font-size: 11px; letter-spacing: -2px; opacity: .5; }
+.tmpl:hover .grip { opacity: 1; }
 .runrow:hover { background: rgba(255,255,255,.04); }
 
 /* table */

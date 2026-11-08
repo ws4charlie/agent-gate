@@ -105,7 +105,7 @@ function toast(msg, err = false) {
 // ---- routes ----
 // The address says what is on screen, so a count can link to its rows and the
 // back button works: #overview, #agents, #agents/<name>,
-// #events?agent=<name>&class=<class>&since=24h, #run.
+// #events?agent=<name>&class=<class>&since=24h, #tasks.
 let tab = "overview", agentSel = "", evQuery = { agent: "", class: "", since: "" };
 const evHref = (q) => "#events?" + new URLSearchParams(Object.entries(q).filter(([, v]) => v)).toString();
 const agentHref = (name) => "#agents/" + encodeURIComponent(name);
@@ -114,7 +114,7 @@ function route() {
   const h = location.hash.replace(/^#/, "");
   const [path, qs = ""] = h.split("?");
   const [name, sub = ""] = path.split("/");
-  tab = ["overview", "agents", "run", "events"].includes(name) ? name : "overview";
+  tab = ["overview", "agents", "tasks", "events"].includes(name) ? name : "overview";
   if (tab === "agents") agentSel = decodeURIComponent(sub);
   if (tab === "events") {
     const q = new URLSearchParams(qs);
@@ -122,7 +122,7 @@ function route() {
   }
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
   document.querySelectorAll(".tab").forEach((s) => s.classList.toggle("on", s.id === tab));
-  if (tab === "run") loadRunTab();
+  if (tab === "tasks") loadRunTab();
   if (tab === "events") { drawEventFilters(); loadEvents(); }
   if (tab === "agents" && overview) drawAgentsTab(overview);
   window.scrollTo(0, 0);
@@ -367,7 +367,10 @@ function editAgent(id) {
   };
 }
 
-// ---- run tab ----
+// ---- tasks tab ----
+// A task is a reusable research job: its own instructions, model, tools and
+// budgets. Each one runs as its own agent (console-<id>). The API still calls
+// them templates.
 let templates = [], knownTools = [], defaultPayees = [], picked = null, watching = null;
 
 async function loadRunTab() {
@@ -379,45 +382,75 @@ async function loadRunTab() {
   } catch (e) { toast(e.message, true); }
 }
 
+function pick(id) {
+  if (id === picked) return;
+  picked = id; watching = null; clearTimeout(runTimer);
+  $("#runview").classList.add("hide");
+  drawTemplates(); drawLauncher(); loadRunList();
+}
+
+const taskChip = (t) => t.edited ? `<span class="chip acc">edited</span>` : t.builtin ? `<span class="chip">built-in</span>` : "";
+let dragging = null;
 function drawTemplates() {
-  $("#tmpl-list").innerHTML = templates.map((t) => `<button class="tmpl ${t.id === picked ? "on" : ""}" data-id="${esc(t.id)}">
-    <div class="row between"><span class="n">${esc(t.name)}</span>${t.builtin ? `<span class="chip">built-in</span>` : `<span class="chip acc">yours</span>`}</div>
+  $("#tmpl-list").innerHTML = templates.map((t) => `<button class="tmpl ${t.id === picked ? "on" : ""}" data-id="${esc(t.id)}" draggable="true" title="Drag to reorder">
+    <div class="row between"><span class="n"><span class="grip" aria-hidden="true">⋮⋮</span>${esc(t.name)}</span>${taskChip(t)}</div>
     <div class="d">${esc(t.description || t.default_topic)}</div></button>`).join("");
-  $("#tmpl-list").querySelectorAll(".tmpl").forEach((b) => b.addEventListener("click", () => { picked = b.dataset.id; drawTemplates(); drawLauncher(); }));
+  $("#tmpl-list").querySelectorAll(".tmpl").forEach((b) => {
+    b.addEventListener("click", () => pick(b.dataset.id));
+    // Drag to reorder: the list moves as you drag, and the order is saved on drop.
+    b.addEventListener("dragstart", (e) => { dragging = b.dataset.id; b.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; });
+    b.addEventListener("dragend", () => { b.classList.remove("dragging"); if (dragging) saveOrder(); dragging = null; });
+    b.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      if (!dragging || dragging === b.dataset.id) return;
+      const from = templates.findIndex((x) => x.id === dragging), to = templates.findIndex((x) => x.id === b.dataset.id);
+      const [moved] = templates.splice(from, 1);
+      templates.splice(to, 0, moved);
+      drawTemplates();
+      $(`#tmpl-list [data-id="${CSS.escape(dragging)}"]`).classList.add("dragging");
+    });
+  });
+}
+async function saveOrder() {
+  try { await api("/api/templates/order", { method: "PUT", body: JSON.stringify({ ids: templates.map((t) => t.id) }) }); }
+  catch (e) { toast(e.message, true); }
 }
 
 function drawLauncher() {
   const t = templates.find((x) => x.id === picked);
-  if (!t) { $("#launcher").innerHTML = `<p class="muted">No templates.</p>`; return; }
+  if (!t) { $("#launcher").innerHTML = `<p class="muted">No tasks yet. Press + New.</p>`; return; }
   const ready = overview ? overview.run : { enabled: true };
-  $("#launcher").innerHTML = `<div class="row between"><h3>${esc(t.name)}</h3>
-      <span class="row"><button class="ghost small" id="t-edit">${t.builtin ? "Copy &amp; edit" : "Edit"}</button>${t.builtin ? "" : `<button class="ghost small" id="t-del">Delete</button>`}</span></div>
-    <div class="tags" style="margin:-4px 0 12px"><span class="tag">${esc(t.model)}</span>${t.tools.map((x) => `<span class="tag t">${esc(x)}</span>`).join("")}
-      <span class="tag p">run ≤ $${esc(trimUSD(t.run_budget_usd))}</span><span class="tag p">day ≤ $${esc(trimUSD(t.daily_budget_usd))}</span><span class="tag">${t.max_steps} steps</span></div>
-    <div class="field"><label>Topic</label><textarea id="topic">${esc(t.default_topic)}</textarea></div>
-    <div class="row between"><span class="muted">Runs as agent <b>console-${esc(t.id)}</b>. The gateway enforces the budgets.</span>
-      <button class="btn go" id="go" ${ready.enabled ? "" : "disabled"}>▶ Run</button></div>
-    ${ready.enabled ? "" : `<p class="muted" style="color:var(--warn)">${esc(ready.reason)}</p>`}`;
+  const agent = "console-" + t.id;
+  $("#launcher").innerHTML = `<div class="row wrap tname"><h3>${esc(t.name)}</h3>
+      <button class="btn go small" id="go" ${ready.enabled ? "" : "disabled"}>▶ Run</button>
+      <button class="ghost small" id="t-edit">Edit</button>
+      ${t.edited ? `<button class="ghost small" id="t-reset" title="Go back to the built-in version">Reset</button>` : t.builtin ? "" : `<button class="ghost small" id="t-del">Delete</button>`}</div>
+    ${t.description ? `<p class="muted tdesc">${esc(t.description)}</p>` : ""}
+    <div class="tags"><span class="tag">${esc(t.model)}</span>${t.tools.map((x) => `<span class="tag t">${esc(x)}</span>`).join("")}
+      <span class="tag p">run ≤ $${esc(trimUSD(t.run_budget_usd))}</span><span class="tag p">day ≤ $${esc(trimUSD(t.daily_budget_usd))}</span><span class="tag">${t.max_steps} steps</span>
+      <a class="tag a" href="${esc(agentHref(agent))}" title="Every call goes through the gateway as this agent, under its budgets">agent ${esc(agent)}</a></div>
+    <div class="field topic"><label for="topic">This run looks into</label><textarea id="topic" rows="2">${esc(t.default_topic)}</textarea>
+      <div class="hint">The task's instructions stay the same. Change this to point one run at something else.</div></div>
+    ${ready.enabled ? "" : `<p style="color:var(--warn)">${esc(ready.reason)}</p>`}`;
   $("#go").onclick = () => startRun(t.id);
   $("#t-edit").onclick = () => editTemplate(t);
-  if (!t.builtin) $("#t-del").onclick = () => deleteTemplate(t);
+  if (t.edited) $("#t-reset").onclick = () => resetTemplate(t);
+  else if (!t.builtin) $("#t-del").onclick = () => deleteTemplate(t);
 }
 
 $("#new-tmpl").addEventListener("click", () => editTemplate({ id: "", name: "", description: "", system_prompt: "", default_topic: "",
   model: "openai/gpt-4o-mini", tools: ["litescraper/search"], payees: defaultPayees.slice(), run_budget_usd: "0.05", daily_budget_usd: "0.50", max_steps: 6, builtin: false }, true));
 
 function editTemplate(t, fresh = false) {
-  const copy = t.builtin;
-  const id = copy ? t.id + "-copy" : t.id;
-  openModal(`<h3>${fresh ? "New template" : copy ? "Copy of " + esc(t.name) : "Edit " + esc(t.name)}</h3>
-    <p class="muted" style="margin-top:-6px">Like a skill: a system prompt plus the tools and budgets it may use. It runs as its own agent.</p>
+  openModal(`<h3>${fresh ? "New task" : "Edit " + esc(t.name)}</h3>
+    <p class="muted" style="margin-top:-6px">${t.builtin ? "This is a built-in task. Your changes replace it here; Reset brings the original back." : "Instructions plus the tools and budgets they may use. The task runs as its own agent."}</p>
     <div class="grid3">
-      <div class="field"><label>Id</label><input id="f-id" value="${esc(id)}" ${fresh || copy ? "" : "disabled"} placeholder="my-topic"></div>
-      <div class="field" style="grid-column: span 2"><label>Name</label><input id="f-name" value="${esc(copy ? t.name + " (copy)" : t.name)}"></div>
+      <div class="field"><label>Id</label><input id="f-id" value="${esc(t.id)}" ${fresh ? "" : "disabled"} placeholder="my-topic"></div>
+      <div class="field" style="grid-column: span 2"><label>Name</label><input id="f-name" value="${esc(t.name)}"></div>
     </div>
     <div class="field"><label>Description</label><input id="f-desc" value="${esc(t.description)}"></div>
-    <div class="field"><label>System prompt</label><textarea id="f-sys" style="min-height:150px">${esc(t.system_prompt)}</textarea></div>
-    <div class="field"><label>Default topic</label><input id="f-topic" value="${esc(t.default_topic)}"></div>
+    <div class="field"><label>Instructions (system prompt)</label><textarea id="f-sys" style="min-height:150px">${esc(t.system_prompt)}</textarea></div>
+    <div class="field"><label>What a run looks into, unless you change it</label><input id="f-topic" value="${esc(t.default_topic)}"></div>
     <div class="grid3">
       <div class="field"><label>Model</label><input id="f-model" value="${esc(t.model)}"></div>
       <div class="field"><label>Run budget (USD)</label><input id="f-run" value="${esc(t.run_budget_usd)}"></div>
@@ -428,22 +461,27 @@ function editTemplate(t, fresh = false) {
       <div class="field" style="grid-column: span 2"><label>Tools, one per line${knownTools.length ? " · known: " + esc(knownTools.join(", ")) : ""}</label><textarea id="f-tools" style="min-height:60px">${esc(t.tools.join("\n"))}</textarea></div>
     </div>
     <div class="field"><label>Payees for paid tools (0x addresses)</label><textarea id="f-payees" style="min-height:50px">${esc(t.payees.join("\n"))}</textarea></div>
-    <div class="row between"><button class="ghost" id="f-cancel">Cancel</button><button class="btn" id="f-save">Save template</button></div>`);
+    <div class="row between"><button class="ghost" id="f-cancel">Cancel</button><button class="btn" id="f-save">Save</button></div>`);
   $("#f-cancel").onclick = closeModal;
   $("#f-save").onclick = async () => {
     const body = { id: $("#f-id").value.trim(), name: $("#f-name").value, description: $("#f-desc").value, system_prompt: $("#f-sys").value,
       default_topic: $("#f-topic").value, model: $("#f-model").value, tools: lines($("#f-tools").value), payees: lines($("#f-payees").value),
-      run_budget_usd: $("#f-run").value, daily_budget_usd: $("#f-day").value, max_steps: parseInt($("#f-steps").value, 10) || 0, builtin: false };
+      run_budget_usd: $("#f-run").value, daily_budget_usd: $("#f-day").value, max_steps: parseInt($("#f-steps").value, 10) || 0 };
     try {
       const saved = await api("/api/templates", { method: "POST", body: JSON.stringify(body) });
-      picked = saved.id; closeModal(); toast("template saved"); loadRunTab();
+      picked = saved.id; closeModal(); toast("saved"); loadRunTab();
     } catch (e) { toast(e.message, true); }
   };
 }
 
 async function deleteTemplate(t) {
-  if (!confirm(`Delete template ${t.name}? Its agent and past runs stay.`)) return;
+  if (!confirm(`Delete the task ${t.name}? Its agent and past runs stay.`)) return;
   try { await api(`/api/templates/${encodeURIComponent(t.id)}`, { method: "DELETE" }); picked = null; toast("deleted"); loadRunTab(); }
+  catch (e) { toast(e.message, true); }
+}
+async function resetTemplate(t) {
+  if (!confirm(`Reset ${t.name} to the built-in version? Your changes to it are lost.`)) return;
+  try { await api(`/api/templates/${encodeURIComponent(t.id)}`, { method: "DELETE" }); toast("reset"); loadRunTab(); }
   catch (e) { toast(e.message, true); }
 }
 
@@ -481,7 +519,8 @@ function drawRun(r) {
     `<tr><td>${esc(hhmmss(e.at))}</td><td><span class="chip ${e.class === "refused" ? "warn" : e.class === "blocked" ? "blk" : "bad"}">${esc(e.class)}</span></td><td>${esc(e.name)}</td><td>${esc(e.status)}</td><td class="muted">${esc(e.detail)}</td></tr>`).join("")}</tbody></table>` : "";
   const steps = r.steps.length ? `<div class="tags" style="margin-top:6px">${r.steps.map((s) =>
     `<span class="tag ${s.kind === "model" ? "" : s.kind === "payment" ? "p" : "t"}" title="${esc(s.status)}">${esc(s.kind)} ${esc(s.name || "…")} · ${esc(fmtUSD(s.cost))}${s.status !== "ok" && s.status !== "running" ? " · " + esc(s.status) : ""}</span>`).join("")}</div>` : "";
-  $("#runview").innerHTML = `<div class="row between"><div><h3 style="margin:0">${esc(r.template_name)}</h3><div class="muted" style="font-size:12px">${esc(r.topic)}</div></div>
+  $("#runview").classList.remove("hide");
+  $("#runview").innerHTML = `<div class="row between"><div><h3 style="margin:0">Run · ${esc(when(r.started_at))}</h3><div class="muted" style="font-size:12px">${esc(r.topic)}</div></div>
       <div class="row"><span class="status ${esc(r.status)}">${running ? `<span class="spinner"></span> ` : ""}${esc(r.status)}</span>
       <span class="chip">spent ${esc(fmtUSD(r.spend))}</span>${running ? `<button class="btn danger small" id="r-kill">Kill run</button>` : ""}</div></div>
     ${r.error ? `<p style="color:var(--warn)">${esc(r.error)}</p>` : ""}
@@ -523,13 +562,18 @@ async function showFile(id, name) {
   } catch (e) { toast(e.message, true); }
 }
 
+// The list shows the picked task's runs only, so it does not repeat the task's
+// name; it shows what a run looked into only when that was changed.
 async function loadRunList() {
+  const t = templates.find((x) => x.id === picked);
+  if (!t) { $("#runlist").innerHTML = ""; return; }
   try {
-    const { runs } = await api("/api/runs");
-    $("#runlist").innerHTML = runs.length ? runs.map((r) => `<div class="runrow" data-id="${esc(r.id)}">
-      <span class="status ${esc(r.status)}">${esc(r.status)}</span><span>${esc(r.template_name)} <span class="muted">· ${esc(r.topic.slice(0, 70))}</span></span>
-      <span class="muted">${esc(ago(r.started_at))}</span><span>${esc(fmtUSD(r.spend))}</span></div>`).join("") : `<p class="muted">No runs yet.</p>`;
-    $("#runlist").querySelectorAll(".runrow").forEach((el) => el.addEventListener("click", () => watch(el.dataset.id)));
+    const { runs } = await api("/api/runs?template=" + encodeURIComponent(t.id));
+    $("#runlist").innerHTML = runs.length ? runs.map((r) => `<div class="runrow ${r.id === watching ? "on" : ""}" data-id="${esc(r.id)}">
+      <span class="status ${esc(r.status)}">${esc(r.status)}</span><span class="muted">${esc(ago(r.started_at))}</span>
+      <span class="topic">${r.topic !== t.default_topic ? esc(r.topic) : ""}</span><span>${esc(fmtUSD(r.spend))}</span></div>`).join("")
+      : `<p class="muted">No runs yet. Press ▶ Run.</p>`;
+    $("#runlist").querySelectorAll(".runrow").forEach((el) => el.addEventListener("click", () => { watch(el.dataset.id); loadRunList(); }));
   } catch (e) { toast(e.message, true); }
 }
 

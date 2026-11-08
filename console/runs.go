@@ -142,7 +142,7 @@ type runSummary struct {
 	Spend usd `json:"spend"`
 }
 
-// handleRuns lists the console's runs, newest first.
+// handleRuns lists the console's runs, newest first; ?template= keeps one task's.
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -151,12 +151,13 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, statusFor(err), err)
 		return
 	}
+	task := r.URL.Query().Get("template") // only this task's runs
 	var metas []runMeta
 	for _, d := range dirs {
 		if !d.IsDir() || !runIDRe.MatchString(d.Name()) {
 			continue
 		}
-		if m, _, err := s.loadRun(d.Name()); err == nil {
+		if m, _, err := s.loadRun(d.Name()); err == nil && (task == "" || m.TemplateID == task) {
 			metas = append(metas, m)
 		}
 	}

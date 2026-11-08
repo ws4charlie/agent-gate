@@ -31,6 +31,7 @@ type Template struct {
 	DailyBudget  string   `json:"daily_budget_usd"`
 	MaxSteps     int      `json:"max_steps"`
 	Builtin      bool     `json:"builtin"`
+	Edited       bool     `json:"edited"` // a built-in the operator changed; deleting it restores the built-in
 }
 
 const (
@@ -87,18 +88,20 @@ func (s *Server) templatePath(id string) string {
 	return filepath.Join(s.cfg.DataDir, "templates", id+".json")
 }
 
-// templates lists the built-in templates, then the operator's own, by name.
+// templates lists every task: the built-ins (or the operator's edited
+// version of one) and the operator's own, in the order the operator chose;
+// tasks not placed yet follow, built-ins first, then by name.
 func (s *Server) templates() ([]Template, error) {
 	b, err := builtins()
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Template, 0, len(b))
-	for _, t := range b {
+	byID := map[string]Template{}
+	for id, t := range b {
 		if len(t.Payees) == 0 {
 			t.Payees = nonNil(s.cfg.DefaultPayees)
 		}
-		out = append(out, t)
+		byID[id] = t
 	}
 	files, err := filepath.Glob(filepath.Join(s.cfg.DataDir, "templates", "*.json"))
 	if err != nil {
@@ -110,19 +113,75 @@ func (s *Server) templates() ([]Template, error) {
 			return nil, err
 		}
 		var t Template
-		if json.Unmarshal(raw, &t) != nil || b[t.ID].ID != "" {
-			continue // unreadable, or shadowing a built-in id
+		if json.Unmarshal(raw, &t) != nil || t.ID+".json" != filepath.Base(f) {
+			continue
 		}
-		t.Builtin = false
+		_, t.Builtin = b[t.ID]
+		t.Edited = t.Builtin
+		byID[t.ID] = t
+	}
+	out := make([]Template, 0, len(byID))
+	for _, t := range byID {
 		out = append(out, t)
 	}
+	rank := map[string]int{}
+	for i, id := range s.order() {
+		rank[id] = i + 1
+	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Builtin != out[j].Builtin {
+		ri, rj := rank[out[i].ID], rank[out[j].ID]
+		switch {
+		case ri != 0 && rj != 0:
+			return ri < rj
+		case ri != 0 || rj != 0:
+			return ri != 0 // placed tasks come first
+		case out[i].Builtin != out[j].Builtin:
 			return out[i].Builtin
 		}
 		return out[i].Name < out[j].Name
 	})
 	return out, nil
+}
+
+func (s *Server) orderPath() string { return filepath.Join(s.cfg.DataDir, "order.json") }
+
+// order is the task order the operator dragged into place, or nothing.
+func (s *Server) order() []string {
+	raw, err := os.ReadFile(s.orderPath())
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	if json.Unmarshal(raw, &ids) != nil {
+		return nil
+	}
+	return ids
+}
+
+func (s *Server) handleSetOrder(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if len(body.IDs) > 500 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%w: too many ids", errInvalid))
+		return
+	}
+	for _, id := range body.IDs {
+		if !templateIDRe.MatchString(id) {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("%w: bad id %q", errInvalid, id))
+			return
+		}
+	}
+	raw, _ := json.Marshal(clean(body.IDs))
+	if err := writeFileAtomic(s.orderPath(), raw); err != nil {
+		writeErr(w, statusFor(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) template(id string) (Template, error) {
@@ -203,9 +262,9 @@ func (s *Server) handleTemplates(w http.ResponseWriter, _ *http.Request) {
 		"default_payees": nonNil(s.cfg.DefaultPayees)})
 }
 
-// handleSaveTemplate creates or replaces one of the operator's templates. A
-// built-in cannot be changed: save a copy under a new id. If the template's
-// agent exists, its scope is updated at once.
+// handleSaveTemplate creates or replaces a task. Saving a built-in keeps the
+// operator's version beside it (deleting that restores the built-in). If the
+// task's agent exists, its scope is updated at once.
 func (s *Server) handleSaveTemplate(w http.ResponseWriter, r *http.Request) {
 	var t Template
 	if err := readJSON(r, &t); err != nil {
@@ -221,23 +280,22 @@ func (s *Server) handleSaveTemplate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, statusFor(err), err)
 		return
 	}
-	if b[t.ID].ID != "" {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("%w: %q is a built-in template; save a copy under another id", errInvalid, t.ID))
-		return
-	}
-	t.Builtin = false
+	_, t.Builtin = b[t.ID]
+	t.Edited = t.Builtin
 	raw, _ := json.MarshalIndent(t, "", "  ")
 	if err := writeFileAtomic(s.templatePath(t.ID), raw); err != nil {
 		writeErr(w, statusFor(err), err)
 		return
 	}
 	if _, err := s.agents.SetScope(r.Context(), agentPrefix+t.ID, t.scope()); err != nil && !isNotFound(err) {
-		writeErr(w, statusFor(err), fmt.Errorf("template saved, but its agent's scope was not updated: %w", err))
+		writeErr(w, statusFor(err), fmt.Errorf("task saved, but its agent's scope was not updated: %w", err))
 		return
 	}
 	writeJSON(w, http.StatusOK, t)
 }
 
+// handleDeleteTemplate deletes one of the operator's tasks, or resets an
+// edited built-in to the version that ships. The agent and its runs stay.
 func (s *Server) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !templateIDRe.MatchString(id) {
@@ -246,11 +304,22 @@ func (s *Server) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := os.Remove(s.templatePath(id)); err != nil {
 		if os.IsNotExist(err) {
-			writeErr(w, http.StatusNotFound, fmt.Errorf("%w: %s (built-in templates cannot be deleted)", errNoTemplate, id))
+			writeErr(w, http.StatusNotFound, fmt.Errorf("%w: %s (a built-in task can be reset after it is edited, not deleted)", errNoTemplate, id))
 			return
 		}
 		writeErr(w, statusFor(err), err)
 		return
+	}
+	if b, err := builtins(); err == nil {
+		if t, ok := b[id]; ok {
+			if len(t.Payees) == 0 {
+				t.Payees = nonNil(s.cfg.DefaultPayees)
+			}
+			if _, err := s.agents.SetScope(r.Context(), agentPrefix+id, t.scope()); err != nil && !isNotFound(err) {
+				writeErr(w, statusFor(err), fmt.Errorf("task reset, but its agent's scope was not updated: %w", err))
+				return
+			}
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

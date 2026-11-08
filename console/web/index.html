@@ -12,7 +12,7 @@
   <nav id="tabs">
     <button data-tab="overview" class="on">Overview</button>
     <button data-tab="agents">Agents</button>
-    <button data-tab="run">Run</button>
+    <button data-tab="tasks">Tasks</button>
     <button data-tab="events">Events <span id="ev-badge" class="badge hide">0</span></button>
   </nav>
   <div class="live"><span class="dot"></span><span id="clock">connecting…</span></div>
@@ -35,17 +35,19 @@
     <div id="agents-body"></div>
   </section>
 
-  <!-- Run -->
-  <section id="run" class="tab">
+  <!-- Tasks -->
+  <section id="tasks" class="tab">
+    <p class="intro">Run a research task through the gateway. Each task has its own instructions, tools and budgets, and runs as its own agent, so every call it makes is checked and paid like any other agent's.</p>
     <div class="runlayout">
       <aside class="card">
-        <div class="row between"><h3>Templates</h3><button class="ghost small" id="new-tmpl">+ New</button></div>
+        <div class="row between"><h3>Tasks</h3><button class="ghost small" id="new-tmpl">+ New</button></div>
         <div id="tmpl-list" class="tmpl-list"></div>
+        <p class="muted hint">Drag to reorder.</p>
       </aside>
       <div class="runmain">
         <div class="card" id="launcher"></div>
-        <div class="card" id="runview"><p class="muted">Pick a template, set the topic, press Run. Every call goes through the gateway under the template's own agent and budget.</p></div>
-        <div class="card"><h3>Recent runs</h3><div id="runlist"></div></div>
+        <div class="card hide" id="runview"></div>
+        <div class="card"><h3>Runs</h3><div id="runlist"></div></div>
       </div>
     </div>
   </section>
