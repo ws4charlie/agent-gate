@@ -90,6 +90,7 @@ type runView struct {
 	Spend   usd        `json:"spend"`
 	Files   []fileView `json:"files"`
 	Gateway []event    `json:"gateway_events"`
+	Problem problems   `json:"problems"`
 }
 
 func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
@@ -121,6 +122,12 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, statusFor(err), err)
 		return
 	}
+	probs, err := s.runProblems(ctx, []string{id})
+	if err != nil {
+		writeErr(w, statusFor(err), err)
+		return
+	}
+	v.Problem = probs[id]
 	dir, _ := s.runDir(id)
 	for _, name := range resultFiles {
 		if fi, err := os.Stat(filepath.Join(dir, name)); err == nil {
@@ -139,7 +146,42 @@ func nonNilEvents(e []runEvent) []runEvent {
 
 type runSummary struct {
 	runMeta
-	Spend usd `json:"spend"`
+	Spend    usd      `json:"spend"`
+	Problems problems `json:"problems"`
+}
+
+// problems counts what went wrong inside a run, by the same classes as the
+// overview and the events page. A run can be done and still have some.
+type problems struct {
+	Refused int64 `json:"refused"`
+	Errors  int64 `json:"errors"`
+	Blocked int64 `json:"blocked"`
+}
+
+// runProblems counts the problems of each run id.
+func (s *Server) runProblems(ctx context.Context, ids []string) (map[string]problems, error) {
+	out := map[string]problems{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT run_id,
+		COUNT(*) FILTER (WHERE status = ANY($2)),
+		COUNT(*) FILTER (WHERE NOT (status = ANY($2)) AND NOT (status = ANY($3))),
+		COUNT(*) FILTER (WHERE status = 'screened')
+		FROM audit_events WHERE run_id = ANY($1) GROUP BY run_id`, ids, refusalStatuses, quietStatuses)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var p problems
+		if err := rows.Scan(&id, &p.Refused, &p.Errors, &p.Blocked); err != nil {
+			return nil, err
+		}
+		out[id] = p
+	}
+	return out, rows.Err()
 }
 
 // handleRuns lists the console's runs, newest first; ?template= keeps one task's.
@@ -165,6 +207,15 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	if len(metas) > 40 {
 		metas = metas[:40]
 	}
+	ids := make([]string, len(metas))
+	for i, m := range metas {
+		ids[i] = m.ID
+	}
+	probs, err := s.runProblems(ctx, ids)
+	if err != nil {
+		writeErr(w, statusFor(err), err)
+		return
+	}
 	out := []runSummary{}
 	for _, m := range metas {
 		spend, err := s.runs.Spend(ctx, m.ID)
@@ -172,7 +223,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, statusFor(err), err)
 			return
 		}
-		out = append(out, runSummary{runMeta: m, Spend: dollars(int64(spend))})
+		out = append(out, runSummary{runMeta: m, Spend: dollars(int64(spend)), Problems: probs[m.ID]})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"runs": out})
 }
