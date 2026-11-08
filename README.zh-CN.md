@@ -57,6 +57,12 @@ AgentGate 是一道架在 AI Agent 和所有花钱动作之间的闸门。模型
 demo/phase1.sh
 ```
 
+如果想在自己机器上一直开着网关和 console，按 `.env.example` 填好 `.env`，然后用一个脚本启动、停止或重启：
+
+```bash
+scripts/agentgate-local up
+```
+
 ## 现状
 
 | 已验证 | 怎么验证的 |

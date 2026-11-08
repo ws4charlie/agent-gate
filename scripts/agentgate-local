@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# Run AgentGate on this machine in the background: the gateway, the console and,
+# if configured, the paid test tool.
+#
+#   scripts/agentgate-local up | down | restart | status | open
+#
+# Settings come from the environment, after loading $AG_ENV_FILE (default: the
+# repository's .env, see .env.example). Logs go to $AG_LOCAL_STATE/logs
+# (default ~/.local/state/agentgate). Without $AG_BIN the binary is built from
+# this checkout on every up, so a restart picks up your latest code.
+#
+# The console key is never printed; "open" passes it to the browser.
+set -u
+
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ENV_FILE=${AG_ENV_FILE:-$REPO/.env}
+if [ -f "$ENV_FILE" ]; then set -a; . "$ENV_FILE"; set +a; fi
+
+STATE=${AG_LOCAL_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/agentgate}
+LOGS=$STATE/logs
+BIN=${AG_BIN:-$STATE/bin/agentgate}
+GATEWAY_ADDR=${AG_LISTEN:-127.0.0.1:8080}
+CONSOLE_ADDR=${AG_CONSOLE_LISTEN:-127.0.0.1:18095}
+TOOL_ADDR=${AG_PAIDTOOL_LISTEN:-127.0.0.1:9402}
+CONSOLE_KEY=${AG_CONSOLE_DATA:-$HOME/.config/agentgate/console}/console.key
+export AG_GATEWAY_URL=${AG_GATEWAY_URL:-http://$GATEWAY_ADDR}
+
+umask 077
+mkdir -p "$LOGS"
+
+# Services in start order. The paid tool runs only when a network is set.
+SVCS=(gateway console)
+[ -n "${AG_PAIDTOOL_NETWORK:-}" ] && SVCS=(tool "${SVCS[@]}")
+
+addr_of() { case $1 in tool) echo "$TOOL_ADDR" ;; gateway) echo "$GATEWAY_ADDR" ;; console) echo "$CONSOLE_ADDR" ;; esac; }
+port_of() { local a; a=$(addr_of "$1"); echo "${a##*:}"; }
+
+start_cmd() {
+  case $1 in
+  tool)
+    local extra=()
+    [ -n "${AG_PAIDTOOL_CACHE:-}" ] && extra=(--litescraper-cache "$AG_PAIDTOOL_CACHE")
+    exec "$BIN" paidtool --network "$AG_PAIDTOOL_NETWORK" --listen "$TOOL_ADDR" \
+      --pay-to "${AG_PAIDTOOL_PAY_TO:-}" "${extra[@]}" ;;
+  gateway) exec "$BIN" serve ;;
+  # The console prints its keyed link on start; keep the key out of the log.
+  console) "$BIN" console 2>&1 | sed -u -E 's/#k=[^[:space:]]+/#k=****/g' ;;
+  esac
+}
+
+# Output: icon, name padded so the colons line up, message. On a terminal a
+# working line (⏳) is rewritten in place by its result.
+TTY=0; [ -t 1 ] && TTY=1
+say() { printf '%s %-8s : %s\n' "$1" "$2" "$3"; }
+work() { [ $TTY = 1 ] && printf '%s %-8s : %s' "⏳" "$1" "$2"; return 0; }
+result() { [ $TTY = 1 ] && printf '\r\033[K'; say "$@"; }
+
+# pid of an agentgate process listening on the port, if any
+pid_on() {
+  local pid
+  for pid in $(lsof -nP -t -iTCP:"$1" -sTCP:LISTEN 2>/dev/null); do
+    case $(ps -o comm= -p "$pid" 2>/dev/null) in *agentgate*) echo "$pid"; return ;; esac
+  done
+}
+
+wait_port() { # port seconds
+  local i
+  for ((i = 0; i < $2 * 5; i++)); do
+    [ -n "$(pid_on "$1")" ] && return 0
+    sleep 0.2
+  done
+  return 1
+}
+
+db_ready() {
+  command -v pg_isready >/dev/null || return 0
+  [ -n "${DATABASE_URL:-}" ] || return 0
+  pg_isready -q -d "$DATABASE_URL"
+}
+
+build() {
+  [ -n "${AG_BIN:-}" ] && return 0
+  work build "go build ./cmd/agentgate ..."
+  if (cd "$REPO" && go build -o "$BIN" ./cmd/agentgate) >"$LOGS/build.log" 2>&1; then
+    result "✅" build "$BIN"
+  else
+    result "❌" build "failed, see $LOGS/build.log"; tail -5 "$LOGS/build.log"; return 1
+  fi
+}
+
+up() {
+  if ! db_ready; then say "❌" postgres "not reachable at DATABASE_URL"; return 1; fi
+  local s p
+  for s in "${SVCS[@]}"; do
+    p=$(port_of "$s")
+    if [ -n "$(pid_on "$p")" ]; then say "✅" "$s" "already running on :$p"; continue; fi
+    work "$s" "starting on :$p ..."
+    (cd "$REPO" && nohup bash -c "$(declare -p BIN TOOL_ADDR); $(declare -f start_cmd); start_cmd $s" \
+      >>"$LOGS/$s.log" 2>&1 &)
+    if wait_port "$p" 15; then result "✅" "$s" "started on :$p"
+    else result "❌" "$s" "did not start, see $LOGS/$s.log"; tail -5 "$LOGS/$s.log"; return 1; fi
+  done
+  link
+}
+
+down() {
+  local s p pid i
+  for ((i = ${#SVCS[@]} - 1; i >= 0; i--)); do
+    s=${SVCS[i]}; p=$(port_of "$s"); pid=$(pid_on "$p")
+    if [ -z "$pid" ]; then say "⚪" "$s" "not running"; continue; fi
+    work "$s" "stopping (pid $pid) ..."
+    kill "$pid"
+    for _ in $(seq 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+    kill -0 "$pid" 2>/dev/null && kill -9 "$pid"
+    result "🛑" "$s" "stopped"
+  done
+}
+
+status() {
+  local s p pid
+  for s in "${SVCS[@]}"; do
+    p=$(port_of "$s"); pid=$(pid_on "$p")
+    if [ -n "$pid" ]; then say "✅" "$s" "running on :$p (pid $pid)"; else say "⚪" "$s" "not running"; fi
+  done
+  if db_ready; then say "✅" postgres "reachable"; else say "❌" postgres "not reachable"; fi
+  [ -n "$(pid_on "$(port_of console)")" ] && link
+  return 0
+}
+
+link() { say "🔗" link "http://$CONSOLE_ADDR (key ****; 'open' opens it signed in)"; }
+
+open_console() {
+  [ -n "$(pid_on "$(port_of console)")" ] || { say "⚪" console "not running"; return 1; }
+  [ -f "$CONSOLE_KEY" ] || { say "❌" console "no key file at $CONSOLE_KEY"; return 1; }
+  local opener=open
+  command -v open >/dev/null || opener=xdg-open
+  "$opener" "http://$CONSOLE_ADDR/#k=$(cat "$CONSOLE_KEY")"
+}
+
+case ${1:-} in
+up) build && up ;;
+down) down ;;
+restart) build && down && up ;;
+status) status ;;
+open) open_console ;;
+*) echo "usage: ${0##*/} up | down | restart | status | open"; exit 2 ;;
+esac
