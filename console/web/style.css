@@ -156,6 +156,10 @@ main { padding: 8px 28px 60px; max-width: 1400px; margin: 0 auto; }
 .sheet { width: min(640px, 92vw); max-height: 90vh; overflow: auto; background: var(--bg2); border: 1px solid var(--line); border-radius: 18px; padding: 22px; }
 .toast { position: fixed; right: 22px; bottom: 22px; background: var(--bg2); border: 1px solid var(--line); border-left: 4px solid var(--ok); padding: 10px 16px; border-radius: 12px; z-index: 30; animation: slidein .3s; max-width: 420px; }
 .toast.err { border-left-color: var(--bad); }
+.keygate { width: min(520px, 92vw); display: grid; gap: 10px; }
+.keygate h3, .keygate p { margin: 0; }
+.keygate pre { margin: 0; padding: 8px 12px; background: rgba(255,255,255,.06); border-radius: 8px; overflow-x: auto; font-size: 13px; }
+.keygate .bad { color: var(--bad); }
 
 @media (max-width: 900px) {
   .runlayout, .two { grid-template-columns: 1fr; }
