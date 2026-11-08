@@ -129,6 +129,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/templates", s.handleTemplates)
 	api.HandleFunc("POST /api/templates", s.handleSaveTemplate)
 	api.HandleFunc("DELETE /api/templates/{id}", s.handleDeleteTemplate)
+	api.HandleFunc("PUT /api/templates/order", s.handleSetOrder)
 
 	api.HandleFunc("GET /api/runs", s.handleRuns)
 	api.HandleFunc("POST /api/runs", s.handleStartRun)
