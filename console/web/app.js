@@ -386,12 +386,12 @@ function editAgent(id) {
 // A task is a reusable research job: its own instructions, model, tools and
 // budgets. Each one runs as its own agent (console-<id>). The API still calls
 // them templates.
-let templates = [], knownTools = [], defaultPayees = [], picked = null, watching = null;
+let templates = [], runners = [], picked = null, watching = null;
 
 async function loadRunTab() {
   try {
     const t = await api("/api/templates");
-    templates = t.templates; knownTools = t.known_tools; defaultPayees = t.default_payees;
+    templates = t.templates; runners = t.runners || [];
     if (!picked || !templates.find((x) => x.id === picked)) picked = templates[0] && templates[0].id;
     drawTemplates(); drawLauncher(); loadRunList();
   } catch (e) { toast(e.message, true); }
@@ -435,17 +435,16 @@ function drawLauncher() {
   const t = templates.find((x) => x.id === picked);
   if (!t) { $("#launcher").innerHTML = `<p class="muted">No tasks yet. Press + New.</p>`; return; }
   const ready = overview ? overview.run : { enabled: true };
-  const agent = "console-" + t.id;
+  const hasRunner = runners.includes(t.runner);
   $("#launcher").innerHTML = `<div class="row wrap tname"><h3>${esc(t.name)}</h3>
-      <button class="btn go small" id="go" ${ready.enabled ? "" : "disabled"}>▶ Run</button>
+      <button class="btn go small" id="go" ${ready.enabled && hasRunner ? "" : "disabled"}>▶ Run</button>
       <button class="ghost small" id="t-edit">Edit</button>
       ${t.edited ? `<button class="ghost small" id="t-reset" title="Go back to the built-in version">Reset</button>` : t.builtin ? "" : `<button class="ghost small" id="t-del">Delete</button>`}</div>
     ${t.description ? `<p class="muted tdesc">${esc(t.description)}</p>` : ""}
-    <div class="tags"><span class="tag">${esc(t.model)}</span>${t.tools.map((x) => `<span class="tag t">${esc(x)}</span>`).join("")}
-      <span class="tag p">run ≤ $${esc(trimUSD(t.run_budget_usd))}</span><span class="tag p">day ≤ $${esc(trimUSD(t.daily_budget_usd))}</span><span class="tag">${t.max_steps} steps</span>
-      <a class="tag a" href="${esc(agentHref(agent))}" title="Every call goes through the gateway as this agent, under its budgets">agent ${esc(agent)}</a></div>
+    <div class="tags"><a class="tag a" href="${esc(agentHref(t.runner))}" title="This agent does the work. Its own budgets limit each run and each day.">run by ${esc(t.runner)}</a>${agentLimits(t.runner)}</div>
     <p class="asks"><span class="muted">Each run looks into</span> ${esc(t.default_topic)} <button class="linkbtn" id="t-other">Ask something else once…</button></p>
-    ${ready.enabled ? "" : `<p style="color:var(--warn)">${esc(ready.reason)}</p>`}`;
+    ${!ready.enabled ? `<p style="color:var(--warn)">${esc(ready.reason)}</p>`
+      : !hasRunner ? `<p style="color:var(--warn)">No runner for ${esc(t.runner)} on this machine. Start the console with --runners ${esc(t.runner)}=…</p>` : ""}`;
   $("#go").onclick = () => startRun(t.id, t.default_topic);
   $("#t-other").onclick = () => askOnce(t);
   $("#t-edit").onclick = () => editTemplate(t);
@@ -453,12 +452,22 @@ function drawLauncher() {
   else if (!t.builtin) $("#t-del").onclick = () => deleteTemplate(t);
 }
 
+// The limits that apply to a run are the agent's own: shown so nobody wonders
+// what stops a runaway task.
+function agentLimits(name) {
+  const a = overview && overview.agents.find((x) => x.name === name);
+  if (!a) return "";
+  const run = a.scope.task_budget, day = a.scope.daily_budget;
+  return (run.nanos ? `<span class="tag p">run ≤ ${esc(fmtUSD(run))}</span>` : `<span class="tag warn" title="Set a per-task budget on the agent to cap each run">no per-run cap</span>`)
+    + (day.nanos ? `<span class="tag p">day ≤ ${esc(fmtUSD(day))}</span>` : "");
+}
+
 $("#new-tmpl").addEventListener("click", () => editTemplate({ id: "", name: "", description: "", system_prompt: "", default_topic: "",
-  model: "openai/gpt-4o-mini", tools: ["litescraper/search"], payees: defaultPayees.slice(), run_budget_usd: "0.05", daily_budget_usd: "0.50", max_steps: 6, builtin: false }, true));
+  runner: runners[0] || "", builtin: false }, true));
 
 function editTemplate(t, fresh = false) {
   openModal(`<h3>${fresh ? "New task" : "Edit " + esc(t.name)}</h3>
-    <p class="muted" style="margin-top:-6px">${t.builtin ? "This is a built-in task. Your changes replace it here; Reset brings the original back." : "Instructions plus the tools and budgets they may use. The task runs as its own agent."}</p>
+    <p class="muted" style="margin-top:-6px">${t.builtin ? "This is a built-in task. Your changes replace it here; Reset brings the original back." : "What to look into, how, and which of your agents does it."}</p>
     <div class="grid3">
       <div class="field"><label>Id</label><input id="f-id" value="${esc(t.id)}" ${fresh ? "" : "disabled"} placeholder="my-topic"></div>
       <div class="field" style="grid-column: span 2"><label>Name</label><input id="f-name" value="${esc(t.name)}"></div>
@@ -466,22 +475,13 @@ function editTemplate(t, fresh = false) {
     <div class="field"><label>Description</label><input id="f-desc" value="${esc(t.description)}"></div>
     <div class="field"><label>Instructions (system prompt)</label><textarea id="f-sys" style="min-height:150px">${esc(t.system_prompt)}</textarea></div>
     <div class="field"><label>What a run looks into, unless you change it</label><input id="f-topic" value="${esc(t.default_topic)}"></div>
-    <div class="grid3">
-      <div class="field"><label>Model</label><input id="f-model" value="${esc(t.model)}"></div>
-      <div class="field"><label>Run budget (USD)</label><input id="f-run" value="${esc(t.run_budget_usd)}"></div>
-      <div class="field"><label>Daily budget (USD)</label><input id="f-day" value="${esc(t.daily_budget_usd)}"></div>
-    </div>
-    <div class="grid3">
-      <div class="field"><label>Max steps</label><input id="f-steps" type="number" min="1" max="20" value="${esc(t.max_steps)}"></div>
-      <div class="field" style="grid-column: span 2"><label>Tools, one per line${knownTools.length ? " · known: " + esc(knownTools.join(", ")) : ""}</label><textarea id="f-tools" style="min-height:60px">${esc(t.tools.join("\n"))}</textarea></div>
-    </div>
-    <div class="field"><label>Payees for paid tools (0x addresses)</label><textarea id="f-payees" style="min-height:50px">${esc(t.payees.join("\n"))}</textarea></div>
+    <div class="field"><label>Run by · the agent's own budgets limit each run and each day</label><select id="f-runner">${
+      [...new Set([...runners, t.runner].filter(Boolean))].map((n) => `<option ${n === t.runner ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></div>
     <div class="row between"><button class="ghost" id="f-cancel">Cancel</button><button class="btn" id="f-save">Save</button></div>`);
   $("#f-cancel").onclick = closeModal;
   $("#f-save").onclick = async () => {
     const body = { id: $("#f-id").value.trim(), name: $("#f-name").value, description: $("#f-desc").value, system_prompt: $("#f-sys").value,
-      default_topic: $("#f-topic").value, model: $("#f-model").value, tools: lines($("#f-tools").value), payees: lines($("#f-payees").value),
-      run_budget_usd: $("#f-run").value, daily_budget_usd: $("#f-day").value, max_steps: parseInt($("#f-steps").value, 10) || 0 };
+      default_topic: $("#f-topic").value, runner: $("#f-runner").value };
     try {
       const saved = await api("/api/templates", { method: "POST", body: JSON.stringify(body) });
       picked = saved.id; closeModal(); toast("saved"); loadRunTab();
@@ -545,43 +545,31 @@ async function pollRun() {
   } catch (e) { toast(e.message, true); }
 }
 
-// The steps of a run: what happened before the first model call, then one
-// group per model step holding the tool calls it made, then the ending.
-function groupSteps(events) {
-  const groups = [{ head: null, items: [] }];
-  for (const [i, e] of events.entries()) {
-    const startsStep = e.type === "model" && /^step \d+/.test(e.text);
-    if (startsStep) groups.push({ head: { ...e, i }, items: [] });
-    else if (e.type === "answer" || e.type === "done") groups.push({ head: null, items: [{ ...e, i }], tail: true });
-    else groups[groups.length - 1].items.push({ ...e, i });
+// What the gateway saw of a run, by kind: how many calls and what they cost.
+function callSummary(steps) {
+  const by = {};
+  for (const s of steps) {
+    const k = s.kind === "model" ? "model" : "tool";
+    by[k] = by[k] || { n: 0, nanos: 0 };
+    by[k].n++; by[k].nanos += s.cost.nanos;
   }
-  return groups.filter((g) => g.head || g.items.length);
+  return Object.entries(by).map(([k, v]) => `${v.n} ${k} ${v.n === 1 ? "call" : "calls"} ${esc(fmtUSD({ nanos: v.nanos }))}`).join(" · ");
 }
 const evLine = (e) => `<div class="ev ${esc(e.type)}${e.i >= seenEvents ? " new" : ""}"><span class="t">${esc(hhmmss(e.at))}</span>${esc(e.text)}</div>`;
 
 // What each saved file is, in words, for the buttons.
 const fileInfo = {
   "report.md": ["Report", "The answer the task wrote"],
-  "tools.md": ["Tool results", "What each tool call returned, word for word"],
-  "transcript.json": ["Trace", "Every message sent to the model and every reply, in order"],
+  "trace.jsonl": ["Trace", "Every message and tool call of the run, in order"],
+  "log.txt": ["Log", "Everything the agent printed while it worked"],
 };
 
 function drawRun(r) {
   const running = r.status === "running";
   if (stepsOpen === null) stepsOpen = running;
-  const groups = groupSteps(r.events);
-  const nSteps = groups.filter((g) => g.head).length;
-  const stepsHTML = groups.map((g, gi) => g.head
-    ? (() => {
-        const n = g.items.filter((e) => e.type === "tool").length;
-        const more = n ? `<span class="more">${n} tool ${n === 1 ? "call" : "calls"}</span>` : "";
-        return g.items.length
-          ? `<details class="step" data-g="${gi}" ${closedSteps.has(gi) ? "" : "open"}><summary>${evLine(g.head).replace("</div>", more + "</div>")}</summary><div class="stepbody">${g.items.map(evLine).join("")}</div></details>`
-          : `<div class="step plain">${evLine(g.head)}</div>`;
-      })()
-    : g.items.map(evLine).join("")).join("");
-  const calls = r.steps.length ? `<div class="calls"><span class="muted">Gateway calls</span>${r.steps.map((s) =>
-    `<span class="tag ${s.kind === "model" ? "" : s.kind === "payment" ? "p" : "t"}" title="${esc(s.status)}">${esc(s.name || s.kind)} · ${esc(fmtUSD(s.cost))}${s.status !== "ok" && s.status !== "running" ? " · " + esc(s.status) : ""}</span>`).join("")}</div>` : "";
+  const nSteps = r.events.filter((e) => e.type === "step").length;
+  const stepsHTML = r.events.map((e, i) => evLine({ ...e, i })).join("");
+  const calls = r.steps.length ? `<div class="calls"><span class="muted">Through the gateway:</span> ${callSummary(r.steps)}</div>` : "";
   const gw = r.gateway_events.length ? `<h3 style="margin-top:14px">The gateway said no</h3><table class="tbl"><tbody>${r.gateway_events.map((e) =>
     `<tr><td class="nowrap">${esc(hhmmss(e.at))}</td><td><span class="chip ${e.class === "refused" ? "warn" : e.class === "blocked" ? "blk" : "bad"}">${esc(e.class)}</span></td><td>${esc(e.name)}</td><td>${esc(e.status)}</td><td class="muted">${esc(e.detail)}</td></tr>`).join("")}</tbody></table>` : "";
   const files = r.files.length ? `<div class="files">${r.files.map((f) => {
@@ -597,7 +585,7 @@ function drawRun(r) {
       <button class="ghost small" id="r-close" title="Close">✕</button></div></div>
     ${r.error ? `<p style="color:var(--warn)">${esc(r.error)}</p>` : ""}
     ${files}<div id="filebox"></div>
-    <details class="steps" id="r-steps" ${stepsOpen ? "open" : ""}><summary>Steps <span class="muted">· ${nSteps} model ${nSteps === 1 ? "step" : "steps"}</span></summary>
+    <details class="steps" id="r-steps" ${stepsOpen ? "open" : ""}><summary>Steps <span class="muted">· ${nSteps}</span></summary>
       <div class="timeline">${stepsHTML}</div>${calls}</details>${gw}`;
   seenEvents = r.events.length;
   $("#r-close").onclick = closeRun;

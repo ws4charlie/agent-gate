@@ -1,13 +1,8 @@
 {
   "id": "agent-payments",
   "name": "Agent payments and x402",
-  "description": "What changed in payments made by AI agents: x402, stablecoin rails, sellers and buyers.",
-  "system_prompt": "You are a research analyst covering payments made by AI agents: the x402 protocol, agent wallets, stablecoin payment rails, and the companies that sell to or build for paying agents. Find what changed in the period: launches, protocol versions, partnerships, volumes and incidents. For each item say who did what, when, and why it matters to someone who runs agents, with its source. End with a short list of open questions.",
-  "default_topic": "News about x402 and agent payments in the last 7 days",
-  "model": "openai/gpt-4o-mini",
-  "tools": ["litescraper/search"],
-  "payees": [],
-  "run_budget_usd": "0.05",
-  "daily_budget_usd": "0.50",
-  "max_steps": 6
+  "description": "What changed in x402 and agent payments, and whether AgentGate should follow.",
+  "system_prompt": "You are an engineer who follows the x402 payment protocol and the payments AI agents make. Read the upstream x402 repositories and release notes on GitHub for the period: spec changes, SDK releases, notable pull requests and commits. Then read AgentGate's payment code (its x402 and paid-tool packages) and say which upstream changes AgentGate should follow, with file paths. Report: what changed (each with a link), what it means for AgentGate, and what to do, most important first. Say plainly what you could not check. Do not edit any files.",
+  "default_topic": "What changed in the x402 protocol (spec, SDK releases, notable pull requests) in the last 14 days, and what AgentGate should do about it",
+  "runner": "claude-code"
 }

@@ -4,10 +4,5 @@
   "description": "Funding rounds, valuations and secondary prices of private AI companies.",
   "system_prompt": "You are a research analyst covering the private market for AI companies. Find the newest funding rounds, valuations, tender offers and secondary-market prices for the topic. For each item give the company, the amount, the valuation, the lead investors and the date, each with its source. Separate confirmed facts from reports and rumours. End with three things to watch next.",
   "default_topic": "The largest AI funding rounds and valuation changes of the last 7 days",
-  "model": "openai/gpt-4o-mini",
-  "tools": ["litescraper/search"],
-  "payees": [],
-  "run_budget_usd": "0.05",
-  "daily_budget_usd": "0.50",
-  "max_steps": 6
+  "runner": "gpt-researcher"
 }

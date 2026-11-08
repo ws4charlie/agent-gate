@@ -116,9 +116,10 @@ type totals struct {
 }
 
 type runReady struct {
-	Enabled bool   `json:"enabled"`
-	Reason  string `json:"reason,omitempty"`
-	Gateway string `json:"gateway"`
+	Enabled bool     `json:"enabled"`
+	Reason  string   `json:"reason,omitempty"`
+	Gateway string   `json:"gateway"`
+	Runners []string `json:"runners"`
 }
 
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {

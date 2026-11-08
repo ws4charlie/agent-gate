@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Runs one console task with Claude Code (headless), through the AgentGate gateway.
+#
+# The console starts this with a small environment:
+#   AG_RUN_ID, AG_RUN_DIR, AG_TOPIC, AG_INSTRUCTIONS, AG_GATEWAY_URL
+# Your wrapper adds:
+#   AGENT_KEY   the gateway key of the agent this runs as
+# Optional: CC_MODEL (default claude-haiku-5-5), CC_DIRS (directories it may read,
+#   separated by ':'), CC_TOOLS (allowed tools), CC_MAX_TURNS (default 30).
+#
+# Claude Code gets its own empty config directory inside the run, so your own
+# Claude Code settings, memory and login are never read or changed. It may read
+# and search, not edit. Writes report.md and trace.jsonl to AG_RUN_DIR.
+set -euo pipefail
+: "${AGENT_KEY:?}" "${AG_RUN_ID:?}" "${AG_RUN_DIR:?}" "${AG_TOPIC:?}" "${AG_GATEWAY_URL:?}"
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+tools=${CC_TOOLS:-"WebFetch,WebSearch,Read,Grep,Glob,Bash(git log:*),Bash(git show:*),Bash(git clone:*),Bash(gh release:*),Bash(gh api:*)"}
+dirs=()
+IFS=: read -r -a extra <<< "${CC_DIRS:-}"
+for d in "${extra[@]}"; do [ -n "$d" ] && dirs+=(--add-dir "$d"); done
+mkdir -p "$AG_RUN_DIR/claude-config" "$AG_RUN_DIR/work"
+cd "$AG_RUN_DIR/work"
+printf '%s' "$AG_TOPIC" |
+  env -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR="$AG_RUN_DIR/claude-config" \
+    ANTHROPIC_BASE_URL="$AG_GATEWAY_URL" ANTHROPIC_AUTH_TOKEN="$AGENT_KEY" \
+    ANTHROPIC_CUSTOM_HEADERS="X-AgentGate-Run: $AG_RUN_ID
+X-AgentGate-Task: $AG_RUN_ID" \
+    DISABLE_TELEMETRY=1 DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    claude -p --model "${CC_MODEL:-claude-haiku-5-5}" --max-turns "${CC_MAX_TURNS:-30}" \
+      --output-format stream-json --verbose --append-system-prompt "${AG_INSTRUCTIONS:-}" \
+      --allowedTools "$tools" "${dirs[@]}" |
+  python3 -I "$here/claude_stream.py" "$AG_RUN_DIR"
+rm -rf "$AG_RUN_DIR/claude-config" "$AG_RUN_DIR/work"
