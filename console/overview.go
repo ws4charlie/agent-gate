@@ -374,6 +374,12 @@ type event struct {
 	Status string    `json:"status"`
 	Detail string    `json:"detail"`
 	RunID  string    `json:"run_id"`
+
+	// Amount is the money in the row: what was charged; for a refusal, what
+	// the request would have cost (not paid); for a payment the chain settled
+	// before the gateway could record it, what was settled.
+	Amount     usd    `json:"amount"`
+	AmountNote string `json:"amount_note"` // charged | not_paid | settled_late | ""
 }
 
 // eventFilter narrows the event feed. Class is "" for every problem
@@ -417,10 +423,19 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 // events returns the newest rows that are not plain success, newest first.
 // The classes match the overview's counts, so a count links to its rows.
 func (s *Server) events(ctx context.Context, f eventFilter) ([]event, error) {
-	q := `SELECT e.at, COALESCE(g.name, e.agent_id), e.kind, e.model, e.status, e.err, e.run_id,
-		COALESCE((SELECT d.rule || ': ' || d.reason FROM policy_decisions d WHERE d.request_id = e.request_id
-			AND d.decision <> 'allow' ORDER BY d.id DESC LIMIT 1), '')
-		FROM audit_events e LEFT JOIN agents g ON g.id = e.agent_id
+	// A row the reconciler wrote has no agent or tool of its own: take them
+	// from the request that made the same hold.
+	q := `SELECT e.at, COALESCE(g.name, src.agent_id), e.kind, src.model, e.status, e.err, e.run_id,
+		e.cost_nanos, e.unmetered_nanos, COALESCE(d.why, ''), COALESCE(d.amount, 0)
+		FROM audit_events e
+		CROSS JOIN LATERAL (SELECT COALESCE(NULLIF(e.agent_id, ''), o.agent_id, '') AS agent_id,
+				COALESCE(NULLIF(e.model, ''), o.model, '') AS model
+			FROM (SELECT 1) one LEFT JOIN LATERAL (SELECT agent_id, model FROM audit_events o
+				WHERE e.hold_id <> '' AND (e.agent_id = '' OR e.model = '') AND o.hold_id = e.hold_id
+					AND o.id <> e.id AND o.agent_id <> '' ORDER BY o.id LIMIT 1) o ON true) src
+		LEFT JOIN agents g ON g.id = src.agent_id
+		LEFT JOIN LATERAL (SELECT d.rule || ': ' || d.reason AS why, d.amount_nanos AS amount FROM policy_decisions d
+			WHERE d.request_id = e.request_id AND d.decision <> 'allow' ORDER BY d.id DESC LIMIT 1) d ON true
 		WHERE NOT (e.status = ANY($1))`
 	args := []any{[]string{"ok", "reconciled_settled", "duplicate_request"}}
 	arg := func(v any) string { args = append(args, v); return fmt.Sprintf("$%d", len(args)) }
@@ -441,7 +456,7 @@ func (s *Server) events(ctx context.Context, f eventFilter) ([]event, error) {
 	}
 	if f.Agent != "" {
 		p := arg(f.Agent)
-		q += ` AND (g.name = ` + p + ` OR e.agent_id = ` + p + `)`
+		q += ` AND (g.name = ` + p + ` OR src.agent_id = ` + p + `)`
 	}
 	if f.Since > 0 {
 		q += ` AND e.at > ` + arg(time.Now().Add(-f.Since))
@@ -456,10 +471,22 @@ func (s *Server) events(ctx context.Context, f eventFilter) ([]event, error) {
 	for rows.Next() {
 		var e event
 		var errText, why string
-		if err := rows.Scan(&e.At, &e.Agent, &e.Kind, &e.Name, &e.Status, &errText, &e.RunID, &why); err != nil {
+		var cost, unmetered, asked int64
+		if err := rows.Scan(&e.At, &e.Agent, &e.Kind, &e.Name, &e.Status, &errText, &e.RunID,
+			&cost, &unmetered, &why, &asked); err != nil {
 			return nil, err
 		}
 		e.Class = classify(e.Status)
+		switch {
+		case cost > 0:
+			e.Amount, e.AmountNote = dollars(cost), "charged"
+		case unmetered > 0:
+			e.Amount, e.AmountNote = dollars(unmetered), "settled_late"
+		case asked > 0:
+			e.Amount, e.AmountNote = dollars(asked), "not_paid"
+		default:
+			e.Amount = dollars(0)
+		}
 		e.Detail = errText
 		if why != "" {
 			e.Detail = why

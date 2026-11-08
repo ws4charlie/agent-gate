@@ -465,3 +465,55 @@ func TestRenameAndDeleteRun(t *testing.T) {
 		t.Fatalf("deleted run still there: %d", got)
 	}
 }
+
+// Each problem row says what money was involved, and a row the reconciler
+// wrote names the agent and tool of the payment it settled.
+func TestEventAmounts(t *testing.T) {
+	s := newTestServer(t, nil)
+	me := newAgent(t, s, "payer")
+	ctx := context.Background()
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := s.pool.Exec(ctx, q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A refused payment: nothing charged; the policy decision knows the price.
+	exec(`INSERT INTO audit_events (request_id, agent_id, kind, model, status, at) VALUES ('p1', $1, 'payment', 'search', 'policy_denied', now())`, me)
+	exec(`INSERT INTO policy_decisions (request_id, agent_id, kind, decision, rule, reason, amount_nanos, at)
+		VALUES ('p1', $1, 'payment', 'deny', 'scope_payee', 'payee not allowed', 10000000, now())`, me)
+	// A payment that settled on chain after the request: the reconciler's row
+	// carries only the hold.
+	exec(`INSERT INTO audit_events (request_id, agent_id, kind, model, status, hold_id, at) VALUES ('p2', $1, 'payment', 'search', 'settlement_pending', 'h2', now() - interval '1 minute')`, me)
+	exec(`INSERT INTO audit_events (request_id, kind, status, hold_id, unmetered_nanos, at) VALUES ('reconcile:h2', 'payment', 'reconciled_unmetered', 'h2', 10000000, now())`)
+	// A model call that failed after it was billed.
+	exec(`INSERT INTO audit_events (request_id, agent_id, kind, model, status, cost_nanos, at) VALUES ('m1', $1, 'model', 'm', 'upstream_error', 3000, now())`, me)
+
+	byReq := map[string]event{}
+	for _, class := range []string{"", "notice"} {
+		ev, err := s.events(ctx, eventFilter{Agent: "payer", Class: class, Limit: 50})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range ev {
+			byReq[e.Status] = e
+		}
+	}
+	for status, want := range map[string]struct {
+		note  string
+		nanos int64
+	}{
+		"policy_denied":        {"not_paid", 10000000},
+		"reconciled_unmetered": {"settled_late", 10000000},
+		"upstream_error":       {"charged", 3000},
+		"settlement_pending":   {"", 0},
+	} {
+		e, ok := byReq[status]
+		if !ok || e.AmountNote != want.note || e.Amount.Nanos != want.nanos {
+			t.Errorf("%s: %+v (found %v)", status, e, ok)
+		}
+	}
+	if n := byReq["reconciled_unmetered"]; n.Agent != "payer" || n.Name != "search" {
+		t.Errorf("the reconciled row should name its agent and tool: %+v", n)
+	}
+}
