@@ -14,10 +14,14 @@ type Challenge struct {
 	Required PaymentRequired
 }
 
-// Pick returns the first requirement this client can pay: exact, eip3009.
-func (c Challenge) Pick() (Requirements, error) {
+// Pick returns the first requirement this client can pay: exact, eip3009, on
+// network (a CAIP-2 id such as eip155:84532). Real sellers list several
+// networks, often mainnet first, so the network must match, not just the
+// scheme. An empty network accepts any.
+func (c Challenge) Pick(network string) (Requirements, error) {
 	for _, r := range c.Required.Accepts {
-		if r.Scheme == SchemeExact && (r.Extra.AssetTransferMethod == "" || r.Extra.AssetTransferMethod == "eip3009") {
+		if r.Scheme == SchemeExact && (r.Extra.AssetTransferMethod == "" || r.Extra.AssetTransferMethod == "eip3009") &&
+			(network == "" || r.Network == network) {
 			return r, nil
 		}
 	}

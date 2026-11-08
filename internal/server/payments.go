@@ -45,8 +45,18 @@ const (
 // name tools, they never supply URLs (no SSRF).
 type Payments struct {
 	Wallet  *wallet.Wallet
-	Tools   map[string]string // tool name -> URL, for POST /v1/payments
+	Tools   map[string]string // tool name -> URL, for POST /v1/payments; "GET <url>" for a GET resource
 	Fetcher x402.Fetcher
+}
+
+// toolTarget splits a Tools entry into method and URL. A plain URL is called
+// with POST and the agent's input as the body; "GET <url>" is a fixed resource,
+// as most x402 data sellers publish.
+func toolTarget(v string) (method, url string) {
+	if u, ok := strings.CutPrefix(v, "GET "); ok {
+		return http.MethodGet, strings.TrimSpace(u)
+	}
+	return http.MethodPost, v
 }
 
 type payReq struct {
@@ -103,18 +113,23 @@ func (c *call) pay() {
 		return
 	}
 	c.ev.Model = in.Tool
-	url, ok := p.Tools[in.Tool]
+	target, ok := p.Tools[in.Tool]
 	if !ok {
 		c.fail(http.StatusNotFound, StatusUnknownTool, "unknown_tool", "no such paid tool", nil)
 		return
 	}
+	method, url := toolTarget(target)
 	input := []byte(in.Input)
 	if len(input) == 0 {
 		input = []byte("{}")
 	}
+	send := input
+	if method == http.MethodGet { // a GET resource is the URL itself; input is not sent
+		send = nil
+	}
 
 	// 1. First request, unpaid: learn the price and payee from the 402.
-	ch, free, err := p.Fetcher.Probe(c.ctx, http.MethodPost, url, input)
+	ch, free, err := p.Fetcher.Probe(c.ctx, method, url, send)
 	if err != nil {
 		s.Log.Error("probe", "request_id", c.ev.RequestID, "err", err)
 		c.fail(http.StatusBadGateway, StatusPaymentFailed, "tool_unreachable", "paid tool did not answer", nil)
@@ -128,7 +143,7 @@ func (c *call) pay() {
 		c.finish(audit.StatusOK)
 		return
 	}
-	req, err := ch.Pick()
+	req, err := ch.Pick(p.Wallet.Network())
 	atomic, aok := wallet.Nanos(parseBig(req.Amount))
 	if err != nil || !aok || atomic <= 0 {
 		c.fail(http.StatusBadGateway, StatusPaymentFailed, "bad_payment_requirements", "paid tool sent unusable requirements", nil)
@@ -137,7 +152,7 @@ func (c *call) pay() {
 	c.payChallenge(payTarget{
 		Tool: in.Tool, PolicyTool: in.Tool, Input: input, Ch: ch, Req: req, Amount: atomic,
 		Send: func(ctx context.Context, pl x402.PaymentPayload) (*http.Response, error) {
-			return p.Fetcher.Pay(ctx, http.MethodPost, url, input, pl)
+			return p.Fetcher.Pay(ctx, method, url, send, pl)
 		},
 		OK: func(out []byte, _ string, sr x402.SettleResponse, charged money.Nanos) {
 			var result json.RawMessage = out
