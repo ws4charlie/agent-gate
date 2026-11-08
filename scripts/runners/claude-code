@@ -6,7 +6,8 @@
 # Your wrapper adds:
 #   AGENT_KEY   the gateway key of the agent this runs as
 # Optional: CC_MODEL (default claude-haiku-5-5), CC_DIRS (directories it may read,
-#   separated by ':'), CC_TOOLS (allowed tools), CC_MAX_TURNS (default 30).
+#   separated by ':'), CC_TOOLS (allowed tools), CC_DENY (more read rules to
+#   refuse, comma separated), CC_MAX_TURNS (default 30).
 #
 # Claude Code gets its own empty config directory inside the run, so your own
 # Claude Code settings, memory and login are never read or changed. It may read
@@ -15,6 +16,11 @@ set -euo pipefail
 : "${AGENT_KEY:?}" "${AG_RUN_ID:?}" "${AG_RUN_DIR:?}" "${AG_TOPIC:?}" "${AG_GATEWAY_URL:?}"
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 tools=${CC_TOOLS:-"WebFetch,WebSearch,Read,Grep,Glob,Bash(git log:*),Bash(git show:*),Bash(git clone:*),Bash(gh release:*),Bash(gh api:*)"}
+# It reads web pages, and a page can carry instructions. So it may never read
+# where secrets live: system and service settings, your config and SSH keys,
+# and the console's own key (two levels above the run's folder).
+data=$(cd "$AG_RUN_DIR/../.." && pwd)
+deny="Read(//run/**),Read(//etc/**),Read(//proc/**),Read(//var/lib/**),Read(~/.config/**),Read(~/.ssh/**),Read(/$data/console.key)${CC_DENY:+,$CC_DENY}"
 dirs=()
 IFS=: read -r -a extra <<< "${CC_DIRS:-}"
 for d in "${extra[@]}"; do [ -n "$d" ] && dirs+=(--add-dir "$d"); done
@@ -28,6 +34,6 @@ X-AgentGate-Task: $AG_RUN_ID" \
     DISABLE_TELEMETRY=1 DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
     claude -p --model "${CC_MODEL:-claude-haiku-5-5}" --max-turns "${CC_MAX_TURNS:-30}" \
       --output-format stream-json --verbose --append-system-prompt "${AG_INSTRUCTIONS:-}" \
-      --allowedTools "$tools" "${dirs[@]}" |
+      --allowedTools "$tools" --disallowedTools "$deny" "${dirs[@]}" |
   python3 -I "$here/claude_stream.py" "$AG_RUN_DIR"
 rm -rf "$AG_RUN_DIR/claude-config" "$AG_RUN_DIR/work"
