@@ -111,7 +111,13 @@ func (s *Server) Handler() http.Handler {
 	api := http.NewServeMux()
 	mux := http.NewServeMux()
 	web, _ := fs.Sub(webFS, "web")
-	mux.Handle("/", http.FileServerFS(web))
+	// The page is embedded in the binary, with no dates to revalidate against:
+	// tell the browser to ask every time, so a restarted console's new page loads.
+	files := http.FileServerFS(web)
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		files.ServeHTTP(w, r)
+	}))
 	mux.Handle("/api/", s.requireKey(api))
 
 	api.HandleFunc("GET /api/overview", s.handleOverview)

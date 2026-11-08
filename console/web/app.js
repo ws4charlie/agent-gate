@@ -4,7 +4,12 @@
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const fmtUSD = (u) => "$" + trimUSD(u && typeof u === "object" ? (u.usd || String((u.nanos || 0) / 1e9)) : u);
+// Money on screen: cents above a dollar, four places below it. Exact values
+// stay in the ledger; the limits form shows them unrounded.
+const fmtUSD = (u) => {
+  const n = Number(u && typeof u === "object" ? (u.nanos || 0) / 1e9 : u) || 0;
+  return n === 0 ? "$0" : "$" + (Math.abs(n) >= 1 ? n.toFixed(2) : trimUSD(n.toFixed(4)));
+};
 function trimUSD(s) {
   s = String(s ?? "0");
   if (!s.includes(".")) return s;
@@ -97,16 +102,32 @@ function toast(msg, err = false) {
   toast.h = setTimeout(() => t.classList.add("hide"), err ? 6000 : 2500);
 }
 
-// ---- tabs ----
-let tab = "overview";
-document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => show(b.dataset.tab)));
-function show(name) {
-  tab = name;
-  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
-  document.querySelectorAll(".tab").forEach((s) => s.classList.toggle("on", s.id === name));
-  if (name === "run") loadRunTab();
-  if (name === "events") loadEvents();
+// ---- routes ----
+// The address says what is on screen, so a count can link to its rows and the
+// back button works: #overview, #agents, #agents/<name>,
+// #events?agent=<name>&class=<class>&since=24h, #run.
+let tab = "overview", agentSel = "", evQuery = { agent: "", class: "", since: "" };
+const evHref = (q) => "#events?" + new URLSearchParams(Object.entries(q).filter(([, v]) => v)).toString();
+const agentHref = (name) => "#agents/" + encodeURIComponent(name);
+document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => { location.hash = b.dataset.tab; }));
+function route() {
+  const h = location.hash.replace(/^#/, "");
+  const [path, qs = ""] = h.split("?");
+  const [name, sub = ""] = path.split("/");
+  tab = ["overview", "agents", "run", "events"].includes(name) ? name : "overview";
+  if (tab === "agents") agentSel = decodeURIComponent(sub);
+  if (tab === "events") {
+    const q = new URLSearchParams(qs);
+    evQuery = { agent: q.get("agent") || "", class: q.get("class") || "", since: q.get("since") || "" };
+  }
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+  document.querySelectorAll(".tab").forEach((s) => s.classList.toggle("on", s.id === tab));
+  if (tab === "run") loadRunTab();
+  if (tab === "events") { drawEventFilters(); loadEvents(); }
+  if (tab === "agents" && overview) drawAgentsTab(overview);
+  window.scrollTo(0, 0);
 }
+window.addEventListener("hashchange", route);
 
 // ---- animated numbers ----
 const shown = new Map();
@@ -124,18 +145,18 @@ function countTo(el, key, value, fmt) {
 }
 const usdNum = (n) => "$" + (n < 1 ? n.toFixed(4) : n.toFixed(2));
 const intNum = (n) => Math.round(n).toLocaleString();
+const usdOf = (u) => u.nanos / 1e9;
 
-// ---- overview ----
+// ---- data ----
 let overview = null;
 async function loadOverview() {
   try {
     overview = await api("/api/overview");
     $("#clock").textContent = "live · " + hhmmss(overview.at);
     $(".dot").classList.remove("off");
-    drawTiles(overview);
-    drawAgents(overview);
-    drawBars($("#models"), overview.models, "var(--model)");
-    drawBars($("#tools"), overview.tools, "var(--tool)");
+    drawOverview(overview);
+    if (tab === "agents") drawAgentsTab(overview);
+    fillAgentSelect(overview);
   } catch (e) {
     if (needKey) return;
     $("#clock").textContent = "console unreachable";
@@ -143,86 +164,161 @@ async function loadOverview() {
   }
 }
 
-function drawTiles(o) {
-  const T = o.totals;
-  const tiles = [
-    { k: "Spend today", n: T.today.nanos / 1e9, f: usdNum, s: "all agents, counted against budgets", g: "var(--accent)" },
-    { k: "Spend · 7 days", n: T.spend_7d.nanos / 1e9, f: usdNum, s: "models + tools + payments", g: "var(--accent2)" },
-    { k: "Calls · 24h", n: T.calls_24h, f: intNum, s: T.active_agents + " active agents", g: "var(--ok)" },
-    { k: "Refused · 24h", n: T.refused_24h, f: intNum, s: "policy, budget, kill switch", g: "var(--warn)" },
-    { k: "Errors · 24h", n: T.errors_24h, f: intNum, s: "upstream and internal", g: "var(--bad)" },
-    { k: "Blocked · 24h", n: T.blocked_24h, f: intNum, s: "tool output screened out", g: "var(--block)" },
-  ];
-  if (o.wallet) tiles.push({ k: "Wallet USDC", text: o.wallet.usdc ? "$" + trimUSD(o.wallet.usdc) : "—",
-    s: o.wallet.error ? o.wallet.error : o.wallet.address.slice(0, 6) + "…" + o.wallet.address.slice(-4) + " on chain", g: "var(--pay)" });
-  const box = $("#tiles");
-  if (box.children.length !== tiles.length) {
-    box.innerHTML = tiles.map((t, i) => `<div class="tile" style="--glow:${t.g}"><div class="k">${esc(t.k)}</div><div class="v" id="tv${i}">0</div><div class="s" id="ts${i}"></div></div>`).join("");
+// Tiles keep their elements between polls so the numbers can count up.
+// A tile with href is a link: every count opens the rows behind it.
+function drawTiles(box, id, tiles) {
+  const sig = tiles.map((t) => t.k + (t.href || "")).join("|");
+  if (box.dataset.sig !== sig) {
+    box.dataset.sig = sig;
+    box.innerHTML = tiles.map((t, i) => {
+      const tagName = t.href ? "a" : "div";
+      return `<${tagName} class="tile${t.href ? " link" : ""}" ${t.href ? `href="${esc(t.href)}"` : ""} style="--glow:${t.g}">
+        <div class="k">${esc(t.k)}</div><div class="v" id="${id}v${i}">0</div><div class="s" id="${id}s${i}"></div></${tagName}>`;
+    }).join("");
   }
   tiles.forEach((t, i) => {
-    $("#ts" + i).textContent = t.s;
-    if (t.text !== undefined) $("#tv" + i).textContent = t.text;
-    else countTo($("#tv" + i), "tile" + i, t.n, t.f);
+    $(`#${id}s${i}`).textContent = t.s || "";
+    if (t.text !== undefined) $(`#${id}v${i}`).textContent = t.text;
+    else countTo($(`#${id}v${i}`), id + i, t.n, t.f);
   });
 }
 
-function spark(values, color) {
-  const w = 300, h = 38, max = Math.max(...values, 1e-12);
+function activityTiles(x, agent) {
+  const q = (cls) => evHref({ agent, class: cls, since: "24h" });
+  return [
+    { k: "Calls", n: x.calls_24h, f: intNum, s: agent ? "every request" : x.active_agents + " active agents", g: "var(--ok)", href: agent ? "" : "#agents" },
+    { k: "Refused", n: x.refused_24h, f: intNum, s: "said no on purpose", g: "var(--warn)", href: q("refused") },
+    { k: "Errors", n: x.errors_24h, f: intNum, s: "upstream and internal", g: "var(--bad)", href: q("error") },
+    { k: "Blocked", n: x.blocked_24h, f: intNum, s: "tool output screened", g: "var(--block)", href: q("blocked") },
+  ];
+}
+
+// ---- overview tab: totals across every agent ----
+function drawOverview(o) {
+  const T = o.totals;
+  const spend = [
+    { k: "Today", n: usdOf(T.today), f: usdNum, s: "all agents", g: "var(--accent)" },
+    { k: "7 days", n: usdOf(T.spend_7d), f: usdNum, s: "models, tools, payments", g: "var(--accent2)" },
+  ];
+  if (o.wallet) spend.push({ k: "Wallet USDC", text: o.wallet.usdc ? "$" + trimUSD(o.wallet.usdc) : "—",
+    s: o.wallet.error ? o.wallet.error : short(o.wallet.address), g: "var(--pay)" });
+  drawTiles($("#ov-spend"), "ovs", spend);
+  drawTiles($("#ov-activity"), "ova", activityTiles(T, ""));
+  drawBars($("#ov-models"), o.models, "var(--model)");
+  drawBars($("#ov-tools"), o.tools, "var(--tool)");
+}
+
+function drawBars(box, items, color) {
+  const html = !items.length ? `<p class="muted">Nothing in the last 7 days.</p>` : (() => {
+    const max = Math.max(...items.map((i) => i.spend.nanos), 1);
+    return items.slice(0, 10).map((i) => `<div class="bar">
+      <div class="lbl"><span>${esc(i.name)} <span class="muted">· ${i.calls} calls${i.kind === "payment" ? " · x402" : ""}</span></span><span>${esc(fmtUSD(i.spend))}</span></div>
+      <div class="meter"><i style="width:${(i.spend.nanos / max) * 100}%;background:${i.kind === "payment" ? "var(--pay)" : color}"></i></div></div>`).join("");
+  })();
+  if (box.dataset.html !== html) { box.dataset.html = html; box.innerHTML = html; }
+}
+
+// ---- agents tab ----
+const statusDot = (a) => `<span class="sdot ${a.status === "active" ? "ok" : "bad"}" title="${esc(a.status)}"></span>`;
+
+function drawAgentsTab(o) {
+  const a = o.agents.find((x) => x.name === agentSel);
+  if (agentSel && !a) { agentSel = ""; }
+  const pills = [`<a class="pill ${agentSel ? "" : "on"}" href="#agents">All agents</a>`,
+    ...o.agents.map((x) => `<a class="pill ${x.name === agentSel ? "on" : ""}" href="${agentHref(x.name)}">${statusDot(x)}${esc(x.name)}</a>`)].join("");
+  setHTML($("#agent-pills"), pills);
+  if (a) drawAgentDetail(a); else drawAgentCards(o.agents);
+}
+
+// setHTML redraws only when something changed, so a poll does not disturb
+// hover or focus.
+function setHTML(el, html) { if (el.dataset.html !== html) { el.dataset.html = html; el.innerHTML = html; return true; } return false; }
+
+function budgetLine(a) {
+  const b = a.scope.daily_budget.nanos, pct = b ? Math.min(100, (a.today.nanos / b) * 100) : 0;
+  return `<div class="row between"><span>Today <b>${esc(fmtUSD(a.today))}</b></span><span class="muted">${b ? "of " + esc(fmtUSD(a.scope.daily_budget)) + " daily" : "no daily cap"}</span></div>
+    <div class="meter"><i class="${pct > 80 ? "hot" : ""}" style="width:${pct}%"></i></div>`;
+}
+
+// A card answers two questions: how much, and is anything wrong. Only counts
+// that are not zero are shown, and each opens its events.
+function problemLinks(a) {
+  const parts = [`${intNum(a.calls_24h)} calls`];
+  for (const [n, cls, word, color] of [[a.refused_24h, "refused", "refused", "warn"], [a.errors_24h, "error", "errors", "bad"], [a.blocked_24h, "blocked", "blocked", "blk"]]) {
+    if (n) parts.push(`<a class="plink ${color}" href="${evHref({ agent: a.name, class: cls, since: "24h" })}">${intNum(n)} ${word}</a>`);
+  }
+  return parts.join(" · ");
+}
+
+function drawAgentCards(agents) {
+  const html = agents.length ? `<div class="agents">${agents.map((a) => `
+    <div class="agent ${a.status !== "active" ? "killed" : ""}" data-go="${esc(agentHref(a.name))}" tabindex="0">
+      <div class="row between"><span class="name">${statusDot(a)}${esc(a.name)}</span>
+        <span class="row">${a.console ? `<span class="chip acc">template</span>` : ""}${a.status !== "active" ? `<span class="chip bad">${esc(a.status)}</span>` : ""}<span class="chev">›</span></span></div>
+      ${budgetLine(a)}
+      <div class="sub">7 days ${esc(fmtUSD(a.spend_7d.total))} · ${problemLinks(a)}</div>
+    </div>`).join("")}</div>` : `<p class="muted">No agents yet.</p>`;
+  if (setHTML($("#agents-body"), html)) {
+    $("#agents-body").querySelectorAll("[data-go]").forEach((el) => {
+      const go = (e) => { if (!e.target.closest("a")) location.hash = el.dataset.go; };
+      el.addEventListener("click", go);
+      el.addEventListener("keydown", (e) => { if (e.key === "Enter") go(e); });
+    });
+  }
+}
+
+function spark(values, color, h = 38) {
+  const w = 300, max = Math.max(...values, 1e-12);
   const pts = values.map((v, i) => [(i / (values.length - 1)) * w, h - 3 - (v / max) * (h - 8)]);
   const line = pts.map((p) => p.map((x) => x.toFixed(1)).join(",")).join(" ");
-  const id = "g" + Math.random().toString(36).slice(2, 8);
-  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+  const id = "g" + color.replace(/\W/g, "") + h;
+  return `<svg class="spark" style="height:${h}px" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
     <defs><linearGradient id="${id}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".45"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
     <polygon fill="url(#${id})" points="0,${h} ${line} ${w},${h}"/>
     <polyline fill="none" stroke="${color}" stroke-width="1.6" points="${line}"/></svg>`;
 }
 
-function drawAgents(o) {
-  const box = $("#agents");
-  if (!o.agents.length) { box.innerHTML = `<p class="muted">No agents yet.</p>`; return; }
-  box.innerHTML = o.agents.map((a) => {
-    const sc = a.scope, budget = sc.daily_budget.nanos;
-    const pct = budget ? Math.min(100, (a.today.nanos / budget) * 100) : 0;
-    const k = a.spend_7d, tot = k.total.nanos || 1;
-    const status = a.status === "active" ? `<span class="chip ok">active</span>` : `<span class="chip bad">${esc(a.status)}</span>`;
-    const tags = [
-      ...sc.models.map((m) => `<span class="tag">${esc(m)}</span>`),
-      ...sc.tools.map((t) => `<span class="tag t">${esc(t)}</span>`),
-      ...sc.payees.map((p) => `<span class="tag p">pay ${esc(p.slice(0, 6))}…${esc(p.slice(-4))}</span>`),
-    ].join("") || `<span class="muted">nothing allowed</span>`;
-    return `<div class="agent ${a.status !== "active" ? "killed" : ""}">
-      <div class="row between"><span class="name">${esc(a.name)}</span><span class="row">${a.console ? `<span class="chip acc">template</span>` : ""}${status}</span></div>
-      <div class="muted" style="font-size:12px">last seen ${esc(ago(a.last_seen))} · balance ${esc(fmtUSD(a.available))}</div>
-      <div style="margin-top:10px" class="row between"><span>Today ${esc(fmtUSD(a.today))}</span><span class="muted">${budget ? "of " + esc(fmtUSD(sc.daily_budget)) + " daily" : "no daily cap"}</span></div>
-      <div class="meter"><i class="${pct > 80 ? "hot" : ""}" style="width:${budget ? pct : 0}%"></i></div>
-      <div class="kv">
-        <div><b>${a.calls_24h}</b><span>calls 24h</span></div>
-        <div><b style="color:var(--warn)">${a.refused_24h}</b><span>refused</span></div>
-        <div><b style="color:var(--bad)">${a.errors_24h}</b><span>errors</span></div>
-        <div><b style="color:var(--block)">${a.blocked_24h}</b><span>blocked</span></div>
-      </div>
-      <div class="row between" style="font-size:12px"><span>7 days ${esc(fmtUSD(k.total))}</span>
-        <span class="muted"><span style="color:var(--model)">■</span> model ${esc(fmtUSD(k.model))} <span style="color:var(--tool)">■</span> tool ${esc(fmtUSD(k.tool))} <span style="color:var(--pay)">■</span> pay ${esc(fmtUSD(k.payment))}</span></div>
-      <div class="stack"><i style="width:${(k.model.nanos / tot) * 100}%;background:var(--model)"></i><i style="width:${(k.tool.nanos / tot) * 100}%;background:var(--tool)"></i><i style="width:${(k.payment.nanos / tot) * 100}%;background:var(--pay)"></i></div>
-      ${spark(a.hourly, a.status === "active" ? "#22d3ee" : "#f87171")}
-      <div class="muted" style="font-size:11px">spend per hour, last 24h</div>
-      <div class="tags">${tags}</div>
-      <div class="actions">
-        <button class="ghost small" data-edit="${esc(a.id)}">Limits &amp; allowlists</button>
-        ${a.status === "active" ? `<button class="btn danger small" data-kill="${esc(a.id)}">Kill</button>` : a.status === "killed" ? `<button class="btn go small" data-resume="${esc(a.id)}">Resume</button>` : ""}
-      </div></div>`;
-  }).join("");
-  box.querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", () => editAgent(b.dataset.edit)));
-  box.querySelectorAll("[data-kill]").forEach((b) => b.addEventListener("click", () => agentAction(b.dataset.kill, "kill")));
-  box.querySelectorAll("[data-resume]").forEach((b) => b.addEventListener("click", () => agentAction(b.dataset.resume, "resume")));
-}
+const tagList = (items, cls, fmt = (x) => x) => items.length ? items.map((x) => `<span class="tag ${cls}">${esc(fmt(x))}</span>`).join("") : `<span class="muted">none</span>`;
+const short = (p) => p.slice(0, 6) + "…" + p.slice(-4);
 
-function drawBars(box, items, color) {
-  if (!items.length) { box.innerHTML = `<p class="muted">Nothing in the last 7 days.</p>`; return; }
-  const max = Math.max(...items.map((i) => i.spend.nanos), 1);
-  box.innerHTML = items.slice(0, 10).map((i) => `<div class="bar">
-    <div class="lbl"><span>${esc(i.name)} <span class="muted">· ${i.calls} calls${i.kind === "payment" ? " · x402" : ""}</span></span><span>${esc(fmtUSD(i.spend))}</span></div>
-    <div class="meter"><i style="width:${(i.spend.nanos / max) * 100}%;background:${i.kind === "payment" ? "var(--pay)" : color}"></i></div></div>`).join("");
+function drawAgentDetail(a) {
+  const sc = a.scope, k = a.spend_7d, peak = Math.max(...a.hourly);
+  const limit = (u, word) => (u.nanos ? `${esc(fmtUSD(u))} ${word}` : "");
+  const limits = [limit(sc.daily_budget, "per day"), limit(sc.task_budget, "per task"), limit(sc.velocity_per_minute, "per minute"),
+    sc.approval_threshold.nanos ? "approval above " + esc(fmtUSD(sc.approval_threshold)) : ""].filter(Boolean).join(" · ") || "no spending limits";
+  const html = `
+    <div class="card dhead">
+      <div><div class="name big">${statusDot(a)}${esc(a.name)} ${a.console ? `<span class="chip acc">template</span>` : ""}${a.status !== "active" ? ` <span class="chip bad">${esc(a.status)}</span>` : ""}</div>
+        <div class="muted">last seen ${esc(ago(a.last_seen))} · balance ${esc(fmtUSD(a.available))}</div></div>
+      <div class="row"><button class="ghost" data-edit="${esc(a.id)}">Limits &amp; allowlists</button>
+        ${a.status === "active" ? `<button class="btn danger" data-kill="${esc(a.id)}">Kill</button>` : a.status === "killed" ? `<button class="btn go" data-resume="${esc(a.id)}">Resume</button>` : ""}</div>
+    </div>
+    <div class="groups">
+      <div class="group"><h2>Spend</h2><div class="card">${budgetLine(a)}
+        <div class="row between sub"><span>7 days <b>${esc(fmtUSD(k.total))}</b></span>
+          <span class="muted"><span style="color:var(--model)">■</span> model ${esc(fmtUSD(k.model))} <span style="color:var(--tool)">■</span> tool ${esc(fmtUSD(k.tool))} <span style="color:var(--pay)">■</span> pay ${esc(fmtUSD(k.payment))}</span></div></div></div>
+      <div class="group"><h2>Activity · last 24 hours</h2><div class="tiles" id="ag-activity"></div></div>
+    </div>
+    <div class="card"><div class="row between"><h3>Spend per hour · last 24 hours</h3><span class="muted">peak ${esc(usdNum(peak))}/h</span></div>
+      ${spark(a.hourly, a.status === "active" ? "#22d3ee" : "#f87171", 90)}
+      <div class="row between axis"><span>24 hours ago</span><span>12 hours ago</span><span>now</span></div></div>
+    <div class="card"><h3>Model spend · 7 days</h3><div id="ag-models" class="bars"></div></div>
+    <div class="card"><h3>Tool &amp; payment spend · 7 days</h3><div id="ag-tools" class="bars"></div></div>
+    <div class="card allowed"><div class="row between"><h3>Allowed</h3><button class="ghost small" data-edit="${esc(a.id)}">Edit</button></div>
+      <div class="arow"><span class="muted">Models</span><div class="tags">${tagList(sc.models, "")}</div></div>
+      <div class="arow"><span class="muted">Tools</span><div class="tags">${tagList(sc.tools, "t")}</div></div>
+      <div class="arow"><span class="muted">Payees</span><div class="tags">${tagList(sc.payees, "p", short)}</div></div>
+      <div class="arow"><span class="muted">Limits</span><div>${limits}</div></div>
+    </div>`;
+  const body = $("#agents-body");
+  if (setHTML(body, html)) {
+    body.querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", () => editAgent(b.dataset.edit)));
+    body.querySelectorAll("[data-kill]").forEach((b) => b.addEventListener("click", () => agentAction(b.dataset.kill, "kill")));
+    body.querySelectorAll("[data-resume]").forEach((b) => b.addEventListener("click", () => agentAction(b.dataset.resume, "resume")));
+  }
+  drawTiles($("#ag-activity"), "aga", activityTiles(a, a.name));
+  drawBars($("#ag-models"), a.models, "var(--model)");
+  drawBars($("#ag-tools"), a.tools, "var(--tool)");
 }
 
 async function agentAction(id, what) {
@@ -457,31 +553,50 @@ function markdown(src) {
 }
 
 // ---- events tab ----
-let evFilter = "all", lastEvents = [];
-document.querySelectorAll("#ev-filters button").forEach((b) => b.addEventListener("click", () => {
-  evFilter = b.dataset.f;
-  document.querySelectorAll("#ev-filters button").forEach((x) => x.classList.toggle("on", x === b));
-  drawEvents();
-}));
+let lastEvents = [];
+function fillAgentSelect(o) {
+  const html = `<option value="">All agents</option>` + o.agents.map((a) => `<option value="${esc(a.name)}">${esc(a.name)}</option>`).join("");
+  if (setHTML($("#ev-agent"), html)) $("#ev-agent").value = evQuery.agent;
+}
+function drawEventFilters() {
+  const sel = $("#ev-agent");
+  if (evQuery.agent && ![...sel.options].some((o) => o.value === evQuery.agent)) sel.insertAdjacentHTML("beforeend", `<option value="${esc(evQuery.agent)}">${esc(evQuery.agent)}</option>`);
+  sel.value = evQuery.agent;
+  document.querySelectorAll("#ev-filters button").forEach((b) => b.classList.toggle("on", b.dataset.f === evQuery.class));
+  $("#ev-since").classList.toggle("hide", !evQuery.since);
+  $("#ev-since").textContent = (evQuery.since === "24h" ? "last 24 hours" : "last " + evQuery.since) + " ✕";
+}
+$("#ev-agent").addEventListener("change", (e) => { location.hash = evHref({ ...evQuery, agent: e.target.value }); });
+document.querySelectorAll("#ev-filters button").forEach((b) => b.addEventListener("click", () => { location.hash = evHref({ ...evQuery, class: b.dataset.f }); }));
+$("#ev-since").addEventListener("click", () => { location.hash = evHref({ ...evQuery, since: "" }); });
+
 async function loadEvents() {
   try {
-    const { events } = await api("/api/events");
+    const q = new URLSearchParams(Object.entries(evQuery).filter(([, v]) => v)).toString();
+    const { events } = await api("/api/events" + (q ? "?" + q : ""));
     lastEvents = events;
-    const recent = events.filter((e) => Date.now() - new Date(e.at) < 3600e3).length;
-    const badge = $("#ev-badge");
-    badge.textContent = recent; badge.classList.toggle("hide", !recent);
-    if (tab === "events") drawEvents();
-  } catch (e) { /* the overview shows the connection state */ }
+    drawEvents();
+  } catch (e) { /* the header shows the connection state */ }
 }
+// The badge counts problems in the last hour, whatever the filters say.
+async function loadBadge() {
+  try {
+    const { events } = await api("/api/events?since=1h");
+    const badge = $("#ev-badge");
+    badge.textContent = events.length; badge.classList.toggle("hide", !events.length);
+  } catch (e) { /* the header shows the connection state */ }
+}
+const when = (t) => new Date(t).toLocaleString([], { month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" });
 function drawEvents() {
-  const rows = lastEvents.filter((e) => evFilter === "all" || e.class === evFilter);
-  $("#ev-body").innerHTML = rows.length ? rows.map((e) => `<tr><td>${esc(new Date(e.at).toLocaleString())}</td><td>${esc(e.agent)}</td>
+  setHTML($("#ev-body"), lastEvents.length ? lastEvents.map((e) => `<tr><td class="nowrap">${esc(when(e.at))}</td>
+    <td>${e.agent ? `<a href="${esc(agentHref(e.agent))}">${esc(e.agent)}</a>` : `<span class="muted">—</span>`}</td>
     <td><span class="chip ${e.class === "refused" ? "warn" : e.class === "blocked" ? "blk" : e.class === "notice" ? "" : "bad"}">${esc(e.class)}</span></td>
     <td>${esc(e.kind)}</td><td>${esc(e.name)}</td><td>${esc(e.status)}</td><td class="muted">${esc(e.detail)}</td></tr>`).join("")
-    : `<tr><td colspan="7" class="muted">Nothing here. Good.</td></tr>`;
+    : `<tr><td colspan="7" class="muted">Nothing here. Good.</td></tr>`);
 }
 
 // ---- start ----
-loadOverview(); loadEvents();
-setInterval(() => { if (tab === "overview") loadOverview(); }, 4000);
-setInterval(loadEvents, 10000);
+route();
+loadOverview(); loadBadge();
+setInterval(() => { if (tab === "overview" || tab === "agents") loadOverview(); }, 4000);
+setInterval(() => { loadBadge(); if (tab === "events") loadEvents(); }, 10000);

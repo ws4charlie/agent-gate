@@ -11,6 +11,7 @@
   <div class="brand"><span class="logo"></span>AgentGate <b>Console</b></div>
   <nav id="tabs">
     <button data-tab="overview" class="on">Overview</button>
+    <button data-tab="agents">Agents</button>
     <button data-tab="run">Run</button>
     <button data-tab="events">Events <span id="ev-badge" class="badge hide">0</span></button>
   </nav>
@@ -18,15 +19,20 @@
 </header>
 
 <main>
-  <!-- Overview -->
+  <!-- Overview: totals across every agent -->
   <section id="overview" class="tab on">
-    <div class="tiles" id="tiles"></div>
-    <h2>Agents</h2>
-    <div class="agents" id="agents"></div>
-    <div class="two">
-      <div class="card"><h3>Model spend · 7 days</h3><div id="models" class="bars"></div></div>
-      <div class="card"><h3>Tool &amp; payment spend · 7 days</h3><div id="tools" class="bars"></div></div>
+    <div class="groups">
+      <div class="group"><h2>Spend</h2><div class="tiles" id="ov-spend"></div></div>
+      <div class="group"><h2>Activity · last 24 hours</h2><div class="tiles" id="ov-activity"></div></div>
     </div>
+    <div class="card"><h3>Model spend · 7 days</h3><div id="ov-models" class="bars"></div></div>
+    <div class="card"><h3>Tool &amp; payment spend · 7 days</h3><div id="ov-tools" class="bars"></div></div>
+  </section>
+
+  <!-- Agents: all of them, or one -->
+  <section id="agents" class="tab">
+    <div class="pills" id="agent-pills"></div>
+    <div id="agents-body"></div>
   </section>
 
   <!-- Run -->
@@ -47,10 +53,15 @@
   <!-- Events -->
   <section id="events" class="tab">
     <div class="card">
-      <div class="row between"><h3>Refusals, errors and blocks</h3>
-        <div class="filters" id="ev-filters">
-          <button data-f="all" class="on">All</button><button data-f="refused">Refused</button>
-          <button data-f="error">Errors</button><button data-f="blocked">Blocked</button>
+      <div class="row between wrap evhead">
+        <h3>Refusals, errors and blocks</h3>
+        <div class="row wrap">
+          <select id="ev-agent" aria-label="Agent"><option value="">All agents</option></select>
+          <div class="filters" id="ev-filters">
+            <button data-f="" class="on">All problems</button><button data-f="refused">Refused</button>
+            <button data-f="error">Errors</button><button data-f="blocked">Blocked</button><button data-f="notice">Notices</button>
+          </div>
+          <button class="chip since hide" id="ev-since" title="Show all times">last 24 hours ✕</button>
         </div>
       </div>
       <table class="tbl"><thead><tr><th>Time</th><th>Agent</th><th>Class</th><th>Kind</th><th>Name</th><th>Status</th><th>Detail</th></tr></thead>

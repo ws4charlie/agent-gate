@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -75,6 +76,8 @@ type agentView struct {
 	LastSeen  *time.Time `json:"last_seen"`
 	Hourly    []float64  `json:"hourly"` // USD per hour, last 24 hours, oldest first
 	CallsHour []int64    `json:"calls_hourly"`
+	Models    []lineItem `json:"models"` // this agent's 7-day spend by model
+	Tools     []lineItem `json:"tools"`  // and by tool or paid endpoint
 }
 
 type spendKinds struct {
@@ -143,7 +146,7 @@ func (s *Server) overview(ctx context.Context) (*overview, error) {
 		}
 		v := &agentView{ID: a.ID, Name: a.Name, Status: string(a.Status), AccountID: a.AccountID,
 			Console: strings.HasPrefix(a.Name, agentPrefix), Scope: viewScope(a.Scope),
-			Hourly: make([]float64, 24), CallsHour: make([]int64, 24),
+			Hourly: make([]float64, 24), CallsHour: make([]int64, 24), Models: []lineItem{}, Tools: []lineItem{},
 			Today: dollars(0), Balance: dollars(0), Available: dollars(0),
 			Spend7d: spendKinds{Model: dollars(0), Tool: dollars(0), Payment: dollars(0), Total: dollars(0)}}
 		ov.Agents = append(ov.Agents, v)
@@ -171,10 +174,10 @@ func (s *Server) overview(ctx context.Context) (*overview, error) {
 	}
 	ov.Totals.Today = dollars(ov.Totals.Today.Nanos)
 	ov.Totals.Spend7d = dollars(ov.Totals.Spend7d.Nanos)
-	if ov.Models, err = s.lineItems(ctx, `kind = 'model'`, now); err != nil {
+	if ov.Models, err = s.lineItems(ctx, `kind = 'model'`, now, byID, func(v *agentView, li lineItem) { v.Models = append(v.Models, li) }); err != nil {
 		return nil, err
 	}
-	if ov.Tools, err = s.lineItems(ctx, toolFilter, now); err != nil {
+	if ov.Tools, err = s.lineItems(ctx, toolFilter, now, byID, func(v *agentView, li lineItem) { v.Tools = append(v.Tools, li) }); err != nil {
 		return nil, err
 	}
 	if s.cfg.WalletAddress != "" {
@@ -289,27 +292,72 @@ func (s *Server) fillAudit(ctx context.Context, byID map[string]*agentView, now 
 	return rows.Err()
 }
 
-// lineItems sums 7 days of audit rows per model or tool name.
-func (s *Server) lineItems(ctx context.Context, where string, now time.Time) ([]lineItem, error) {
-	rows, err := s.pool.Query(ctx, `SELECT model, kind, COUNT(*), COALESCE(SUM(cost_nanos), 0)::bigint, MAX(at)
+// lineItems sums 7 days of audit rows per model or tool name: the totals it
+// returns, and each agent's own share handed to add.
+func (s *Server) lineItems(ctx context.Context, where string, now time.Time,
+	byID map[string]*agentView, add func(*agentView, lineItem)) ([]lineItem, error) {
+	rows, err := s.pool.Query(ctx, `SELECT agent_id, model, kind, COUNT(*), COALESCE(SUM(cost_nanos), 0)::bigint, MAX(at)
 		FROM audit_events WHERE at > $1 AND model <> '' AND `+where+`
-		GROUP BY model, kind ORDER BY 4 DESC, 3 DESC LIMIT 30`, now.Add(-7*24*time.Hour))
+		GROUP BY agent_id, model, kind`, now.Add(-7*24*time.Hour))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []lineItem{}
+	type key struct{ name, kind string }
+	total := map[key]*lineItem{}
+	var order []key
 	for rows.Next() {
+		var id string
 		var li lineItem
 		var cost int64
 		var last time.Time
-		if err := rows.Scan(&li.Name, &li.Kind, &li.Calls, &cost, &last); err != nil {
+		if err := rows.Scan(&id, &li.Name, &li.Kind, &li.Calls, &cost, &last); err != nil {
 			return nil, err
 		}
 		li.Spend, li.Last = dollars(cost), &last
-		out = append(out, li)
+		if v := byID[id]; v != nil {
+			add(v, li)
+		}
+		k := key{li.Name, li.Kind}
+		t := total[k]
+		if t == nil {
+			t = &lineItem{Name: li.Name, Kind: li.Kind, Spend: dollars(0)}
+			total[k] = t
+			order = append(order, k)
+		}
+		t.Calls += li.Calls
+		t.Spend = dollars(t.Spend.Nanos + cost)
+		if t.Last == nil || last.After(*t.Last) {
+			l := last
+			t.Last = &l
+		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]lineItem, 0, len(order))
+	for _, k := range order {
+		out = append(out, *total[k])
+	}
+	sortItems(out)
+	for _, v := range byID {
+		sortItems(v.Models)
+		sortItems(v.Tools)
+	}
+	if len(out) > 30 {
+		out = out[:30]
+	}
+	return out, nil
+}
+
+// sortItems puts the biggest spend first, then the most calls.
+func sortItems(items []lineItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Spend.Nanos != items[j].Spend.Nanos {
+			return items[i].Spend.Nanos > items[j].Spend.Nanos
+		}
+		return items[i].Calls > items[j].Calls
+	})
 }
 
 // ---- event feed: refusals, errors, screen blocks ----
@@ -325,10 +373,37 @@ type event struct {
 	RunID  string    `json:"run_id"`
 }
 
+// eventFilter narrows the event feed. Class is "" for every problem
+// (refused, error, blocked), one of those or "notice", or "any" for every row
+// that is not a plain success (a run's own page uses that).
+type eventFilter struct {
+	RunID string
+	Agent string // agent name or id
+	Class string
+	Since time.Duration
+	Limit int
+}
+
+var eventClasses = map[string]bool{"": true, "any": true, "refused": true, "error": true, "blocked": true, "notice": true}
+
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	ev, err := s.events(ctx, "", 60)
+	q := r.URL.Query()
+	f := eventFilter{Agent: q.Get("agent"), Class: q.Get("class"), Limit: 200}
+	if !eventClasses[f.Class] {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%w: class must be refused, error, blocked, notice or any", errInvalid))
+		return
+	}
+	if v := q.Get("since"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("%w: since must be a duration such as 24h", errInvalid))
+			return
+		}
+		f.Since = d
+	}
+	ev, err := s.events(ctx, f)
 	if err != nil {
 		writeErr(w, statusFor(err), err)
 		return
@@ -337,22 +412,38 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // events returns the newest rows that are not plain success, newest first.
-// runID narrows them to one run.
-func (s *Server) events(ctx context.Context, runID string, limit int) ([]event, error) {
+// The classes match the overview's counts, so a count links to its rows.
+func (s *Server) events(ctx context.Context, f eventFilter) ([]event, error) {
 	q := `SELECT e.at, COALESCE(g.name, e.agent_id), e.kind, e.model, e.status, e.err, e.run_id,
 		COALESCE((SELECT d.rule || ': ' || d.reason FROM policy_decisions d WHERE d.request_id = e.request_id
 			AND d.decision <> 'allow' ORDER BY d.id DESC LIMIT 1), '')
 		FROM audit_events e LEFT JOIN agents g ON g.id = e.agent_id
 		WHERE NOT (e.status = ANY($1))`
 	args := []any{[]string{"ok", "reconciled_settled", "duplicate_request"}}
-	if runID != "" {
-		q += ` AND e.run_id = $3`
+	arg := func(v any) string { args = append(args, v); return fmt.Sprintf("$%d", len(args)) }
+	switch f.Class {
+	case "":
+		q += ` AND e.status <> 'reconciled_unmetered'`
+	case "refused":
+		q += ` AND e.status = ANY(` + arg(refusalStatuses) + `)`
+	case "blocked":
+		q += ` AND e.status = 'screened'`
+	case "notice":
+		q += ` AND e.status = 'reconciled_unmetered'`
+	case "error":
+		q += ` AND NOT (e.status = ANY(` + arg(refusalStatuses) + `)) AND NOT (e.status = ANY(` + arg(quietStatuses) + `))`
 	}
-	q += ` ORDER BY e.at DESC LIMIT $2`
-	args = append(args, limit)
-	if runID != "" {
-		args = append(args, runID)
+	if f.RunID != "" {
+		q += ` AND e.run_id = ` + arg(f.RunID)
 	}
+	if f.Agent != "" {
+		p := arg(f.Agent)
+		q += ` AND (g.name = ` + p + ` OR e.agent_id = ` + p + `)`
+	}
+	if f.Since > 0 {
+		q += ` AND e.at > ` + arg(time.Now().Add(-f.Since))
+	}
+	q += ` ORDER BY e.at DESC LIMIT ` + arg(f.Limit)
 	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err

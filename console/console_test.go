@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -319,7 +320,7 @@ func TestOverviewQueries(t *testing.T) {
 	if len(ov.Agents) != 1 || !ov.Agents[0].Console || len(ov.Agents[0].Hourly) != 24 || !ov.Run.Enabled {
 		t.Fatalf("%+v", ov)
 	}
-	if _, err := s.events(context.Background(), "", 10); err != nil {
+	if _, err := s.events(context.Background(), eventFilter{Limit: 10}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -328,5 +329,74 @@ func TestRunNeedsAccount(t *testing.T) {
 	s := &Server{cfg: Config{Gateway: "http://127.0.0.1:1"}}
 	if rr := s.runReady(); rr.Enabled {
 		t.Fatal("tasks enabled without an account")
+	}
+}
+
+// A count on the overview links to the event feed filtered the same way, so the
+// two must agree on what an error, a refusal and a block are.
+func TestEventFiltersMatchCounts(t *testing.T) {
+	gw, _ := fakeGateway(t, false)
+	s := newTestServer(t, gw.URL)
+	startAndWait(t, s, s.Handler(), `{"template_id":"agent-security","topic":"t"}`)
+	ctx := context.Background()
+	ov, err := s.overview(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	me := ov.Agents[0]
+	now := time.Now()
+	for i, row := range []struct {
+		agent, kind, model, status string
+		cost                       int64
+		at                         time.Time
+	}{
+		{me.ID, "model", "m/a", "ok", 5, now},
+		{me.ID, "model", "m/a", "policy_denied", 0, now},
+		{me.ID, "model", "m/a", "upstream_error", 0, now},
+		{me.ID, "mcp", "srv/tool", "screened", 0, now},
+		{me.ID, "payment", "paid", "reconciled_unmetered", 0, now},
+		{me.ID, "model", "m/a", "upstream_error", 0, now.Add(-48 * time.Hour)},
+		{"someone-else", "model", "m/b", "upstream_error", 7, now},
+	} {
+		if _, err := s.pool.Exec(ctx, `INSERT INTO audit_events (request_id, agent_id, kind, model, status, cost_nanos, at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`, "r"+strconv.Itoa(i), row.agent, row.kind, row.model, row.status, row.cost, row.at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ov, err = s.overview(ctx); err != nil {
+		t.Fatal(err)
+	}
+	me = ov.Agents[0]
+	count := func(f eventFilter) int {
+		t.Helper()
+		f.Limit = 100
+		ev, err := s.events(ctx, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(ev)
+	}
+	day := 24 * time.Hour
+	for _, c := range []struct {
+		name string
+		f    eventFilter
+		want int64
+	}{
+		{"refused", eventFilter{Agent: me.Name, Class: "refused", Since: day}, me.Refused},
+		{"error", eventFilter{Agent: me.Name, Class: "error", Since: day}, me.Errors},
+		{"blocked", eventFilter{Agent: me.Name, Class: "blocked", Since: day}, me.Blocked},
+	} {
+		if got := count(c.f); int64(got) != c.want || c.want == 0 {
+			t.Errorf("%s: feed has %d rows, overview counts %d", c.name, got, c.want)
+		}
+	}
+	if got := count(eventFilter{Agent: me.Name}); got != 4 { // refused, 2 errors, blocked; no notice
+		t.Errorf("all problems for the agent: %d rows, want 4", got)
+	}
+	if got := count(eventFilter{Agent: me.Name, Class: "notice"}); got != 1 {
+		t.Errorf("notices: %d rows, want 1", got)
+	}
+	if len(me.Models) != 1 || me.Models[0].Name != "m/a" || me.Models[0].Spend.Nanos != 5 {
+		t.Errorf("agent's own model spend: %+v", me.Models)
 	}
 }
