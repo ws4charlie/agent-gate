@@ -96,13 +96,14 @@ type lineItem struct {
 }
 
 type overview struct {
-	At     time.Time    `json:"at"`
-	Totals totals       `json:"totals"`
-	Wallet *walletView  `json:"wallet,omitempty"`
-	Agents []*agentView `json:"agents"`
-	Models []lineItem   `json:"models"`
-	Tools  []lineItem   `json:"tools"`
-	Run    runReady     `json:"run"`
+	At       time.Time    `json:"at"`
+	Totals   totals       `json:"totals"`
+	Wallet   *walletView  `json:"wallet,omitempty"`
+	Explorer string       `json:"explorer"` // block explorer base URL, or ""
+	Agents   []*agentView `json:"agents"`
+	Models   []lineItem   `json:"models"`
+	Tools    []lineItem   `json:"tools"`
+	Run      runReady     `json:"run"`
 }
 
 type totals struct {
@@ -185,6 +186,7 @@ func (s *Server) overview(ctx context.Context) (*overview, error) {
 		ov.Wallet = s.wallet(ctx)
 	}
 	ov.Run = s.runReady()
+	ov.Explorer = s.cfg.Explorer
 	return ov, nil
 }
 

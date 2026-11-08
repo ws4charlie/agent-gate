@@ -24,6 +24,12 @@ var usdcOn = map[string]string{
 	"base":         "0x833589fCD6eDb6E08f4c7C32D4c71b54bdA02913",
 }
 
+// explorerOn is the block explorer per payments network, for links on the page.
+var explorerOn = map[string]string{
+	"base-sepolia": "https://sepolia.basescan.org",
+	"base":         "https://basescan.org",
+}
+
 // consoleCmd is `agentgate console`: the local web console. It listens on
 // loopback only and reads the same database the gateway uses.
 func consoleCmd(ctx context.Context, args []string, stdout io.Writer) error {
@@ -62,6 +68,7 @@ func consoleCmd(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		cfg.USDC = cmp.Or(cfg.USDC, usdcOn[f.Network])
+		cfg.Explorer = explorerOn[f.Network]
 	}
 	if cfg.USDC == "" {
 		cfg.USDC = usdcOn["base-sepolia"]
