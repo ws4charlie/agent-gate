@@ -5,7 +5,7 @@
 #   AG_RUN_ID, AG_RUN_DIR, AG_TOPIC, AG_INSTRUCTIONS, AG_GATEWAY_URL
 # Your wrapper adds:
 #   AGENT_KEY     the gateway key of the agent this runs as
-#   GPTR_PYTHON   a Python with gpt-researcher installed
+#   GPTR_PYTHON   a Python (3.12+) with gpt-researcher and langchain-mcp-adapters installed
 # Optional: GPTR_MODEL (default openai/gpt-4o-mini), GPTR_MCP (default "litescraper firecrawl").
 #
 # Writes report.md to AG_RUN_DIR. Lines starting with "▸ " are progress the

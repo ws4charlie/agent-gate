@@ -1,7 +1,15 @@
 # One GPT Researcher run for the AgentGate console. Every request carries the
 # run id, so the gateway applies the agent's per-run budget and groups the
 # spend under this run.
-import asyncio, os, openai
+import asyncio, os, sys, openai
+
+# Without its MCP support GPT Researcher quietly falls back to a web search
+# service it has no key for, finds nothing, and still writes a "report". Stop
+# instead, so the run shows as failed with the reason.
+try:
+    import langchain_mcp_adapters  # noqa: F401
+except ImportError:
+    sys.exit("GPT Researcher cannot reach the gateway's search tools: install langchain-mcp-adapters in its Python")
 
 run = os.environ["AG_RUN_ID"]
 tags = {"X-AgentGate-Run": run, "X-AgentGate-Task": run}
