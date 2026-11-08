@@ -667,6 +667,9 @@ async function showFile(id, name) {
   } catch (e) { toast(e.message, true); }
 }
 
+// A line-drawn bin; it takes the button's colour.
+const trashIcon = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V4h6v3"/></svg>`;
+
 // The list shows the picked task's runs only, so it does not repeat the task's
 // name; it shows what a run looked into only when that was changed. An open
 // run unfolds right under its row; clicking the row again folds it.
@@ -680,7 +683,7 @@ async function loadRunList() {
     list.innerHTML = runs.length ? runs.map((r) => `<div class="runrow ${r.id === watching ? "on" : ""}" data-id="${esc(r.id)}">
       <span class="status ${esc(r.status)}">${esc(r.status)}</span><span class="muted">${esc(ago(r.started_at))}</span>
       <span class="topic">${r.topic !== t.default_topic ? esc(r.topic) : ""}</span><span>${esc(fmtUSD(r.spend))}</span>
-      ${r.status === "running" ? "<span></span>" : `<button class="icon" data-del="${esc(r.id)}" title="Delete this run" aria-label="Delete this run">🗑</button>`}</div>`).join("")
+      ${r.status === "running" ? "<span></span>" : `<button class="icon" data-del="${esc(r.id)}" title="Delete this run" aria-label="Delete this run">${trashIcon}</button>`}</div>`).join("")
       : `<p class="muted">No runs yet. Press ▶ Run.</p>`;
     list.querySelectorAll(".runrow").forEach((el) => el.addEventListener("click", (e) => {
       if (e.target.closest("[data-del]")) return;
