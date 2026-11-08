@@ -60,6 +60,17 @@
 </main>
 
 <div id="modal" class="modal hide"><div class="sheet" id="sheet"></div></div>
+<div id="keygate" class="modal hide">
+  <form class="sheet keygate" id="keyform" autocomplete="off">
+    <h3>Console key</h3>
+    <p id="keymsg">This browser has no console key yet.</p>
+    <p class="muted">The key keeps other programs on this machine out of the console. Copy it, paste it here once, and this browser remembers it:</p>
+    <pre>pbcopy &lt; ~/.config/agentgate/console/console.key</pre>
+    <input id="keyinput" type="password" placeholder="Paste the key, or the link the console printed" spellcheck="false">
+    <p id="keyerr" class="bad hide"></p>
+    <div class="row"><button class="btn" type="submit">Unlock</button></div>
+  </form>
+</div>
 <div id="toast" class="toast hide"></div>
 <script src="app.js"></script>
 </body>

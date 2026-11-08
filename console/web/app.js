@@ -34,9 +34,41 @@ try { consoleKey = localStorage.getItem("agentgate-console-key") || ""; } catch 
     history.replaceState(null, "", location.pathname);
   }
 }
+// Without a working key the page asks for one: the user pastes the key (or the
+// printed link) once, and it is kept like the one from the link.
+let needKey = false;
+function askForKey() {
+  needKey = true;
+  $("#clock").textContent = "console key needed";
+  $(".dot").classList.add("off");
+  $("#keymsg").textContent = consoleKey
+    ? "The key saved in this browser no longer works. The console key was probably replaced."
+    : "This browser has no console key yet.";
+  if ($("#keygate").classList.contains("hide")) {
+    $("#keygate").classList.remove("hide");
+    $("#keyinput").focus();
+  }
+}
+$("#keyform").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const raw = $("#keyinput").value.trim();
+  const m = raw.match(/(?:k=)?([A-Za-z0-9_-]{32,})\s*$/);
+  const err = $("#keyerr");
+  if (!m) { err.textContent = "That does not look like a console key."; err.classList.remove("hide"); return; }
+  const r = await fetch("/api/overview", { headers: { "X-Console-Key": m[1] } }).catch(() => null);
+  if (!r || r.status === 401) {
+    err.textContent = r ? "The console refused that key." : "The console is not reachable.";
+    err.classList.remove("hide");
+    return;
+  }
+  try { localStorage.setItem("agentgate-console-key", m[1]); } catch { /* storage off: works until reload */ }
+  consoleKey = m[1];
+  location.reload();
+});
+
 async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", "X-Console-Key": consoleKey, ...(opts.headers || {}) } });
-  if (r.status === 401) { $("#clock").textContent = "open the link the console printed"; $(".dot").classList.add("off"); }
+  if (r.status === 401) { askForKey(); throw new Error("console key needed"); }
   if (r.status === 204) return null;
   const text = await r.text();
   let body;
@@ -92,6 +124,7 @@ async function loadOverview() {
     drawBars($("#models"), overview.models, "var(--model)");
     drawBars($("#tools"), overview.tools, "var(--tool)");
   } catch (e) {
+    if (needKey) return;
     $("#clock").textContent = "console unreachable";
     $(".dot").classList.add("off");
   }
