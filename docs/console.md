@@ -6,9 +6,11 @@ The console is a local web page for the person who runs the gateway. It shows wh
 
 ## See every agent at a glance
 
-Each agent gets a card: what it spent today against its daily budget, how its spend splits between models, tools and payments, how many calls it made, and how many of those were refused, failed or blocked. A small chart shows its spend hour by hour. Above the cards, a few totals and the wallet's USDC balance, read from the chain.
+The overview shows totals across every agent: what was spent today and over seven days, the wallet's USDC balance read from the chain, how many calls were made in the last day and how many of them were refused, failed or blocked, and which models and tools the money went to.
 
-The events page lists everything that was not a plain success, newest first, with the rule that refused it.
+The agents page gives each agent a short card: today's spend against its daily budget, and any problems. Open an agent to see its own spend, its activity, an hourly chart, and what it is allowed to use.
+
+Every count is a link. Clicking an agent's errors opens the events page already filtered to that agent and to errors, so you go from "something is wrong" to the rows that say what in one click.
 
 ## Change limits without the command line
 

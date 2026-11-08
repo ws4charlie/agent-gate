@@ -117,7 +117,7 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v.Spend = dollars(int64(spend))
-	if v.Gateway, err = s.events(ctx, id, 50); err != nil {
+	if v.Gateway, err = s.events(ctx, eventFilter{RunID: id, Class: "any", Limit: 50}); err != nil {
 		writeErr(w, statusFor(err), err)
 		return
 	}
