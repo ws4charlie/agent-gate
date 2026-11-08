@@ -55,6 +55,12 @@ You need Go and a running Postgres. This demo uses a fake model provider and a t
 demo/phase1.sh
 ```
 
+To keep the gateway and the console running on your own machine, fill in `.env` from `.env.example` and use one script to start, stop or restart them:
+
+```bash
+scripts/agentgate-local up
+```
+
 ## Status
 
 | Verified | How |
