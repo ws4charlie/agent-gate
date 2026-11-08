@@ -27,3 +27,5 @@ While a run goes you watch its steps arrive; when it ends you read the report, t
 ## Who can use it
 
 The console listens only on this machine. Its API also needs a key, which comes in the link the console prints when it starts. That keeps a web page, or an agent with a shell on the same machine, from raising its own budget through the console. Anyone who can read your files can still find the key, as they could reach the database itself, so treat the machine as the boundary.
+
+To let a few people open it from their own machines, run the console on a machine in your Tailscale network and name them with `--allow`. It then also serves HTTPS on the machine's Tailscale address. There it needs no key: for every connection the console asks Tailscale which signed-in person owns the device on the other end. Only the people on the list get in, and they see their own name at the top of the page. Nothing is opened to the public internet. To add someone, share the machine with them in Tailscale and add them to the list; to remove them, take them off either one.

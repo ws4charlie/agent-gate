@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -515,5 +516,55 @@ func TestEventAmounts(t *testing.T) {
 	}
 	if n := byReq["reconciled_unmetered"]; n.Agent != "payer" || n.Name != "search" {
 		t.Errorf("the reconciled row should name its agent and tool: %+v", n)
+	}
+}
+
+// Over the tailnet the console needs no key: tailscaled says who is calling,
+// and only the logins on the list get in.
+func TestTailnetHandler(t *testing.T) {
+	s := newTestServer(t, nil)
+	who := func(_ context.Context, remote string) (Identity, error) {
+		switch remote {
+		case "100.64.0.2:5000":
+			return Identity{Login: "Friend@Gmail.com", Name: "Friend"}, nil
+		case "100.64.0.3:5000":
+			return Identity{Login: "stranger@gmail.com"}, nil
+		}
+		return Identity{}, errors.New("unknown peer")
+	}
+	h := s.TailnetHandler("agentgate.tail1234.ts.net", []string{"me@gmail.com", "friend@gmail.com"}, who)
+	call := func(method, host, remote, origin, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Host, r.RemoteAddr = host, remote
+		if origin != "" {
+			r.Header.Set("Origin", origin)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	const host, origin = "agentgate.tail1234.ts.net", "https://agentgate.tail1234.ts.net"
+	w := call("GET", host, "100.64.0.2:5000", "", "/api/overview", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"viewer":"Friend@Gmail.com"`) {
+		t.Fatalf("allowed friend: %d %s", w.Code, w.Body.String()[:min(200, w.Body.Len())])
+	}
+	for name, c := range map[string]struct{ method, host, remote, origin string }{
+		"not on the list":      {"GET", host, "100.64.0.3:5000", ""},
+		"whois cannot tell":    {"GET", host, "100.64.0.9:5000", ""},
+		"other host name":      {"GET", "evil.example", "100.64.0.2:5000", ""},
+		"write without origin": {"PUT", host, "100.64.0.2:5000", ""},
+		"write from elsewhere": {"PUT", host, "100.64.0.2:5000", "https://evil.example"},
+	} {
+		if w := call(c.method, c.host, c.remote, c.origin, "/api/templates/order", `{"ids":[]}`); w.Code != http.StatusForbidden {
+			t.Errorf("%s: %d", name, w.Code)
+		}
+	}
+	if w := call("PUT", host+":443", "100.64.0.2:5000", origin, "/api/templates/order", `{"ids":[]}`); w.Code != http.StatusNoContent {
+		t.Fatalf("allowed write: %d %s", w.Code, w.Body)
+	}
+	for ip, want := range map[string]bool{"100.101.102.103": true, "100.63.0.1": false, "34.1.2.3": false, "127.0.0.1": false, "fd7a:115c:a1e0::1": true} {
+		if got := TailnetAddr(net.ParseIP(ip)); got != want {
+			t.Errorf("TailnetAddr(%s) = %v", ip, got)
+		}
 	}
 }

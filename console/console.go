@@ -108,7 +108,12 @@ func loadKey(path string) (string, error) {
 }
 
 // Handler serves the page and the JSON API.
-func (s *Server) Handler() http.Handler {
+// Handler serves the console on this machine: loopback only, and the API
+// needs the console key.
+func (s *Server) Handler() http.Handler { return guard(s.routes(s.requireKey)) }
+
+// routes is the page and the API; protect wraps the API.
+func (s *Server) routes(protect func(http.Handler) http.Handler) http.Handler {
 	api := http.NewServeMux()
 	mux := http.NewServeMux()
 	web, _ := fs.Sub(webFS, "web")
@@ -119,7 +124,7 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("Cache-Control", "no-cache")
 		files.ServeHTTP(w, r)
 	}))
-	mux.Handle("/api/", s.requireKey(api))
+	mux.Handle("/api/", protect(api))
 
 	api.HandleFunc("GET /api/overview", s.handleOverview)
 	api.HandleFunc("GET /api/events", s.handleEvents)
@@ -139,7 +144,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/runs/{id}/kill", s.handleKillRun)
 	api.HandleFunc("GET /api/runs/{id}/files/{name}", s.handleRunFile)
 	api.HandleFunc("DELETE /api/runs/{id}", s.handleDeleteRun)
-	return guard(mux)
+	return mux
 }
 
 // Shutdown cancels the tasks still running.
@@ -177,11 +182,15 @@ func guard(next http.Handler) http.Handler {
 				return
 			}
 		}
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:")
+		securityHeaders(w)
 		next.ServeHTTP(w, r)
 	})
+}
+
+func securityHeaders(w http.ResponseWriter) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:")
 }
 
 func loopbackHost(hostport string) bool {
