@@ -140,7 +140,7 @@ main { padding: 8px 28px 60px; max-width: 1400px; margin: 0 auto; }
 .report h1 { font-size: 20px; } .report h2 { font-size: 17px; } .report h3 { font-size: 15px; }
 .report code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 5px; }
 .report pre { white-space: pre-wrap; }
-.runrow { display: grid; grid-template-columns: 90px 90px 1fr 80px 28px; gap: 10px; align-items: center; padding: 8px 6px; border-bottom: 1px solid var(--line); cursor: pointer; border-radius: 8px; }
+.runrow { display: grid; grid-template-columns: 170px 90px 1fr 80px 28px; gap: 10px; align-items: center; padding: 8px 6px; border-bottom: 1px solid var(--line); cursor: pointer; border-radius: 8px; }
 .runrow .icon { background: none; border: 0; padding: 4px; color: #aab2cc; opacity: 1; border-radius: 6px; display: inline-flex; }
 .runrow .icon svg { display: block; }
 .runrow:hover .icon { color: var(--text); }
@@ -266,3 +266,4 @@ a.tile.link:hover .s::after { opacity: 1; }
 #ev-body tr.fresh { background: rgba(34,211,238,.05); }
 .report.clamp { max-height: 320px; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
 .linkbtn.more { display: block; margin: 8px auto 0; padding: 4px 10px; }
+.runrow .row { gap: 6px; }

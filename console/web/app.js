@@ -611,7 +611,7 @@ function drawRun(r) {
     <p class="muted fine">Saved only on this computer, readable only by your user. Nothing here is sent anywhere.</p>` : "";
   $("#runview").classList.remove("hide");
   $("#runview").innerHTML = `<div class="row between"><div><h3 style="margin:0">Run · ${esc(when(r.started_at))}</h3><div class="muted" style="font-size:12px">${esc(r.topic)}</div></div>
-      <div class="row"><span class="status ${esc(r.status)}">${running ? `<span class="spinner"></span> ` : ""}${esc(r.status)}</span>
+      <div class="row"><span class="status ${esc(r.status)}">${running ? `<span class="spinner"></span> ` : ""}${esc(r.status)}</span>${problemChips(r.problems)}
       <span class="chip">spent ${esc(fmtUSD(r.spend))}</span>${running ? `<button class="btn danger small" id="r-kill">Kill run</button>` : ""}
       <button class="ghost small" id="r-close" title="Close">✕</button></div></div>
     ${r.error ? `<p style="color:var(--warn)">${esc(r.error)}</p>` : ""}
@@ -685,6 +685,15 @@ async function showFile(id, name) {
   } catch (e) { toast(e.message, true); }
 }
 
+// What went wrong inside a run, as small coloured chips beside its status;
+// nothing when the run was clean.
+function problemChips(p) {
+  if (!p) return "";
+  return [[p.errors, "bad", "error", "errors"], [p.refused, "warn", "refused", "refused"], [p.blocked, "blk", "blocked", "blocked"]]
+    .filter(([n]) => n > 0)
+    .map(([n, cls, one, many]) => `<span class="chip ${cls}" title="Problems inside this run">${n} ${n === 1 ? one : many}</span>`).join("");
+}
+
 // A line-drawn bin; it takes the button's colour.
 const trashIcon = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V4h6v3"/></svg>`;
 
@@ -699,7 +708,7 @@ async function loadRunList() {
   try {
     const { runs } = await api("/api/runs?template=" + encodeURIComponent(t.id));
     list.innerHTML = runs.length ? runs.map((r) => `<div class="runrow ${r.id === watching ? "on" : ""}" data-id="${esc(r.id)}">
-      <span class="status ${esc(r.status)}">${esc(r.status)}</span><span class="muted">${esc(ago(r.started_at))}</span>
+      <span class="row nowrap"><span class="status ${esc(r.status)}">${esc(r.status)}</span>${problemChips(r.problems)}</span><span class="muted">${esc(ago(r.started_at))}</span>
       <span class="topic">${r.topic !== t.default_topic ? esc(r.topic) : ""}</span><span>${esc(fmtUSD(r.spend))}</span>
       ${r.status === "running" ? "<span></span>" : `<button class="icon" data-del="${esc(r.id)}" title="Delete this run" aria-label="Delete this run">${trashIcon}</button>`}</div>`).join("")
       : `<p class="muted">No runs yet. Press ▶ Run.</p>`;
