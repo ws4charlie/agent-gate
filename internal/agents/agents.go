@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -182,25 +183,58 @@ func (s *Store) SetScope(ctx context.Context, ref string, scope policy.Scope) (A
 // setStatus moves an agent to `to` when `from` (a SQL condition) holds. If the
 // agent is already there, it returns it unchanged; any other state is ErrBadState.
 // Rename changes an agent's name. The key, id, scope and history stay, so
-// clients that hold the key keep working.
+// clients that hold the key keep working. A revoked agent that still holds the
+// name gives it up: it becomes name.revoked.<id prefix>, since nothing can use
+// a revoked agent and its history is tied to its id, not its name.
 func (s *Store) Rename(ctx context.Context, ref, name string) (Agent, error) {
 	if !nameRE.MatchString(name) {
 		return Agent{}, ErrBadName
 	}
-	a, err := scan(s.pool.QueryRow(ctx, `UPDATE agents SET name=$2
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Agent{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var oldID string
+	err = tx.QueryRow(ctx, `SELECT id FROM agents WHERE name=$1 AND status = 'revoked' AND id <> $2 FOR UPDATE`, name, ref).Scan(&oldID)
+	switch {
+	case err == nil:
+		parked := revokedName(name, oldID)
+		if _, err := tx.Exec(ctx, `UPDATE agents SET name=$2 WHERE id=$1`, oldID, parked); err != nil {
+			return Agent{}, err
+		}
+	case !errors.Is(err, pgx.ErrNoRows):
+		return Agent{}, err
+	}
+	a, err := scan(tx.QueryRow(ctx, `UPDATE agents SET name=$2
 		WHERE (id=$1 OR name=$1) AND status <> 'revoked' RETURNING `+agentCols, ref, name))
 	var pe *pgconn.PgError
 	switch {
 	case errors.As(err, &pe) && pe.Code == "23505":
 		return Agent{}, fmt.Errorf("%w: %s", ErrNameTaken, name)
 	case errors.Is(err, pgx.ErrNoRows):
+		_ = tx.Rollback(ctx)
 		cur, gerr := s.Get(ctx, ref)
 		if gerr != nil {
 			return Agent{}, gerr
 		}
 		return Agent{}, fmt.Errorf("%w: agent %s is %s", ErrBadState, cur.Name, cur.Status)
+	case err != nil:
+		return Agent{}, err
 	}
-	return a, err
+	return a, tx.Commit(ctx)
+}
+
+// revokedName is the name a revoked agent moves to when its name is reused.
+func revokedName(name, id string) string {
+	suffix := ".revoked." + strings.ReplaceAll(id, "-", "")
+	if len(suffix) > 17 {
+		suffix = suffix[:17]
+	}
+	if len(name)+len(suffix) > 64 {
+		name = name[:64-len(suffix)]
+	}
+	return name + suffix
 }
 
 func (s *Store) setStatus(ctx context.Context, ref string, to policy.Status, from string) (Agent, error) {

@@ -301,6 +301,7 @@ function drawAgentDetail(a) {
     <div class="card dhead">
       <div class="row wrap"><span class="name big">${statusDot(a)}${esc(a.name)}</span>
         ${a.console ? `<span class="chip acc">task</span>` : ""}${a.status !== "active" ? `<span class="chip bad">${esc(a.status)}</span>` : ""}
+        <button class="ghost small" data-edit="${esc(a.id)}">Edit</button>
         ${a.status === "active" ? `<button class="btn danger small" data-kill="${esc(a.id)}">Kill</button>` : a.status === "killed" ? `<button class="btn go small" data-resume="${esc(a.id)}">Resume</button>` : ""}</div>
       <div class="muted">last seen ${esc(ago(a.last_seen))} · ${balanceText(a)}</div>
     </div>
@@ -561,8 +562,8 @@ const evLine = (e) => `<div class="ev ${esc(e.type)}${e.i >= seenEvents ? " new"
 // What each saved file is, in words, for the buttons.
 const fileInfo = {
   "report.md": ["Report", "The answer the task wrote"],
-  "tools.md": ["Search results", "What each tool call returned, word for word"],
-  "transcript.json": ["Conversation", "Every message between the task and the model"],
+  "tools.md": ["Tool results", "What each tool call returned, word for word"],
+  "transcript.json": ["Trace", "Every message sent to the model and every reply, in order"],
 };
 
 function drawRun(r) {
@@ -587,7 +588,7 @@ function drawRun(r) {
       const [label, what] = fileInfo[f.name] || [f.name, ""];
       return `<button class="file ${openFile === f.name ? "on" : ""}" data-f="${esc(f.name)}" title="${esc(what)}">${esc(label)} <span class="muted">${(f.size / 1024).toFixed(1)} KB</span></button>`;
     }).join("")}
-    ${running ? "" : `<button class="ghost small del" id="r-del" title="Delete this run's files from this computer">Delete run</button>`}</div>
+</div>
     <p class="muted fine">Saved only on this computer, readable only by your user. Nothing here is sent anywhere.</p>` : "";
   $("#runview").classList.remove("hide");
   $("#runview").innerHTML = `<div class="row between"><div><h3 style="margin:0">Run · ${esc(when(r.started_at))}</h3><div class="muted" style="font-size:12px">${esc(r.topic)}</div></div>
@@ -607,7 +608,6 @@ function drawRun(r) {
   if (running) $("#r-kill").onclick = async () => {
     try { await api(`/api/runs/${r.id}/kill`, { method: "POST" }); toast("run killed"); } catch (e) { toast(e.message, true); }
   };
-  if (!running && $("#r-del")) $("#r-del").onclick = () => deleteRun(r.id);
   $("#runview").querySelectorAll("[data-f]").forEach((b) => b.addEventListener("click", () => {
     if (openFile === b.dataset.f) { openFile = null; $("#filebox").innerHTML = ""; b.classList.remove("on"); return; }
     showFile(r.id, b.dataset.f);
@@ -616,9 +616,12 @@ function drawRun(r) {
 }
 
 async function deleteRun(id) {
-  if (!confirm("Delete this run's report, search results and conversation from this computer? Its cost stays in the gateway's records.")) return;
-  try { await api(`/api/runs/${id}`, { method: "DELETE" }); toast("run deleted"); closeRun(); }
-  catch (e) { toast(e.message, true); }
+  if (!confirm("Delete this run's report, tool results and trace from this computer? Its cost stays in the gateway's records.")) return;
+  try {
+    await api(`/api/runs/${id}`, { method: "DELETE" });
+    toast("run deleted");
+    if (id === watching) closeRun(); else loadRunList();
+  } catch (e) { toast(e.message, true); }
 }
 
 const fileCache = {}, fileText = {};
@@ -651,21 +654,28 @@ async function showFile(id, name) {
 }
 
 // The list shows the picked task's runs only, so it does not repeat the task's
-// name; it shows what a run looked into only when that was changed. Clicking
-// the open run again closes it.
+// name; it shows what a run looked into only when that was changed. An open
+// run unfolds right under its row; clicking the row again folds it.
 async function loadRunList() {
   const t = templates.find((x) => x.id === picked);
-  if (!t) { $("#runlist").innerHTML = ""; return; }
+  const list = $("#runlist"), view = $("#runview");
+  list.after(view); // keep the run view out of the list while it is redrawn
+  if (!t) { list.innerHTML = ""; return; }
   try {
     const { runs } = await api("/api/runs?template=" + encodeURIComponent(t.id));
-    $("#runlist").innerHTML = runs.length ? runs.map((r) => `<div class="runrow ${r.id === watching ? "on" : ""}" data-id="${esc(r.id)}">
+    list.innerHTML = runs.length ? runs.map((r) => `<div class="runrow ${r.id === watching ? "on" : ""}" data-id="${esc(r.id)}">
       <span class="status ${esc(r.status)}">${esc(r.status)}</span><span class="muted">${esc(ago(r.started_at))}</span>
-      <span class="topic">${r.topic !== t.default_topic ? esc(r.topic) : ""}</span><span>${esc(fmtUSD(r.spend))}</span></div>`).join("")
+      <span class="topic">${r.topic !== t.default_topic ? esc(r.topic) : ""}</span><span>${esc(fmtUSD(r.spend))}</span>
+      ${r.status === "running" ? "<span></span>" : `<button class="icon" data-del="${esc(r.id)}" title="Delete this run" aria-label="Delete this run">🗑</button>`}</div>`).join("")
       : `<p class="muted">No runs yet. Press ▶ Run.</p>`;
-    $("#runlist").querySelectorAll(".runrow").forEach((el) => el.addEventListener("click", () => {
+    list.querySelectorAll(".runrow").forEach((el) => el.addEventListener("click", (e) => {
+      if (e.target.closest("[data-del]")) return;
       if (el.dataset.id === watching) { closeRun(); return; }
       watch(el.dataset.id); loadRunList();
     }));
+    list.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => deleteRun(b.dataset.del)));
+    const open = watching && list.querySelector(`.runrow[data-id="${CSS.escape(watching)}"]`);
+    if (open) open.after(view); else view.classList.add("hide");
   } catch (e) { toast(e.message, true); }
 }
 

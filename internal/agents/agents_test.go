@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -464,6 +465,10 @@ func TestRegistryCancel(t *testing.T) {
 func TestRename(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
+	_, old := r.agent("claude-code", policy.Scope{})
+	if _, err := r.st.Revoke(ctx, "claude-code"); err != nil {
+		t.Fatal(err)
+	}
 	secret, a := r.agent("claude-code-1", policy.Scope{})
 	r.agent("other", policy.Scope{})
 	got, err := r.st.Rename(ctx, "claude-code-1", "claude-code")
@@ -472,6 +477,9 @@ func TestRename(t *testing.T) {
 	}
 	if au, err := r.st.Authenticate(ctx, secret); err != nil || au.Name != "claude-code" {
 		t.Fatalf("the key must keep working: %+v %v", au, err)
+	}
+	if prev, err := r.st.Get(ctx, old.ID); err != nil || !strings.HasPrefix(prev.Name, "claude-code.revoked.") {
+		t.Fatalf("the revoked agent should give up its name: %+v %v", prev, err)
 	}
 	if _, err := r.st.Rename(ctx, "claude-code", "other"); !errors.Is(err, agents.ErrNameTaken) {
 		t.Fatalf("taken name: %v", err)
