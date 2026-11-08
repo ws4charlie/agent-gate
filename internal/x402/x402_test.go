@@ -3,6 +3,7 @@ package x402_test
 import (
 	"context"
 	"crypto/ecdsa"
+	"encoding/hex"
 	"errors"
 	"math/big"
 	"net/http"
@@ -199,6 +200,17 @@ func TestServerRejects(t *testing.T) {
 			sig := []byte(p.Payload.Signature)
 			sig[10] ^= 1 // flip one hex digit
 			p.Payload.Signature = string(sig)
+			return p
+		}, x402.ReasonBadSignature},
+		{"high-s malleated signature", func() x402.PaymentPayload {
+			// Same signer, valid math, but s is above the half order: (r, n-s, v^1).
+			p := r.signed(req, r.goodAuth(11), x402.LocalChainID)
+			raw, _ := hex.DecodeString(strings.TrimPrefix(p.Payload.Signature, "0x"))
+			n, _ := new(big.Int).SetString("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141", 16)
+			s := new(big.Int).SetBytes(raw[32:64])
+			copy(raw[32:64], common.LeftPadBytes(new(big.Int).Sub(n, s).Bytes(), 32))
+			raw[64] = 27 + (28 - raw[64]) // 27 <-> 28
+			p.Payload.Signature = "0x" + hex.EncodeToString(raw)
 			return p
 		}, x402.ReasonBadSignature},
 		{"wrong payee", func() x402.PaymentPayload {

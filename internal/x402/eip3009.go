@@ -108,10 +108,26 @@ func Sign(key *ecdsa.PrivateKey, digest common.Hash) ([]byte, error) {
 	return sig, nil
 }
 
-// Recover returns the signer of digest.
+// secp256k1HalfN is half the curve order. EIP-2 makes s above it non-canonical:
+// (r, n-s, v^1) recovers the same signer, so accepting it lets one authorization
+// be presented under two byte strings. Upstream x402 rejects those; so do we.
+var secp256k1HalfN = new(big.Int).Rsh(mustHex("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141"), 1)
+
+func mustHex(s string) *big.Int {
+	n, ok := new(big.Int).SetString(s, 16)
+	if !ok {
+		panic("bad curve order constant")
+	}
+	return n
+}
+
+// Recover returns the signer of digest. It rejects high-s (non-canonical) signatures.
 func Recover(digest common.Hash, sig []byte) (common.Address, error) {
 	if len(sig) != 65 {
 		return common.Address{}, errors.New("signature must be 65 bytes")
+	}
+	if new(big.Int).SetBytes(sig[32:64]).Cmp(secp256k1HalfN) > 0 {
+		return common.Address{}, errors.New("signature s is above the secp256k1 half order (non-canonical)")
 	}
 	s := append([]byte(nil), sig...)
 	if s[64] >= 27 {
