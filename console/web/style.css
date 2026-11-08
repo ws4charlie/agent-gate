@@ -255,3 +255,8 @@ a.tile.link:hover .s::after { opacity: 1; }
 }
 .ev.step { --c: var(--tool); }
 .tag.warn { background: rgba(251,191,36,.12); color: var(--warn); }
+.addr { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.addr a { color: inherit; text-decoration: underline dotted; text-underline-offset: 2px; }
+.addr a:hover { color: var(--accent2); }
+.copy { background: none; border: 0; padding: 0 2px; font-size: 11px; color: var(--muted); opacity: .7; border-radius: 4px; }
+.copy:hover { opacity: 1; color: var(--text); background: rgba(255,255,255,.08); }

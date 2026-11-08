@@ -56,6 +56,10 @@ type Config struct {
 	WalletAddress string // optional: show this address's USDC balance
 	RPCURL        string // JSON-RPC endpoint for the wallet balance
 	USDC          string // USDC contract on that chain
+
+	// Explorer is the block explorer for the payments network, so addresses
+	// and transactions on the page link to it; "" shows them as plain text.
+	Explorer string
 }
 
 type Server struct {

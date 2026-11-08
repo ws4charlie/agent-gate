@@ -94,6 +94,26 @@ async function api(path, opts = {}) {
   if (!r.ok) throw new Error((body && body.error) || text || r.statusText);
   return body;
 }
+// Addresses and transaction hashes: short, linked to the block explorer in a
+// new tab, with a button that copies the full value.
+function chainLink(v) {
+  const kind = v.length === 66 ? "tx" : "address";
+  const shortV = v.slice(0, 6) + "…" + v.slice(-4);
+  const ex = overview && overview.explorer;
+  const text = ex
+    ? `<a href="${esc(ex)}/${kind}/${esc(v)}" target="_blank" rel="noopener noreferrer" title="Open ${esc(v)} in the block explorer">${esc(shortV)}</a>`
+    : `<span title="${esc(v)}">${esc(shortV)}</span>`;
+  return `<span class="addr">${text}<button class="copy" data-copy="${esc(v)}" title="Copy the full ${kind === "tx" ? "transaction hash" : "address"}" aria-label="Copy">⧉</button></span>`;
+}
+// linkChain finds addresses and hashes in text that is already escaped.
+const linkChain = (escaped) => escaped.replace(/\b0x[0-9a-fA-F]{64}\b|\b0x[0-9a-fA-F]{40}\b/g, (m) => chainLink(m));
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-copy]");
+  if (!b) return;
+  e.preventDefault(); e.stopPropagation();
+  try { await navigator.clipboard.writeText(b.dataset.copy); toast("copied"); } catch { toast("could not copy", true); }
+});
+
 function toast(msg, err = false) {
   const t = $("#toast");
   t.textContent = msg;
@@ -172,7 +192,7 @@ function drawTiles(box, id, tiles) {
     box.dataset.sig = sig;
     box.innerHTML = tiles.map((t, i) => {
       const tagName = t.href ? "a" : "div";
-      return `<${tagName} class="tile${t.href ? " link" : ""}" ${t.href ? `href="${esc(t.href)}"` : ""} style="--glow:${t.g}">
+      return `<${tagName} class="tile${t.href ? " link" : ""}" ${t.href ? `href="${esc(t.href)}"` : ""} ${t.ext ? `target="_blank" rel="noopener noreferrer"` : ""} style="--glow:${t.g}">
         <div class="k">${esc(t.k)}</div><div class="v" id="${id}v${i}">0</div><div class="s" id="${id}s${i}"></div></${tagName}>`;
     }).join("");
   }
@@ -203,7 +223,8 @@ function drawOverview(o) {
     { k: "7 days", n: usdOf(T.spend_7d), f: usdNum, s: "models, tools, payments", g: "var(--accent2)" },
   ];
   if (o.wallet) spend.push({ k: "Wallet USDC", text: o.wallet.usdc ? "$" + trimUSD(o.wallet.usdc) : "—",
-    s: o.wallet.error ? o.wallet.error : short(o.wallet.address), g: "var(--pay)" });
+    s: o.wallet.error ? o.wallet.error : short(o.wallet.address), g: "var(--pay)",
+    href: o.explorer ? `${o.explorer}/address/${o.wallet.address}` : "", ext: true });
   drawTiles($("#ov-spend"), "ovs", spend);
   drawTiles($("#ov-activity"), "ova", activityTiles(T, ""));
   drawBars($("#ov-models"), o.models, "var(--model)");
@@ -314,7 +335,7 @@ function drawAgentDetail(a) {
     <div class="card allowed"><div class="row"><h3>Allowed</h3><button class="ghost small" data-edit="${esc(a.id)}">Edit</button></div>
       <div class="arow"><span class="muted">Models</span><div class="tags">${tagList(sc.models, "")}</div></div>
       <div class="arow"><span class="muted">Tools</span><div class="tags">${tagList(sc.tools, "t")}</div></div>
-      <div class="arow"><span class="muted">Payees</span><div class="tags">${tagList(sc.payees, "p", short)}</div></div>
+      <div class="arow"><span class="muted">Payees</span><div class="tags">${sc.payees.length ? sc.payees.map((x) => `<span class="tag p">${chainLink(x)}</span>`).join("") : `<span class="muted">none</span>`}</div></div>
       <div class="arow"><span class="muted">Limits</span><div>${limits}</div></div>
     </div>
     <div class="card"><div class="row between"><h3>Spend per hour · last 24 hours</h3><span class="muted">peak ${esc(usdNum(peak))}/h</span></div>
@@ -438,11 +459,12 @@ function drawLauncher() {
   const hasRunner = runners.includes(t.runner);
   $("#launcher").innerHTML = `<div class="row wrap tname"><h3>${esc(t.name)}</h3>
       <button class="btn go small" id="go" ${ready.enabled && hasRunner ? "" : "disabled"}>▶ Run</button>
+      <button class="ghost small" id="t-other" ${ready.enabled && hasRunner ? "" : "disabled"} title="Run once with your own question; the task does not change">Run with a different question…</button>
       <button class="ghost small" id="t-edit">Edit</button>
       ${t.edited ? `<button class="ghost small" id="t-reset" title="Go back to the built-in version">Reset</button>` : t.builtin ? "" : `<button class="ghost small" id="t-del">Delete</button>`}</div>
     ${t.description ? `<p class="muted tdesc">${esc(t.description)}</p>` : ""}
     <div class="tags"><a class="tag a" href="${esc(agentHref(t.runner))}" title="This agent does the work. Its own budgets limit each run and each day.">run by ${esc(t.runner)}</a>${agentLimits(t.runner)}</div>
-    <p class="asks"><span class="muted">Each run looks into</span> ${esc(t.default_topic)} <button class="linkbtn" id="t-other">Ask something else once…</button></p>
+    <p class="asks"><span class="muted">Each run looks into</span> ${esc(t.default_topic)}</p>
     ${!ready.enabled ? `<p style="color:var(--warn)">${esc(ready.reason)}</p>`
       : !hasRunner ? `<p style="color:var(--warn)">No runner for ${esc(t.runner)} on this machine. Start the console with --runners ${esc(t.runner)}=…</p>` : ""}`;
   $("#go").onclick = () => startRun(t.id, t.default_topic);
@@ -555,7 +577,7 @@ function callSummary(steps) {
   }
   return Object.entries(by).map(([k, v]) => `${v.n} ${k} ${v.n === 1 ? "call" : "calls"} ${esc(fmtUSD({ nanos: v.nanos }))}`).join(" · ");
 }
-const evLine = (e) => `<div class="ev ${esc(e.type)}${e.i >= seenEvents ? " new" : ""}"><span class="t">${esc(hhmmss(e.at))}</span>${esc(e.text)}</div>`;
+const evLine = (e) => `<div class="ev ${esc(e.type)}${e.i >= seenEvents ? " new" : ""}"><span class="t">${esc(hhmmss(e.at))}</span>${linkChain(esc(e.text))}</div>`;
 
 // What each saved file is, in words, for the buttons.
 const fileInfo = {
@@ -571,7 +593,7 @@ function drawRun(r) {
   const stepsHTML = r.events.map((e, i) => evLine({ ...e, i })).join("");
   const calls = r.steps.length ? `<div class="calls"><span class="muted">Through the gateway:</span> ${callSummary(r.steps)}</div>` : "";
   const gw = r.gateway_events.length ? `<h3 style="margin-top:14px">The gateway said no</h3><table class="tbl"><tbody>${r.gateway_events.map((e) =>
-    `<tr><td class="nowrap">${esc(hhmmss(e.at))}</td><td><span class="chip ${e.class === "refused" ? "warn" : e.class === "blocked" ? "blk" : "bad"}">${esc(e.class)}</span></td><td>${esc(e.name)}</td><td>${esc(e.status)}</td><td class="muted">${esc(e.detail)}</td></tr>`).join("")}</tbody></table>` : "";
+    `<tr><td class="nowrap">${esc(hhmmss(e.at))}</td><td><span class="chip ${e.class === "refused" ? "warn" : e.class === "blocked" ? "blk" : "bad"}">${esc(e.class)}</span></td><td>${esc(e.name)}</td><td>${esc(e.status)}</td><td class="muted">${linkChain(esc(e.detail))}</td></tr>`).join("")}</tbody></table>` : "";
   const files = r.files.length ? `<div class="files">${r.files.map((f) => {
       const [label, what] = fileInfo[f.name] || [f.name, ""];
       return `<button class="file ${openFile === f.name ? "on" : ""}" data-f="${esc(f.name)}" title="${esc(what)}">${esc(label)} <span class="muted">${(f.size / 1024).toFixed(1)} KB</span></button>`;
@@ -730,7 +752,7 @@ function drawEvents() {
   setHTML($("#ev-body"), lastEvents.length ? lastEvents.map((e) => `<tr><td class="nowrap">${esc(when(e.at))}</td>
     <td>${e.agent ? `<a href="${esc(agentHref(e.agent))}">${esc(e.agent)}</a>` : `<span class="muted">—</span>`}</td>
     <td><span class="chip ${e.class === "refused" ? "warn" : e.class === "blocked" ? "blk" : e.class === "notice" ? "" : "bad"}">${esc(e.class)}</span></td>
-    <td>${esc(e.kind)}</td><td>${esc(e.name)}</td><td>${esc(e.status)}</td><td class="muted">${esc(e.detail)}</td></tr>`).join("")
+    <td>${esc(e.kind)}</td><td>${esc(e.name)}</td><td>${esc(e.status)}</td><td class="muted">${linkChain(esc(e.detail))}</td></tr>`).join("")
     : `<tr><td colspan="7" class="muted">Nothing here. Good.</td></tr>`);
 }
 
