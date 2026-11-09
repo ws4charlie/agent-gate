@@ -67,11 +67,11 @@ scripts/agentgate-local up
 |---|---|
 | Ledger, gateway, policy, MCP gateway, payments | Tests in CI, with no secrets |
 | Payments on a local chain | Local anvil node with a mock USDC, in CI |
-| Payments on Base Sepolia | One live testnet settlement, below |
+| Payments on Base Sepolia | 99 testnet settlements so far; the first one is below |
 | OpenRouter | Early live testing, with more to come |
-| Real traffic | The author's own Claude Code and two research agents, through a gateway on a GCP VM since 2026-11-08 |
+| Real traffic | The author's own Claude Code and two research agents, since 2026-11-07; through a gateway on a GCP VM since 2026-11-08 |
 
-**Dogfooding has started.** Over 7–8 November 2026: 223 model calls, 65 paid tool calls settled on Base Sepolia, $1.12 spent in all, 13 requests refused by policy and 8 tool outputs blocked by screening, across 6 agents. This is still testnet-only software for a single gateway process. See [Limits](docs/limits.md).
+**Dogfooding has started.** Over 7–8 November 2026: 221 model calls; 101 paid tool calls, of which 99 were paid on Base Sepolia and 2 were refused before paying; $1.38 spent in all ($0.39 on models, $0.99 on tools); 13 requests refused and 8 tool outputs blocked by screening; 6 agents. These are the console's own numbers. This is still testnet-only software for a single gateway process. See [Limits](docs/limits.md).
 
 ### Testnet settlement
 
