@@ -231,6 +231,19 @@ func (s *Server) fillToday(ctx context.Context, byID map[string]*agentView, now 
 	return rows.Err()
 }
 
+// owned is audit_events as the spend numbers need it. A payment the chain
+// settled before the gateway could record it is written later by the
+// reconciler, with only the hold: that row takes its agent and tool from the
+// request that made the same hold, and its amount (unmetered_nanos) counts as
+// spend. Its own row is not another call.
+const owned = `(SELECT e.at, e.kind, e.status, e.cost_nanos + e.unmetered_nanos AS cost_nanos,
+		e.status NOT LIKE 'reconciled_%' AS is_call,
+		COALESCE(NULLIF(e.agent_id, ''), o.agent_id, '') AS agent_id,
+		COALESCE(NULLIF(e.model, ''), o.model, '') AS model
+	FROM audit_events e LEFT JOIN LATERAL (SELECT agent_id, model FROM audit_events o
+		WHERE e.hold_id <> '' AND (e.agent_id = '' OR e.model = '') AND o.hold_id = e.hold_id
+			AND o.id <> e.id AND o.agent_id <> '' ORDER BY o.id LIMIT 1) o ON true) a`
+
 func (s *Server) fillAudit(ctx context.Context, byID map[string]*agentView, now time.Time) error {
 	// Spend by kind over 7 days.
 	rows, err := s.pool.Query(ctx, `SELECT agent_id,
@@ -238,7 +251,7 @@ func (s *Server) fillAudit(ctx context.Context, byID map[string]*agentView, now 
 		COALESCE(SUM(cost_nanos) FILTER (WHERE kind = 'mcp'), 0)::bigint,
 		COALESCE(SUM(cost_nanos) FILTER (WHERE kind = 'payment'), 0)::bigint,
 		MAX(at)
-		FROM audit_events WHERE at > $1 AND agent_id <> '' GROUP BY agent_id`, now.Add(-7*24*time.Hour))
+		FROM `+owned+` WHERE at > $1 AND agent_id <> '' GROUP BY agent_id`, now.Add(-7*24*time.Hour))
 	if err != nil {
 		return err
 	}
@@ -264,11 +277,11 @@ func (s *Server) fillAudit(ctx context.Context, byID map[string]*agentView, now 
 	// Hourly spend and outcome counts over 24 hours.
 	start := now.Truncate(time.Hour).Add(-23 * time.Hour)
 	rows, err = s.pool.Query(ctx, `SELECT agent_id, date_trunc('hour', at AT TIME ZONE 'UTC'),
-		COALESCE(SUM(cost_nanos), 0)::bigint, COUNT(*),
+		COALESCE(SUM(cost_nanos), 0)::bigint, COUNT(*) FILTER (WHERE is_call),
 		COUNT(*) FILTER (WHERE status = ANY($2)),
 		COUNT(*) FILTER (WHERE NOT (status = ANY($2)) AND NOT (status = ANY($3))),
 		COUNT(*) FILTER (WHERE status = 'screened')
-		FROM audit_events WHERE at >= $1 AND agent_id <> '' GROUP BY 1, 2`, start, refusalStatuses, quietStatuses)
+		FROM `+owned+` WHERE at >= $1 AND agent_id <> '' GROUP BY 1, 2`, start, refusalStatuses, quietStatuses)
 	if err != nil {
 		return err
 	}
@@ -301,8 +314,9 @@ func (s *Server) fillAudit(ctx context.Context, byID map[string]*agentView, now 
 // returns, and each agent's own share handed to add.
 func (s *Server) lineItems(ctx context.Context, where string, now time.Time,
 	byID map[string]*agentView, add func(*agentView, lineItem)) ([]lineItem, error) {
-	rows, err := s.pool.Query(ctx, `SELECT agent_id, model, kind, COUNT(*), COALESCE(SUM(cost_nanos), 0)::bigint, MAX(at)
-		FROM audit_events WHERE at > $1 AND model <> '' AND `+where+`
+	rows, err := s.pool.Query(ctx, `SELECT agent_id, model, kind, COUNT(*) FILTER (WHERE is_call),
+		COALESCE(SUM(cost_nanos), 0)::bigint, MAX(at)
+		FROM `+owned+` WHERE at > $1 AND model <> '' AND `+where+`
 		GROUP BY agent_id, model, kind`, now.Add(-7*24*time.Hour))
 	if err != nil {
 		return nil, err

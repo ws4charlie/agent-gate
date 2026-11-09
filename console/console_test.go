@@ -568,3 +568,34 @@ func TestTailnetHandler(t *testing.T) {
 		}
 	}
 }
+
+// A payment the chain settled before the gateway could record it is spend, of
+// the agent and tool that made it, and not a second call.
+func TestSpendCountsLateSettlements(t *testing.T) {
+	s := newTestServer(t, nil)
+	me := newAgent(t, s, "payer")
+	ctx := context.Background()
+	for _, q := range []string{
+		`INSERT INTO audit_events (request_id, agent_id, kind, model, status, cost_nanos, at) VALUES ('p1', '` + me + `', 'payment', 'search', 'ok', 10000000, now())`,
+		`INSERT INTO audit_events (request_id, agent_id, kind, model, status, hold_id, at) VALUES ('p2', '` + me + `', 'payment', 'search', 'settlement_pending', 'h2', now() - interval '1 minute')`,
+		`INSERT INTO audit_events (request_id, kind, status, hold_id, unmetered_nanos, at) VALUES ('reconcile:h2', 'payment', 'reconciled_unmetered', 'h2', 10000000, now())`,
+	} {
+		if _, err := s.pool.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ov, err := s.overview(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := ov.Agents[0]
+	if a.Spend7d.Payment.Nanos != 20000000 || ov.Totals.Spend7d.Nanos != 20000000 {
+		t.Errorf("spend: agent %v, total %v; want $0.02 each", a.Spend7d.Payment, ov.Totals.Spend7d)
+	}
+	if len(ov.Tools) != 1 || ov.Tools[0].Name != "search" || ov.Tools[0].Calls != 2 || ov.Tools[0].Spend.Nanos != 20000000 {
+		t.Errorf("tool line: %+v; want search, 2 calls, $0.02", ov.Tools)
+	}
+	if a.Calls24h != 2 {
+		t.Errorf("calls: %d; the reconciler's row is not a call", a.Calls24h)
+	}
+}
