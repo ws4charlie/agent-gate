@@ -167,9 +167,15 @@ func (s *Server) overview(ctx context.Context) (*overview, error) {
 	if err := s.fillAudit(ctx, byID, now); err != nil {
 		return nil, err
 	}
+	// The 7-day total is all money spent, including by agents revoked since:
+	// the cards show only live agents, but the money left all the same, and
+	// the model and tool lines below count it too.
+	if err := s.pool.QueryRow(ctx, `SELECT COALESCE(SUM(cost_nanos), 0)::bigint FROM `+owned+`
+		WHERE at > $1 AND agent_id <> ''`, now.Add(-7*24*time.Hour)).Scan(&ov.Totals.Spend7d.Nanos); err != nil {
+		return nil, err
+	}
 	for _, v := range ov.Agents {
 		ov.Totals.Today.Nanos += v.Today.Nanos
-		ov.Totals.Spend7d.Nanos += v.Spend7d.Total.Nanos
 		ov.Totals.Calls24h += v.Calls24h
 		ov.Totals.Refused += v.Refused
 		ov.Totals.Errors += v.Errors
