@@ -802,6 +802,7 @@ const statusHelp = {
   client_disconnected: "The agent closed the request before the reply finished; what the model already produced is billed.",
   settlement_pending: "Paid, but the seller's confirmation did not come back; the reconciler records it later.",
   upstream_error: "The model provider returned an error.",
+  stopped_by_kill: "The run was killed while this request was in flight; what the model already produced is billed.",
 };
 const detailCell = (e) => linkChain(esc(e.detail || statusHelp[e.status] || ""));
 

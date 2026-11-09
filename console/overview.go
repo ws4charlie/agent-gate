@@ -18,8 +18,22 @@ import (
 var (
 	refusalStatuses = []string{"policy_denied", "approval_denied", "approval_expired", "approval_mismatch",
 		"approval_required", "killed", "insufficient_funds", "account_inactive", "unauthorized"}
-	quietStatuses = []string{"ok", "reconciled_settled", "reconciled_unmetered", "duplicate_request", "screened"}
+	quietStatuses = []string{"ok", "reconciled_settled", "reconciled_unmetered", "duplicate_request", "screened", stoppedByKill}
 )
+
+// stoppedByKill is not stored: it is how the console reads a request whose
+// client hung up because its run was killed from the console. That is the
+// kill switch working, not an error.
+const stoppedByKill = "stopped_by_kill"
+
+// statusOf is the status of audit row e as the console reads it: a client
+// hang-up that ended at or after its run's kill becomes stoppedByKill.
+func statusOf(e string) string {
+	return `CASE WHEN ` + e + `.status = 'client_disconnected' AND EXISTS (SELECT 1 FROM runs r
+		WHERE ` + e + `.run_id <> '' AND r.id = ` + e + `.run_id AND r.killed_at IS NOT NULL
+			AND ` + e + `.at + ` + e + `.latency_ms * interval '1 millisecond' >= r.killed_at - interval '2 seconds')
+		THEN '` + stoppedByKill + `' ELSE ` + e + `.status END`
+}
 
 // toolFilter keeps audit rows that are tool calls or payments, not MCP
 // protocol traffic such as tools/list (whose model field is the method).
@@ -242,7 +256,7 @@ func (s *Server) fillToday(ctx context.Context, byID map[string]*agentView, now 
 // reconciler, with only the hold: that row takes its agent and tool from the
 // request that made the same hold, and its amount (unmetered_nanos) counts as
 // spend. Its own row is not another call.
-const owned = `(SELECT e.at, e.kind, e.status, e.cost_nanos + e.unmetered_nanos AS cost_nanos,
+var owned = `(SELECT e.at, e.kind, ` + statusOf("e") + ` AS status, e.cost_nanos + e.unmetered_nanos AS cost_nanos,
 		e.status NOT LIKE 'reconciled_%' AS is_call,
 		COALESCE(NULLIF(e.agent_id, ''), o.agent_id, '') AS agent_id,
 		COALESCE(NULLIF(e.model, ''), o.model, '') AS model
@@ -447,9 +461,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 func (s *Server) events(ctx context.Context, f eventFilter) ([]event, error) {
 	// A row the reconciler wrote has no agent or tool of its own: take them
 	// from the request that made the same hold.
-	q := `SELECT e.at, COALESCE(g.name, src.agent_id), e.kind, src.model, e.status, e.err, e.run_id,
+	q := `SELECT e.at, COALESCE(g.name, src.agent_id), e.kind, src.model, st.status, e.err, e.run_id,
 		e.cost_nanos, e.unmetered_nanos, COALESCE(d.why, ''), COALESCE(d.amount, 0)
 		FROM audit_events e
+		CROSS JOIN LATERAL (SELECT ` + statusOf("e") + ` AS status) st
 		CROSS JOIN LATERAL (SELECT COALESCE(NULLIF(e.agent_id, ''), o.agent_id, '') AS agent_id,
 				COALESCE(NULLIF(e.model, ''), o.model, '') AS model
 			FROM (SELECT 1) one LEFT JOIN LATERAL (SELECT agent_id, model FROM audit_events o
@@ -458,20 +473,20 @@ func (s *Server) events(ctx context.Context, f eventFilter) ([]event, error) {
 		LEFT JOIN agents g ON g.id = src.agent_id
 		LEFT JOIN LATERAL (SELECT d.rule || ': ' || d.reason AS why, d.amount_nanos AS amount FROM policy_decisions d
 			WHERE d.request_id = e.request_id AND d.decision <> 'allow' ORDER BY d.id DESC LIMIT 1) d ON true
-		WHERE NOT (e.status = ANY($1))`
+		WHERE NOT (st.status = ANY($1))`
 	args := []any{[]string{"ok", "reconciled_settled", "duplicate_request"}}
 	arg := func(v any) string { args = append(args, v); return fmt.Sprintf("$%d", len(args)) }
 	switch f.Class {
 	case "":
-		q += ` AND e.status <> 'reconciled_unmetered'`
+		q += ` AND st.status <> 'reconciled_unmetered'`
 	case "refused":
-		q += ` AND e.status = ANY(` + arg(refusalStatuses) + `)`
+		q += ` AND st.status = ANY(` + arg(refusalStatuses) + `)`
 	case "blocked":
-		q += ` AND e.status = 'screened'`
+		q += ` AND st.status = 'screened'`
 	case "notice":
-		q += ` AND e.status = 'reconciled_unmetered'`
+		q += ` AND st.status IN ('reconciled_unmetered', '` + stoppedByKill + `')`
 	case "error":
-		q += ` AND NOT (e.status = ANY(` + arg(refusalStatuses) + `)) AND NOT (e.status = ANY(` + arg(quietStatuses) + `))`
+		q += ` AND NOT (st.status = ANY(` + arg(refusalStatuses) + `)) AND NOT (st.status = ANY(` + arg(quietStatuses) + `))`
 	}
 	if f.RunID != "" {
 		q += ` AND e.run_id = ` + arg(f.RunID)
@@ -524,7 +539,7 @@ func classify(status string) string {
 		return "blocked"
 	case contains(refusalStatuses, status):
 		return "refused"
-	case status == "reconciled_unmetered":
+	case status == "reconciled_unmetered", status == stoppedByKill:
 		return "notice"
 	}
 	return "error"
