@@ -599,3 +599,30 @@ func TestSpendCountsLateSettlements(t *testing.T) {
 		t.Errorf("calls: %d; the reconciler's row is not a call", a.Calls24h)
 	}
 }
+
+// The 7-day total counts money spent by agents revoked since; their cards are
+// gone but the money left.
+func TestTotalSpendIncludesRevokedAgents(t *testing.T) {
+	s := newTestServer(t, nil)
+	live := newAgent(t, s, "live")
+	gone := newAgent(t, s, "gone")
+	ctx := context.Background()
+	for _, q := range []string{
+		`INSERT INTO audit_events (request_id, agent_id, kind, model, status, cost_nanos, at) VALUES ('a', '` + live + `', 'model', 'm', 'ok', 3000, now())`,
+		`INSERT INTO audit_events (request_id, agent_id, kind, model, status, cost_nanos, at) VALUES ('b', '` + gone + `', 'model', 'm', 'ok', 5000, now())`,
+	} {
+		if _, err := s.pool.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.agents.Revoke(ctx, "gone"); err != nil {
+		t.Fatal(err)
+	}
+	ov, err := s.overview(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ov.Agents) != 1 || ov.Totals.Spend7d.Nanos != 8000 || ov.Models[0].Spend.Nanos != 8000 {
+		t.Fatalf("cards %d, total %d, model line %d; want 1 card and 8000 in both", len(ov.Agents), ov.Totals.Spend7d.Nanos, ov.Models[0].Spend.Nanos)
+	}
+}
