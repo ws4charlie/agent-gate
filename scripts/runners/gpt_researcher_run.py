@@ -16,9 +16,18 @@ tags = {"X-AgentGate-Run": run, "X-AgentGate-Task": run}
 
 # Every OpenAI client GPT Researcher builds, directly or through LangChain,
 # sends the run headers.
+#
+# Each async client also gets its own connection pool. LangChain shares one
+# pool across all its clients, but GPT Researcher runs its MCP search on a
+# second event loop in a thread and closes that loop afterwards. A later model
+# call then picks up a connection from the closed loop and fails ("Event loop
+# is closed"); GPT Researcher retries it, while the first request still runs
+# to the end upstream, so that call is paid for twice.
 for cls in (openai.OpenAI, openai.AsyncOpenAI):
-    def patched(self, *a, _orig=cls.__init__, **kw):
+    def patched(self, *a, _orig=cls.__init__, _cls=cls, **kw):
         kw["default_headers"] = {**(kw.get("default_headers") or {}), **tags}
+        if _cls is openai.AsyncOpenAI:
+            kw.pop("http_client", None)
         _orig(self, *a, **kw)
     cls.__init__ = patched
 
