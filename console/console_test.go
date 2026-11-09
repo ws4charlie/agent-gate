@@ -626,3 +626,51 @@ func TestTotalSpendIncludesRevokedAgents(t *testing.T) {
 		t.Fatalf("cards %d, total %d, model line %d; want 1 card and 8000 in both", len(ov.Agents), ov.Totals.Spend7d.Nanos, ov.Models[0].Spend.Nanos)
 	}
 }
+
+// A client that hung up because its run was killed is the kill switch working,
+// not an error; a hang-up that ended before the kill still is one.
+func TestKillHangUpIsNotAnError(t *testing.T) {
+	s := newTestServer(t, nil)
+	me := newAgent(t, s, "researcher")
+	ctx := context.Background()
+	if _, err := s.pool.Exec(ctx, `INSERT INTO runs (id, agent_id, account_id, status, killed_at)
+		SELECT 'run_k', id, account_id, 'killed', now() - interval '10 seconds' FROM agents WHERE id = $1`, me); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		// In flight at the kill: started 30 s ago, ran 25 s.
+		`INSERT INTO audit_events (request_id, agent_id, run_id, kind, model, status, latency_ms, at)
+			VALUES ('cut', 'x', 'run_k', 'model', 'm', 'client_disconnected', 25000, now() - interval '30 seconds')`,
+		// Hung up a minute before the kill.
+		`INSERT INTO audit_events (request_id, agent_id, run_id, kind, model, status, latency_ms, at)
+			VALUES ('early', 'x', 'run_k', 'model', 'm', 'client_disconnected', 1000, now() - interval '80 seconds')`,
+	} {
+		if _, err := s.pool.Exec(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	probs, err := s.runProblems(ctx, []string{"run_k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := probs["run_k"]; p.Errors != 1 {
+		t.Fatalf("errors = %d, want 1 (only the early hang-up)", p.Errors)
+	}
+	ev, err := s.events(ctx, eventFilter{RunID: "run_k", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, e := range ev {
+		got[e.Status] = e.Class
+	}
+	if got[stoppedByKill] != "notice" || got["client_disconnected"] != "error" || len(ev) != 2 {
+		t.Fatalf("events: %+v", ev)
+	}
+	for class, want := range map[string]int{"error": 1, "notice": 1} {
+		ev, err := s.events(ctx, eventFilter{RunID: "run_k", Class: class, Limit: 10})
+		if err != nil || len(ev) != want {
+			t.Fatalf("%s: %d events (%v)", class, len(ev), err)
+		}
+	}
+}
