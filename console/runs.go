@@ -167,9 +167,9 @@ func (s *Server) runProblems(ctx context.Context, ids []string) (map[string]prob
 	rows, err := s.pool.Query(ctx, `SELECT run_id,
 		COUNT(*) FILTER (WHERE status = ANY($2)),
 		COUNT(*) FILTER (WHERE NOT (status = ANY($2)) AND NOT (status = ANY($3))),
-		COUNT(*) FILTER (WHERE status = 'screened')
+		COUNT(*) FILTER (WHERE status = ANY($4))
 		FROM (SELECT e.run_id, `+statusOf("e")+` AS status FROM audit_events e WHERE e.run_id = ANY($1)) a
-		GROUP BY run_id`, ids, refusalStatuses, quietStatuses)
+		GROUP BY run_id`, ids, refusalStatuses, quietStatuses, blockStatuses)
 	if err != nil {
 		return nil, err
 	}

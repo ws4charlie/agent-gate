@@ -22,8 +22,14 @@ A tool result is text somebody else wrote. It might contain a line like "ignore 
 
 So before the agent sees it, we look for known tricks: override phrases, hidden characters and encoded messages. On a match, the agent gets only an error. We log which rule fired, and never the content.
 
+## Keys and passwords don't leave by accident
+
+An agent that has read a config file may paste a key into a search query, and then the search service has it. So before a tool call goes out, we look for keys and passwords by their known shapes.
+
+Each agent picks how strict to be. In confirm mode, the default, the call is held, and the agent learns what was found and where; only the key's first and last few characters are shown. It can ask its user, then send the same call again with a confirmation that fits only that call. In block mode, the call never goes out. Either way, it is logged.
+
 ## What screening can't do
 
-It catches only the cheap, well-known attacks. Rephrasing or another language can get through. It also reads only tool call results, not tool descriptions or other content a server offers.
+It catches only the cheap, well-known attacks. Rephrasing or another language can get through. It also reads only tool call results, not tool descriptions or other content a server offers. A password with no recognisable shape, typed into a free-text field, is not found.
 
 What really protects you from a hijacked agent is everything that doesn't depend on reading text: what it can touch, how much it can spend, and how fast.

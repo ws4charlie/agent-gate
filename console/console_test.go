@@ -674,3 +674,36 @@ func TestKillHangUpIsNotAnError(t *testing.T) {
 		}
 	}
 }
+
+// A key or password the gateway held counts as blocked, like screened output,
+// and an agent's mode for it is set with its other limits.
+func TestSecretHoldsCountAsBlocked(t *testing.T) {
+	s := newTestServer(t, nil)
+	me := newAgent(t, s, "sender")
+	ctx := context.Background()
+	if _, err := s.pool.Exec(ctx, `INSERT INTO audit_events (request_id, agent_id, run_id, kind, model, status, err, at)
+		VALUES ('h', $1, 'run_s', 'mcp', 'fake/search', 'secret_held', 'secret_in_request: anthropic_api_key in arguments.query', now())`, me); err != nil {
+		t.Fatal(err)
+	}
+	probs, err := s.runProblems(ctx, []string{"run_s"})
+	if err != nil || probs["run_s"].Blocked != 1 || probs["run_s"].Errors != 0 {
+		t.Fatalf("problems %+v %v", probs["run_s"], err)
+	}
+	ev, err := s.events(ctx, eventFilter{Class: "blocked", RunID: "run_s", Limit: 10})
+	if err != nil || len(ev) != 1 || ev[0].Class != "blocked" {
+		t.Fatalf("events %+v %v", ev, err)
+	}
+
+	h := s.Handler()
+	for body, want := range map[string]int{`{"secrets":"block"}`: http.StatusOK, `{"secrets":"warn"}`: http.StatusBadRequest} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, apiReq(s, "PUT", "/api/agents/sender/scope", body))
+		if w.Code != want {
+			t.Fatalf("%s: %d %s", body, w.Code, w.Body)
+		}
+	}
+	a, err := s.agents.Get(ctx, "sender")
+	if err != nil || a.Scope.SecretMode() != "block" {
+		t.Fatalf("mode %+v %v", a.Scope, err)
+	}
+}

@@ -719,3 +719,83 @@ func TestMCPLegacyClientIsAdaptedAtTheEdge(t *testing.T) {
 		}
 	}
 }
+
+// ---- a key or password on its way out ----
+
+const testKey = "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123a1f2"
+
+// heldResult decodes a held call's tool result.
+func heldResult(t *testing.T, b []byte) (text string, risk map[string]any) {
+	t.Helper()
+	var m struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			Structured map[string]map[string]any `json:"structuredContent"`
+			IsError    bool                      `json:"isError"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(b, &m); err != nil || !m.Result.IsError || len(m.Result.Content) != 1 {
+		t.Fatalf("not a held result: %s", b)
+	}
+	return m.Result.Content[0].Text, m.Result.Structured["agentgate_risk"]
+}
+
+func TestSecretIsHeldThenSentOnConfirmation(t *testing.T) {
+	m := newMCPEnv(t, 10*usd, map[string]money.Nanos{"paid": 1_000_000})
+	resp, b := m.call("paid", map[string]any{"text": "debug " + testKey}, nil)
+	text, risk := heldResult(t, b)
+	if strings.Contains(string(b), "AbCdEfGh") || risk["what"] != "anthropic_api_key" || risk["where"] != "arguments.text" ||
+		risk["seen"] != "sk-ant-…a1f2" || risk["action"] != "held" || !strings.Contains(text, "Ask the user") {
+		t.Fatalf("held reply: %s", b)
+	}
+	if n := m.up.ToolCalls(); n != 0 {
+		t.Fatalf("held call reached the tool (%d calls)", n)
+	}
+	if row := m.auditRow(resp); row.Status != server.StatusSecretHeld || row.Cost != 0 {
+		t.Fatalf("audit %+v", row)
+	}
+	code := risk["to_send_anyway"].(map[string]any)["value"].(string)
+
+	// A code for other arguments does not fit.
+	_, b = m.call("paid", map[string]any{"text": "debug " + testKey + " v2", "_agentgate_confirm": code}, nil)
+	if _, risk := heldResult(t, b); risk["action"] != "held" || m.up.ToolCalls() != 0 {
+		t.Fatalf("a code for other arguments was accepted: %s", b)
+	}
+
+	// The same arguments with the code go through; the code itself is not forwarded.
+	resp, b = m.call("paid", map[string]any{"text": "debug " + testKey, "_agentgate_confirm": code}, nil)
+	if code, _ := rpcErr(t, b); code != 0 || m.up.ToolCalls() != 1 {
+		t.Fatalf("confirmed call: %s", b)
+	}
+	if calls := m.up.Calls(); strings.Contains(string(calls[len(calls)-1].Body), "_agentgate_confirm") {
+		t.Fatalf("confirm code forwarded upstream: %s", calls[len(calls)-1].Body)
+	}
+	if row := m.auditRow(resp); row.Status != "ok" || row.Cost != 1_000_000 {
+		t.Fatalf("audit %+v", row)
+	}
+	m.noActiveHolds()
+}
+
+func TestSecretIsBlockedInBlockMode(t *testing.T) {
+	m := newMCPEnv(t, 10*usd, map[string]money.Nanos{"paid": 1_000_000})
+	m.setScope(func(s *policy.Scope) { s.Secrets = policy.SecretsBlock })
+	resp, b := m.call("paid", map[string]any{"text": "https://admin:hunter2pass@db.example.com"}, nil)
+	code, data := rpcErr(t, b)
+	risk, _ := data["agentgate_risk"].(map[string]any)
+	if code != mcp.CodeScreened || risk["what"] != "password_in_url" || risk["action"] != "blocked" || strings.Contains(string(b), "hunter2") {
+		t.Fatalf("blocked reply: %s", b)
+	}
+	if m.up.ToolCalls() != 0 {
+		t.Fatal("blocked call reached the tool")
+	}
+	if row := m.auditRow(resp); row.Status != server.StatusSecretBlocked {
+		t.Fatalf("audit %+v", row)
+	}
+	// No confirm code lets it through in block mode.
+	_, b = m.call("paid", map[string]any{"text": "https://admin:hunter2pass@db.example.com", "_agentgate_confirm": "c_000000000000"}, nil)
+	if code, _ := rpcErr(t, b); code != mcp.CodeScreened || m.up.ToolCalls() != 0 {
+		t.Fatalf("block mode let a call through: %s", b)
+	}
+}

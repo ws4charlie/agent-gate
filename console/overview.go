@@ -18,7 +18,11 @@ import (
 var (
 	refusalStatuses = []string{"policy_denied", "approval_denied", "approval_expired", "approval_mismatch",
 		"approval_required", "killed", "insufficient_funds", "account_inactive", "unauthorized"}
-	quietStatuses = []string{"ok", "reconciled_settled", "reconciled_unmetered", "duplicate_request", "screened", stoppedByKill}
+	// blockStatuses: the gateway stopped content, in either direction: a tool
+	// result it screened, or a key or password a tool call tried to send.
+	blockStatuses = []string{"screened", "secret_held", "secret_blocked"}
+	quietStatuses = []string{"ok", "reconciled_settled", "reconciled_unmetered", "duplicate_request", "screened",
+		"secret_held", "secret_blocked", stoppedByKill}
 )
 
 // stoppedByKill is not stored: it is how the console reads a request whose
@@ -56,10 +60,11 @@ type scopeView struct {
 	TaskBudget        usd      `json:"task_budget"`
 	VelocityPerMinute usd      `json:"velocity_per_minute"`
 	ApprovalThreshold usd      `json:"approval_threshold"`
+	Secrets           string   `json:"secrets"` // confirm | block
 }
 
 func viewScope(s policy.Scope) scopeView {
-	return scopeView{Models: nonNil(s.Models), Tools: nonNil(s.Tools), Payees: nonNil(s.Payees),
+	return scopeView{Models: nonNil(s.Models), Tools: nonNil(s.Tools), Payees: nonNil(s.Payees), Secrets: s.SecretMode(),
 		DailyBudget: dollars(int64(s.DailyBudget)), TaskBudget: dollars(int64(s.TaskBudget)),
 		VelocityPerMinute: dollars(int64(s.VelocityPerMinute)), ApprovalThreshold: dollars(int64(s.ApprovalThreshold))}
 }
@@ -300,8 +305,8 @@ func (s *Server) fillAudit(ctx context.Context, byID map[string]*agentView, now 
 		COALESCE(SUM(cost_nanos), 0)::bigint, COUNT(*) FILTER (WHERE is_call),
 		COUNT(*) FILTER (WHERE status = ANY($2)),
 		COUNT(*) FILTER (WHERE NOT (status = ANY($2)) AND NOT (status = ANY($3))),
-		COUNT(*) FILTER (WHERE status = 'screened')
-		FROM `+owned+` WHERE at >= $1 AND agent_id <> '' GROUP BY 1, 2`, start, refusalStatuses, quietStatuses)
+		COUNT(*) FILTER (WHERE status = ANY($4))
+		FROM `+owned+` WHERE at >= $1 AND agent_id <> '' GROUP BY 1, 2`, start, refusalStatuses, quietStatuses, blockStatuses)
 	if err != nil {
 		return err
 	}
@@ -482,7 +487,7 @@ func (s *Server) events(ctx context.Context, f eventFilter) ([]event, error) {
 	case "refused":
 		q += ` AND st.status = ANY(` + arg(refusalStatuses) + `)`
 	case "blocked":
-		q += ` AND st.status = 'screened'`
+		q += ` AND st.status = ANY(` + arg(blockStatuses) + `)`
 	case "notice":
 		q += ` AND st.status IN ('reconciled_unmetered', '` + stoppedByKill + `')`
 	case "error":
@@ -535,7 +540,7 @@ func (s *Server) events(ctx context.Context, f eventFilter) ([]event, error) {
 
 func classify(status string) string {
 	switch {
-	case status == "screened":
+	case contains(blockStatuses, status):
 		return "blocked"
 	case contains(refusalStatuses, status):
 		return "refused"
@@ -564,10 +569,18 @@ type scopeEdit struct {
 	TaskBudget        string   `json:"task_budget_usd"`
 	VelocityPerMinute string   `json:"velocity_per_minute_usd"`
 	ApprovalThreshold string   `json:"approval_threshold_usd"`
+	Secrets           string   `json:"secrets"` // confirm (default) or block
 }
 
 func (e scopeEdit) scope() (policy.Scope, error) {
 	sc := policy.Scope{Models: clean(e.Models), Tools: clean(e.Tools), Payees: clean(e.Payees)}
+	switch e.Secrets {
+	case "", policy.SecretsConfirm:
+	case policy.SecretsBlock:
+		sc.Secrets = policy.SecretsBlock
+	default:
+		return sc, fmt.Errorf("%w: secrets must be confirm or block", errInvalid)
+	}
 	for _, f := range []struct {
 		name string
 		v    string

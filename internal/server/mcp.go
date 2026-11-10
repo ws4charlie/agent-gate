@@ -405,6 +405,10 @@ func (c *call) toolCall(server string, srv mcp.Server, req mcp.Request, body []b
 	if !ok {
 		return
 	}
+	// A key or password on its way out is checked before anything is paid.
+	if c.secretGate(tool, task, req, &p, &body) {
+		return
+	}
 
 	var hold ledger.Hold
 	var held bool
