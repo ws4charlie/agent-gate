@@ -73,6 +73,25 @@ type Scope struct {
 	TaskBudget        money.Nanos `json:"task_budget_nanos"`         // per X-AgentGate-Task
 	VelocityPerMinute money.Nanos `json:"velocity_per_minute_nanos"` // sliding 60s window
 	ApprovalThreshold money.Nanos `json:"approval_threshold_nanos"`  // a single request above this needs a human
+
+	// Secrets says what happens when a tool call carries a key or password:
+	// SecretsConfirm (the default, "") holds it and tells the agent, which may
+	// resend it with a confirm code; SecretsBlock refuses it outright.
+	Secrets string `json:"secrets,omitempty"`
+}
+
+// Values of Scope.Secrets.
+const (
+	SecretsConfirm = "confirm"
+	SecretsBlock   = "block"
+)
+
+// SecretMode is Secrets with the default filled in.
+func (s Scope) SecretMode() string {
+	if s.Secrets == SecretsBlock {
+		return SecretsBlock
+	}
+	return SecretsConfirm
 }
 
 // DefaultScope is what a migrated T2 API key gets: any model, any tool, no

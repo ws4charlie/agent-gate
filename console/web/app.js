@@ -346,6 +346,7 @@ function drawAgentDetail(a) {
       <div class="arow"><span class="muted">Tools</span><div class="tags">${tagList(sc.tools, "t")}</div></div>
       <div class="arow"><span class="muted">Payees</span><div class="tags">${sc.payees.length ? sc.payees.map((x) => `<span class="tag p">${chainLink(x)}</span>`).join("") : `<span class="muted">none</span>`}</div></div>
       <div class="arow"><span class="muted">Limits</span><div>${limits}</div></div>
+      <div class="arow"><span class="muted">Secrets</span><div>${sc.secrets === "block" ? "block a key or password in a tool call" : "hold a key or password in a tool call and ask the agent to confirm"}</div></div>
     </div>
     <div class="card"><div class="row between"><h3>Spend per hour · last 24 hours</h3><span class="muted">peak ${esc(usdNum(peak))}/h</span></div>
       ${spark(a.hourly, a.status === "active" ? "#22d3ee" : "#f87171", 90)}
@@ -390,6 +391,9 @@ function editAgent(id) {
       <div class="field"><label>Per minute (USD)</label><input id="e-vel" value="${esc(usdField(sc.velocity_per_minute))}" placeholder="no limit"></div>
     </div>
     <div class="field"><label>Human approval above (USD, one request)</label><input id="e-appr" value="${esc(usdField(sc.approval_threshold))}" placeholder="never"></div>
+    <div class="field"><label>A key or password in a tool call</label><select id="e-secrets">
+      <option value="confirm" ${sc.secrets !== "block" ? "selected" : ""}>Confirm: hold it, tell the agent, send only if it confirms</option>
+      <option value="block" ${sc.secrets === "block" ? "selected" : ""}>Block: never send it</option></select></div>
     <div class="field"><label>Models (one per line; a trailing * is a prefix)</label><textarea id="e-models">${esc(sc.models.join("\n"))}</textarea></div>
     <div class="field"><label>Tools (server/tool for MCP, a name for a paid x402 tool)</label><textarea id="e-tools">${esc(sc.tools.join("\n"))}</textarea></div>
     <div class="field"><label>Payees (0x addresses)</label><textarea id="e-payees">${esc(sc.payees.join("\n"))}</textarea></div>
@@ -398,7 +402,7 @@ function editAgent(id) {
   $("#e-cancel").onclick = closeModal;
   $("#e-save").onclick = async () => {
     const body = { daily_budget_usd: $("#e-daily").value, task_budget_usd: $("#e-task").value, velocity_per_minute_usd: $("#e-vel").value,
-      approval_threshold_usd: $("#e-appr").value, models: lines($("#e-models").value), tools: lines($("#e-tools").value), payees: lines($("#e-payees").value) };
+      approval_threshold_usd: $("#e-appr").value, secrets: $("#e-secrets").value, models: lines($("#e-models").value), tools: lines($("#e-tools").value), payees: lines($("#e-payees").value) };
     const name = $("#e-name").value.trim();
     try {
       if (!a.console && name !== a.name) {
@@ -802,6 +806,8 @@ const statusHelp = {
   client_disconnected: "The agent closed the request before the reply finished; what the model already produced is billed.",
   settlement_pending: "Paid, but the seller's confirmation did not come back; the reconciler records it later.",
   upstream_error: "The model provider returned an error.",
+  secret_held: "A key or password was in the tool call; it was not sent, and the agent was asked to confirm.",
+  secret_blocked: "A key or password was in the tool call; it was not sent.",
   stopped_by_kill: "The run was killed while this request was in flight; what the model already produced is billed.",
 };
 const detailCell = (e) => linkChain(esc(e.detail || statusHelp[e.status] || ""));
