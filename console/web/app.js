@@ -181,7 +181,7 @@ let overview = null;
 async function loadOverview() {
   try {
     overview = await api("/api/overview");
-    $("#clock").textContent = "live · " + hhmmss(overview.at) + (overview.viewer ? " · " + overview.viewer : "");
+    $("#clock").textContent = "live · " + hhmmss(overview.at);
     $(".dot").classList.remove("off");
     drawOverview(overview);
     if (tab === "agents") drawAgentsTab(overview);
