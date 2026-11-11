@@ -545,7 +545,9 @@ func TestTailnetHandler(t *testing.T) {
 	}
 	const host, origin = "agentgate.tail1234.ts.net", "https://agentgate.tail1234.ts.net"
 	w := call("GET", host, "100.64.0.2:5000", "", "/api/overview", "")
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"viewer":"Friend@Gmail.com"`) {
+	// The page does not show who is looking: a login is an email address,
+	// and the page may be on a shared screen or in a screen recording.
+	if w.Code != 200 || strings.Contains(strings.ToLower(w.Body.String()), "friend@gmail.com") || strings.Contains(w.Body.String(), `"viewer"`) {
 		t.Fatalf("allowed friend: %d %s", w.Code, w.Body.String()[:min(200, w.Body.Len())])
 	}
 	for name, c := range map[string]struct{ method, host, remote, origin string }{

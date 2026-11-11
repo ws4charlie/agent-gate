@@ -119,7 +119,6 @@ type overview struct {
 	Totals   totals       `json:"totals"`
 	Wallet   *walletView  `json:"wallet,omitempty"`
 	Explorer string       `json:"explorer"` // block explorer base URL, or ""
-	Viewer   string       `json:"viewer"`   // who opened the page over the tailnet; "" on this machine
 	Agents   []*agentView `json:"agents"`
 	Models   []lineItem   `json:"models"`
 	Tools    []lineItem   `json:"tools"`
@@ -213,7 +212,6 @@ func (s *Server) overview(ctx context.Context) (*overview, error) {
 	}
 	ov.Run = s.runReady()
 	ov.Explorer = s.cfg.Explorer
-	ov.Viewer = viewer(ctx).Login
 	return ov, nil
 }
 

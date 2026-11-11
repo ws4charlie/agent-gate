@@ -66,14 +66,6 @@ func TailscaleWhois(socket string) Whois {
 	}
 }
 
-type viewerKey struct{}
-
-// viewer is who opened the page over the tailnet, or nobody on this machine.
-func viewer(ctx context.Context) Identity {
-	id, _ := ctx.Value(viewerKey{}).(Identity)
-	return id
-}
-
 // TailnetHandler serves the console on the tailnet under one host name, to
 // the logins on allow only. It is the same console as Handler, without the
 // console key: the identity check takes its place.
@@ -110,7 +102,7 @@ func (s *Server) TailnetHandler(host string, allow []string, who Whois) http.Han
 		}
 		securityHeaders(w)
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
-		inner.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), viewerKey{}, id)))
+		inner.ServeHTTP(w, r)
 	})
 }
 
