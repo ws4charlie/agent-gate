@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
 
 	"github.com/ws4charlie/agent-gate/internal/money"
 	"github.com/ws4charlie/agent-gate/internal/policy"
@@ -34,6 +35,8 @@ var (
 	ErrBadName      = errors.New("agents: name must be 1-64 characters of letters, digits, '.', '_' or '-'")
 	ErrBadState     = errors.New("agents: wrong state for this change")
 	ErrNameTaken    = errors.New("agents: another agent has this name")
+	ErrBadSpiffeID  = errors.New("agents: not a valid SPIFFE ID")
+	ErrSpiffeTaken  = errors.New("agents: another agent has this SPIFFE ID")
 )
 
 var nameRE = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
@@ -44,6 +47,8 @@ type Agent struct {
 	Scope               policy.Scope
 	Status              policy.Status
 	CreatedAt           time.Time
+	SpiffeID            string // "" when the agent has no SPIFFE identity
+	APIKeyEnabled       bool   // false: the API key is refused, SPIFFE is the only way in
 }
 
 type Store struct {
@@ -77,17 +82,17 @@ func (s *Store) Create(ctx context.Context, accountID, name string, scope policy
 	if err != nil {
 		return "", Agent{}, fmt.Errorf("create agent: %w", err)
 	}
-	a.AccountID, a.Name, a.Scope, a.Status = accountID, name, scope, policy.StatusActive
+	a.AccountID, a.Name, a.Scope, a.Status, a.APIKeyEnabled = accountID, name, scope, policy.StatusActive, true
 	return secret, a, nil
 }
 
-const agentCols = `id, account_id, name, scope, status, created_at`
+const agentCols = `id, account_id, name, scope, status, created_at, COALESCE(spiffe_id, ''), api_key_enabled`
 
 func scan(row pgx.Row) (Agent, error) {
 	var a Agent
 	var sj []byte
 	var st string
-	if err := row.Scan(&a.ID, &a.AccountID, &a.Name, &sj, &st, &a.CreatedAt); err != nil {
+	if err := row.Scan(&a.ID, &a.AccountID, &a.Name, &sj, &st, &a.CreatedAt, &a.SpiffeID, &a.APIKeyEnabled); err != nil {
 		return Agent{}, err
 	}
 	a.Status = policy.Status(st)
@@ -113,7 +118,68 @@ func (s *Store) Authenticate(ctx context.Context, token string) (Agent, error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Agent{}, ErrUnauthorized
 	}
+	if err == nil && !a.APIKeyEnabled {
+		return Agent{}, ErrUnauthorized // keys are turned off for this agent
+	}
 	return a, err
+}
+
+// AuthenticateSPIFFE resolves a SPIFFE ID the TLS layer has already verified
+// to its agent. Like Authenticate, a killed or revoked agent still resolves:
+// policy refuses it with a rule id.
+func (s *Store) AuthenticateSPIFFE(ctx context.Context, id string) (Agent, error) {
+	if id == "" {
+		return Agent{}, ErrUnauthorized
+	}
+	a, err := scan(s.pool.QueryRow(ctx, `SELECT `+agentCols+` FROM agents WHERE spiffe_id=$1`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Agent{}, ErrUnauthorized
+	}
+	return a, err
+}
+
+// SetSpiffeID maps a SPIFFE ID to an agent; "" clears the mapping. One ID
+// names one agent. A revoked agent cannot be changed.
+func (s *Store) SetSpiffeID(ctx context.Context, ref, id string) (Agent, error) {
+	var arg *string
+	if id != "" {
+		if _, err := spiffeid.FromString(id); err != nil {
+			return Agent{}, fmt.Errorf("%w: %v", ErrBadSpiffeID, err)
+		}
+		arg = &id
+	}
+	a, err := scan(s.pool.QueryRow(ctx, `UPDATE agents SET spiffe_id=$2
+		WHERE (id=$1 OR name=$1) AND status <> 'revoked' RETURNING `+agentCols, ref, arg))
+	var pe *pgconn.PgError
+	switch {
+	case errors.As(err, &pe) && pe.Code == "23505":
+		return Agent{}, fmt.Errorf("%w: %s", ErrSpiffeTaken, id)
+	case errors.Is(err, pgx.ErrNoRows):
+		return Agent{}, s.notChangeable(ctx, ref)
+	}
+	return a, err
+}
+
+// SetAPIKeyEnabled turns the API key on or off for an agent. Turning it off
+// does not delete the key; turning it on again restores it. A revoked agent
+// cannot be changed.
+func (s *Store) SetAPIKeyEnabled(ctx context.Context, ref string, on bool) (Agent, error) {
+	a, err := scan(s.pool.QueryRow(ctx, `UPDATE agents SET api_key_enabled=$2
+		WHERE (id=$1 OR name=$1) AND status <> 'revoked' RETURNING `+agentCols, ref, on))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Agent{}, s.notChangeable(ctx, ref)
+	}
+	return a, err
+}
+
+// notChangeable explains why an UPDATE matched no row: no such agent, or a
+// revoked one.
+func (s *Store) notChangeable(ctx context.Context, ref string) error {
+	cur, err := s.Get(ctx, ref)
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: agent %s is %s", ErrBadState, cur.Name, cur.Status)
 }
 
 // Get finds an agent by id or by name.

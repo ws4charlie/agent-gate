@@ -40,11 +40,11 @@ func usd(flag, v string) (money.Nanos, error) {
 	return n, nil
 }
 
-// agentCmd: agent create | list | revoke. Needs direct database access, like
+// agentCmd: agent create | list | revoke | set-spiffe | api-key. Needs direct database access, like
 // every administrative command: there is no HTTP route that changes an agent.
 func agentCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("agent: need create | list | revoke")
+		return errors.New("agent: need create | list | revoke | set-spiffe | api-key")
 	}
 	c := newCommon("agent " + args[0])
 	acct := c.fs.String("account", "", "ledger account the agent spends from (create)")
@@ -56,13 +56,24 @@ func agentCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	task := c.fs.String("task", "", "per-task budget in USD (X-AgentGate-Task); empty: no limit (create)")
 	velocity := c.fs.String("velocity", "", "most USD per rolling minute; empty: no limit (create)")
 	approvalOver := c.fs.String("approval-over", "", "a single request above this many USD needs a human; empty: never (create)")
+	clearID := c.fs.Bool("clear", false, "remove the SPIFFE ID (set-spiffe)")
 	sub, rest := args[0], args[1:]
-	ref := ""
-	if sub == "revoke" {
+	ref, value := "", ""
+	switch sub {
+	case "revoke", "set-spiffe", "api-key":
 		if len(rest) == 0 || strings.HasPrefix(rest[0], "-") {
-			return errors.New("agent revoke: need an agent id or name first")
+			return fmt.Errorf("agent %s: need an agent id or name first", sub)
 		}
 		ref, rest = rest[0], rest[1:]
+	}
+	// The value of set-spiffe (an ID, or "" to clear) and api-key (on|off) is
+	// the next word; flags such as --clear may follow it or take its place.
+	if sub == "set-spiffe" || sub == "api-key" {
+		if len(rest) > 0 && (!strings.HasPrefix(rest[0], "-") || rest[0] == "") {
+			value, rest = rest[0], rest[1:]
+		} else if sub == "api-key" || !hasFlag(rest, "clear") {
+			return fmt.Errorf("agent %s: need a value after the agent", sub)
+		}
 	}
 	_, pool, err := c.open(ctx, rest)
 	if err != nil {
@@ -100,12 +111,12 @@ func agentCmd(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "ID\tNAME\tACCOUNT\tSTATUS\tMODELS\tTOOLS\tPAYEES\tDAILY\tTASK\tPER-MIN\tAPPROVE-OVER")
+		fmt.Fprintln(tw, "ID\tNAME\tACCOUNT\tSTATUS\tMODELS\tTOOLS\tPAYEES\tDAILY\tTASK\tPER-MIN\tAPPROVE-OVER\tKEY\tSPIFFE-ID")
 		for _, a := range list {
 			s := a.Scope
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n", a.ID, a.Name, a.AccountID, a.Status,
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n", a.ID, a.Name, a.AccountID, a.Status,
 				strings.Join(s.Models, ","), strings.Join(s.Tools, ","), len(s.Payees),
-				lim(s.DailyBudget), lim(s.TaskBudget), lim(s.VelocityPerMinute), lim(s.ApprovalThreshold))
+				lim(s.DailyBudget), lim(s.TaskBudget), lim(s.VelocityPerMinute), lim(s.ApprovalThreshold), onOff(a.APIKeyEnabled), dash(a.SpiffeID))
 		}
 		return tw.Flush()
 	case "revoke":
@@ -114,10 +125,63 @@ func agentCmd(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		fmt.Fprintf(stdout, "revoked %s (%s): its credential is refused from now on\n", a.Name, a.ID)
+	case "set-spiffe":
+		if *clearID {
+			value = ""
+		}
+		a, err := st.SetSpiffeID(ctx, ref, value)
+		if err != nil {
+			return err
+		}
+		if a.SpiffeID == "" {
+			fmt.Fprintf(stdout, "cleared the SPIFFE ID of %s (%s)\n", a.Name, a.ID)
+		} else {
+			fmt.Fprintf(stdout, "%s (%s) is now %s over mutual TLS\n", a.Name, a.ID, a.SpiffeID)
+		}
+	case "api-key":
+		var on bool
+		switch value {
+		case "on":
+			on = true
+		case "off":
+		default:
+			return fmt.Errorf("agent api-key: want on or off, got %q", value)
+		}
+		a, err := st.SetAPIKeyEnabled(ctx, ref, on)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "api key of %s (%s) is %s\n", a.Name, a.ID, value)
+		if !on && a.SpiffeID == "" {
+			fmt.Fprintln(os.Stderr, "note: this agent has no SPIFFE ID, so it can no longer authenticate")
+		}
 	default:
 		return fmt.Errorf("agent: unknown subcommand %q", sub)
 	}
 	return nil
+}
+
+func hasFlag(args []string, name string) bool {
+	for _, a := range args {
+		if a == "--"+name || a == "-"+name {
+			return true
+		}
+	}
+	return false
+}
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 func lim(n money.Nanos) string {

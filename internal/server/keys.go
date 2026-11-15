@@ -51,8 +51,18 @@ func bearer(r *http.Request) string {
 // authenticate resolves the agent behind a request. A killed or revoked agent
 // authenticates and is then refused by policy rule 1, so the refusal is
 // audited with its rule id.
+//
+// A request that came in over the mutual-TLS listener carries a verified
+// SPIFFE ID; that identity decides, and any API key on the request is ignored.
+// Every other request uses the API key.
 func (s *Server) authenticate(ctx context.Context, r *http.Request) (agents.Agent, error) {
-	a, err := s.Agents.Authenticate(ctx, bearer(r))
+	var a agents.Agent
+	var err error
+	if id, ok := SPIFFEIDFromContext(r.Context()); ok {
+		a, err = s.Agents.AuthenticateSPIFFE(ctx, id.String())
+	} else {
+		a, err = s.Agents.Authenticate(ctx, bearer(r))
+	}
 	if errors.Is(err, agents.ErrUnauthorized) {
 		return agents.Agent{}, errUnauthorized
 	}

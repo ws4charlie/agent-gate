@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/spiffe/go-spiffe/v2/workloadapi"
 
 	"github.com/ws4charlie/agent-gate/internal/agents"
 	"github.com/ws4charlie/agent-gate/internal/approval"
@@ -78,12 +81,21 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	mcpPath := c.fs.String("mcp", os.Getenv("AG_MCP"), "MCP upstream servers JSON (default $AG_MCP; empty: /mcp/{server} is off)")
 	noScreen := c.fs.Bool("no-screen", false, "do not screen tool output (default: screen it with the built-in rules)")
 	judgeModel := c.fs.String("screen-judge-model", "", "also ask this model (a routable name) about each tool result; off by default, costs provider calls")
+	spiffeListen := c.fs.String("spiffe-listen", "", "address of the mutual-TLS listener for SPIFFE identities, e.g. :18443 (empty: off)")
+	spiffeSocket := c.fs.String("spiffe-socket", envOr("AG_SPIFFE_SOCKET", "unix:///run/spire/agent/sockets/agent.sock"), "SPIFFE Workload API socket (default $AG_SPIFFE_SOCKET)")
+	spiffeDomain := c.fs.String("spiffe-trust-domain", os.Getenv("AG_SPIFFE_TRUST_DOMAIN"), "trust domain whose SVIDs are accepted (required with --spiffe-listen)")
 	reconcileEvery := c.fs.Duration("reconcile-every", 30*time.Second, "background reconcile interval")
 	cfg, pool, err := c.open(ctx, args)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
+	var spiffeTD spiffeid.TrustDomain
+	if *spiffeListen != "" {
+		if spiffeTD, err = spiffeid.TrustDomainFromString(*spiffeDomain); err != nil {
+			return fmt.Errorf("--spiffe-trust-domain is required with --spiffe-listen: %w", err)
+		}
+	}
 	if _, err := db.Migrate(ctx, pool); err != nil {
 		return err
 	}
@@ -170,17 +182,60 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	}()
 
 	hs := &http.Server{Addr: cfg.Listen, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	var shutdowns []func(context.Context) error
+	shutdowns = append(shutdowns, hs.Shutdown)
+	if *spiffeListen != "" {
+		ss, err := startSPIFFE(ctx, srv, *spiffeListen, *spiffeSocket, spiffeTD, log, stdout)
+		if err != nil {
+			return err
+		}
+		defer ss.src.Close()
+		shutdowns = append(shutdowns, ss.hs.Shutdown)
+	}
 	go func() {
 		<-ctx.Done()
 		sc, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		hs.Shutdown(sc)
+		for _, f := range shutdowns {
+			f(sc)
+		}
 	}()
 	fmt.Fprintf(stdout, "agentgate listening on %s\n", cfg.Listen)
 	if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
+}
+
+type spiffeServer struct {
+	hs  *http.Server
+	src *workloadapi.X509Source
+}
+
+// startSPIFFE opens the mutual-TLS listener next to the plain one. Its SVID
+// and trust bundle come from the SPIFFE Workload API and rotate on their own.
+// It refuses to start when the Workload API does not answer in time: running
+// without the identity the operator asked for would fail open.
+func startSPIFFE(ctx context.Context, srv *server.Server, addr, socket string, td spiffeid.TrustDomain, log *slog.Logger, stdout io.Writer) (*spiffeServer, error) {
+	sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	src, err := workloadapi.NewX509Source(sctx, workloadapi.WithClientOptions(workloadapi.WithAddr(socket)))
+	if err != nil {
+		return nil, fmt.Errorf("spiffe: Workload API at %s not reachable: %w", socket, err)
+	}
+	ln, err := tls.Listen("tcp", addr, server.ServerTLSConfig(src, src, td))
+	if err != nil {
+		src.Close()
+		return nil, err
+	}
+	hs := &http.Server{Handler: server.SPIFFEHandler(srv.Handler()), ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		if err := hs.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("spiffe listener", "err", err)
+		}
+	}()
+	fmt.Fprintf(stdout, "agentgate listening on %s with SPIFFE mutual TLS (trust domain %s)\n", addr, td)
+	return &spiffeServer{hs: hs, src: src}, nil
 }
 
 func account(ctx context.Context, args []string, stdout io.Writer) error {
