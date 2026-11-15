@@ -678,7 +678,7 @@ func TestSpanShape(t *testing.T) {
 	var root string
 	for _, s := range e.spans.GetSpans() {
 		names[s.Name] = s.Parent.SpanID().String()
-		if s.Name == "gateway.request" {
+		if !s.Parent.IsValid() { // the request span, renamed "chat {model}" once the model is known
 			root = s.SpanContext.SpanID().String()
 		}
 	}

@@ -18,7 +18,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
@@ -180,6 +179,10 @@ type call struct {
 	rpcID json.RawMessage // id of the JSON-RPC request being answered
 	runID string          // the run this request belongs to (T5)
 
+	tool     string // tools/call: the tool name without the server (span naming)
+	decision string // the policy verdict, for the span
+	rule     string
+
 	agent  agents.Agent    // who is calling (T4: the credential's agent)
 	snap   policy.Snapshot // what the engine saw for this request
 	killed atomic.Bool     // set when the kill switch cancelled this call (I12)
@@ -200,14 +203,7 @@ func (c *call) finish(status string) {
 	if err := c.s.Audit.Write(ctx, c.ev, c.ext); err != nil {
 		c.s.Log.Error("audit write failed", "request_id", c.ev.RequestID, "err", err)
 	}
-	// Span attributes are ids, counts and status only: never prompts or keys (I9).
-	c.span.SetAttributes(attribute.String("request.status", status), attribute.String("model", c.ev.Model),
-		attribute.String("provider", c.ev.Provider), attribute.String("cost.source", c.ev.CostSource),
-		attribute.Int64("tokens.input", c.ev.Usage.InputTokens), attribute.Int64("tokens.output", c.ev.Usage.OutputTokens),
-		attribute.Int64("cost.nanos", int64(c.ev.Cost)))
-	if status != audit.StatusOK {
-		c.span.SetStatus(codes.Error, status)
-	}
+	c.annotate(status) // ids, counts and status only: never prompts or keys (I9)
 	c.span.End()
 	c.s.Log.Info("request", "request_id", c.ev.RequestID, "account", c.ev.AccountID, "model", c.ev.Model,
 		"status", status, "cost_nanos", int64(c.ev.Cost), "latency_ms", c.ev.LatencyMs)
@@ -233,7 +229,8 @@ func (s *Server) handle(f provider.Format) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		reqID := uuid.NewString()
 		ctx, span := s.Tracer.Start(r.Context(), "gateway.request",
-			trace.WithAttributes(attribute.String("request.id", reqID), attribute.String("api.format", string(f))))
+			trace.WithSpanKind(trace.SpanKindClient),
+			trace.WithAttributes(attribute.String("agentgate.request.id", reqID), attribute.String("api.format", string(f))))
 		c := &call{s: s, w: w, r: r, f: f, ctx: ctx, span: span, start: time.Now(),
 			ev: audit.Event{RequestID: reqID, Kind: "model", At: time.Now()}}
 		w.Header().Set("X-Request-Id", reqID)
@@ -257,7 +254,7 @@ func (c *call) run() {
 	}
 	c.agent = agent
 	c.ev.AccountID, c.ev.AgentID = agent.AccountID, agent.ID
-	c.span.SetAttributes(attribute.String("account.id", agent.AccountID), attribute.String("agent.id", agent.ID))
+	c.identify()
 	if c.refuseInactive(policy.KindModel) { // rule 1, before anything else (I12)
 		return
 	}
@@ -281,6 +278,7 @@ func (c *call) run() {
 		return
 	}
 	c.ev.Model = hdr.Model
+	c.nameSpan()
 	if s.StoreBodies {
 		red := audit.Redact(string(body))
 		c.ext.RequestBody = &red
@@ -332,7 +330,8 @@ func (c *call) run() {
 	preq := policy.Request{AgentID: agent.ID, Kind: policy.KindModel, Model: hdr.Model, Amount: amount, TaskID: task, Approved: approved}
 	_, pspan := c.child("policy")
 	d, ok := c.evaluate(preq, approvalID)
-	pspan.SetAttributes(attribute.String("decision", string(d.Verdict)), attribute.String("rule", d.Rule))
+	pspan.SetAttributes(attribute.String("agentgate.decision", string(d.Verdict)), attribute.String("agentgate.rule", d.Rule))
+	c.noteDecision(d)
 	pspan.End()
 	if !ok {
 		c.releaseApproved(approved)
