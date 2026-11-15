@@ -172,3 +172,40 @@ jobs:
       - name: anvil log
         if: failure()
         run: cat anvil.log
+
+  # Terraform and policy checks, offline. CI never touches GCP: no credentials, no plan.
+  # The lead runs `terraform plan` locally. See docs/infra.md.
+  infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: 1.14.0
+          terraform_wrapper: false
+      # Pinned releases, checked against pinned SHA-256 values.
+      - name: install OPA and conftest
+        run: |
+          set -euo pipefail
+          o=opa_linux_amd64_static
+          curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/$o" \
+            "https://github.com/open-policy-agent/opa/releases/download/v1.22.4/$o"
+          echo "35e3b352e715e80624ead6c89930d8585f6f7d94cdc409eb2a9fe36620dcccba  $RUNNER_TEMP/$o" | sha256sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/$o" /usr/local/bin/opa
+          c=conftest_0.71.1_Linux_x86_64.tar.gz
+          curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/$c" \
+            "https://github.com/open-policy-agent/conftest/releases/download/v0.71.1/$c"
+          echo "c3f6b2a753bd56e377a1e51a95ae3e057f926f2e9139f7d5b5dfbbaf810f7985  $RUNNER_TEMP/$c" | sha256sum -c -
+          sudo tar -xzf "$RUNNER_TEMP/$c" -C /usr/local/bin conftest
+          opa version
+          conftest --version
+      - name: terraform fmt
+        run: terraform fmt -check -recursive infra/terraform
+      - name: terraform init
+        run: terraform -chdir=infra/terraform init -backend=false
+      - name: terraform validate
+        run: terraform -chdir=infra/terraform validate
+      - name: opa test
+        run: opa test infra/policy -v
+      - name: conftest
+        run: conftest test --parser hcl2 -p infra/policy infra/terraform
