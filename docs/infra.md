@@ -6,7 +6,7 @@ The code was written after the deployment existed, so it adopts the live resourc
 
 ## What the policies guard
 
-Policies in `infra/policy` are written in OPA's language and run in CI on every change. They exist so that nobody, human or AI, can quietly weaken the setup:
+
 
 - the VM never gets a public address;
 - nothing accepts traffic from the whole internet, and SSH comes only through Google's IAP range;

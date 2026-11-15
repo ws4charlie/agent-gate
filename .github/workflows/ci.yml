@@ -207,5 +207,12 @@ jobs:
         run: terraform -chdir=infra/terraform validate
       - name: opa test
         run: opa test infra/policy -v
+      # The policies live in package terraform.agentgate, so the namespace must be named,
+      # or conftest runs nothing. The guard fails the step if no check was evaluated.
       - name: conftest
-        run: conftest test --parser hcl2 -p infra/policy infra/terraform
+        run: |
+          set -euo pipefail
+          conftest test --parser hcl2 --namespace terraform.agentgate -p infra/policy infra/terraform
+          n=$(conftest test --parser hcl2 --namespace terraform.agentgate -p infra/policy infra/terraform --output json | jq '[.[] | (.successes // 0) + ((.failures // []) | length)] | add // 0')
+          echo "checks evaluated: $n"
+          test "$n" -gt 0
