@@ -46,6 +46,7 @@ Read more about each part. Each page takes a minute or two:
 | [Console](docs/console.md) | A local page to watch agents, change their limits and run tasks |
 | [Python SDK](docs/sdk.md) | A small client for scripts and agents |
 | [Testing](docs/testing.md) | How it's tested without spending money |
+| [Infrastructure](docs/infra.md) | The GCP deployment as Terraform, checked by policy in CI |
 
 ## Try it
 
