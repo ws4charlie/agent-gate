@@ -27,6 +27,10 @@ The money stays held and the request waits for a decision. After a yes, the agen
 
 New requests are refused and running calls are cut off within about a second. You pay for what already happened.
 
+## The same rules as Cedar policies
+
+The rules also exist as [Cedar](https://www.cedarpolicy.com) policies kept in git, in `policies/cedar/`. In shadow mode, switched on with `--cedar-policies`, both versions run on every decision and each decision records whether they agree. Nothing changes for agents: the built-in rules still decide, and a Cedar failure never affects a request. `agentgate cedar shadow` shows the record. The plan is to let Cedar enforce only after the record shows no disagreement.
+
 ## Where the limits are soft
 
 - **Task budgets rely on the client.** The client names the task, so a hostile agent can invent a new one for each call.

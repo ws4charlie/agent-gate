@@ -22,6 +22,7 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/agents"
 	"github.com/ws4charlie/agent-gate/internal/approval"
 	"github.com/ws4charlie/agent-gate/internal/audit"
+	"github.com/ws4charlie/agent-gate/internal/cedarpolicy"
 	"github.com/ws4charlie/agent-gate/internal/config"
 	"github.com/ws4charlie/agent-gate/internal/db"
 	"github.com/ws4charlie/agent-gate/internal/ledger"
@@ -84,6 +85,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	spiffeListen := c.fs.String("spiffe-listen", "", "address of the mutual-TLS listener for SPIFFE identities, e.g. :18443 (empty: off)")
 	spiffeSocket := c.fs.String("spiffe-socket", envOr("AG_SPIFFE_SOCKET", "unix:///run/spire/agent/sockets/agent.sock"), "SPIFFE Workload API socket (default $AG_SPIFFE_SOCKET)")
 	spiffeDomain := c.fs.String("spiffe-trust-domain", os.Getenv("AG_SPIFFE_TRUST_DOMAIN"), "trust domain whose SVIDs are accepted (required with --spiffe-listen)")
+	cedarDir := c.fs.String("cedar-policies", os.Getenv("AG_CEDAR_POLICIES"), "directory of Cedar policies to run in shadow mode beside the Go engine (default $AG_CEDAR_POLICIES; empty: off)")
 	reconcileEvery := c.fs.Duration("reconcile-every", 30*time.Second, "background reconcile interval")
 	cfg, pool, err := c.open(ctx, args)
 	if err != nil {
@@ -119,6 +121,15 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		Keys: config.ProviderKey, Tracer: tracer, Log: log, MaxHold: cfg.MaxHoldNanos,
 		DefaultMaxTokens: cfg.DefaultMaxTokens, StoreBodies: *storeBodies,
 		Agents: agents.NewStore(pool), Approvals: &approval.Queue{Store: approval.NewStore(pool), Ledger: led}}
+
+	if *cedarDir != "" {
+		eng, err := cedarpolicy.Load(*cedarDir)
+		if err != nil {
+			return fmt.Errorf("--cedar-policies %s: %w", *cedarDir, err)
+		}
+		srv.Cedar = eng
+		log.Info("cedar shadow mode on", "dir", *cedarDir)
+	}
 
 	if *mcpPath != "" {
 		mc, err := mcp.LoadConfig(*mcpPath)

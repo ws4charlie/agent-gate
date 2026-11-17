@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/agents"
 	"github.com/ws4charlie/agent-gate/internal/approval"
 	"github.com/ws4charlie/agent-gate/internal/audit"
+	"github.com/ws4charlie/agent-gate/internal/cedarpolicy"
 	"github.com/ws4charlie/agent-gate/internal/fakeupstream"
 	"github.com/ws4charlie/agent-gate/internal/ledger"
 	"github.com/ws4charlie/agent-gate/internal/money"
@@ -800,4 +802,92 @@ func TestReconcilerClosesBudgetCharge(t *testing.T) {
 		t.Fatalf("daily spent %d after reconcile, want %d", got, before-est)
 	}
 	e.noActiveHolds()
+}
+
+// ---- Cedar shadow mode ----
+
+type stubShadow struct {
+	fn func(policy.Request, policy.Snapshot) (string, string, error)
+}
+
+func (s stubShadow) Decide(r policy.Request, sn policy.Snapshot) (string, string, error) {
+	return s.fn(r, sn)
+}
+
+func cedarEngine(t *testing.T) *cedarpolicy.Engine {
+	t.Helper()
+	e, err := cedarpolicy.Load("../../policies/cedar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+func TestCedarShadowRecordsBoth(t *testing.T) {
+	e := newEnv(t, 10*usd, func(s *server.Server) { s.Cedar = cedarEngine(t) })
+	e.setScope(func(sc *policy.Scope) { sc.Models = []string{"oa/*"} })
+
+	// An allowed call.
+	resp, b := e.do("/v1/chat/completions", chatBody("oa/m", false), nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("allowed call: %d %s", resp.StatusCode, b)
+	}
+	ds := e.decisions(resp)
+	if len(ds) != 1 || ds[0].Verdict != policy.Allow || ds[0].CedarVerdict != "allow" || ds[0].CedarRule != "allow" {
+		t.Fatalf("allowed row: %+v", ds)
+	}
+
+	// A scope-denied call.
+	resp, b = e.do("/v1/messages", msgBody("an/m", false), nil)
+	if resp.StatusCode != 403 {
+		t.Fatalf("scope-denied call: %d %s", resp.StatusCode, b)
+	}
+	ds = e.decisions(resp)
+	if len(ds) != 1 || ds[0].Rule != "scope_model" || ds[0].CedarVerdict != "deny" || ds[0].CedarRule != "scope_model" {
+		t.Fatalf("denied row: %+v", ds)
+	}
+	if strings.Contains(e.logs.String(), "cedar shadow mismatch") {
+		t.Fatalf("unexpected mismatch logged:\n%s", e.logs.String())
+	}
+}
+
+func TestCedarShadowOffLeavesColumnsEmpty(t *testing.T) {
+	e := newEnv(t, 10*usd, nil)
+	resp, _ := e.do("/v1/chat/completions", chatBody("oa/m", false), nil)
+	ds := e.decisions(resp)
+	if len(ds) == 0 || ds[0].CedarVerdict != "" || ds[0].CedarRule != "" {
+		t.Fatalf("shadow off, rows: %+v", ds)
+	}
+}
+
+func TestCedarShadowFailureNeverChangesTheResponse(t *testing.T) {
+	for name, fn := range map[string]func(policy.Request, policy.Snapshot) (string, string, error){
+		"error": func(policy.Request, policy.Snapshot) (string, string, error) { return "", "", errors.New("boom") },
+		"panic": func(policy.Request, policy.Snapshot) (string, string, error) { panic("boom") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t, 10*usd, func(s *server.Server) { s.Cedar = stubShadow{fn} })
+			resp, b := e.do("/v1/chat/completions", chatBody("oa/m", false), nil)
+			if resp.StatusCode != 200 {
+				t.Fatalf("request failed: %d %s", resp.StatusCode, b)
+			}
+			ds := e.decisions(resp)
+			if len(ds) == 0 || ds[0].CedarVerdict != "error" || ds[0].Verdict != policy.Allow {
+				t.Fatalf("rows: %+v", ds)
+			}
+		})
+	}
+}
+
+func TestCedarShadowMismatchIsLogged(t *testing.T) {
+	e := newEnv(t, 10*usd, func(s *server.Server) {
+		s.Cedar = stubShadow{func(policy.Request, policy.Snapshot) (string, string, error) { return "deny", "scope_model", nil }}
+	})
+	resp, b := e.do("/v1/chat/completions", chatBody("oa/m", false), nil)
+	if resp.StatusCode != 200 {
+		t.Fatalf("the Go decision must win: %d %s", resp.StatusCode, b)
+	}
+	if !strings.Contains(e.logs.String(), "cedar shadow mismatch") {
+		t.Fatalf("no mismatch warning:\n%s", e.logs.String())
+	}
 }
