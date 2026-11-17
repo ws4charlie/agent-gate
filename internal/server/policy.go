@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -79,6 +80,11 @@ func (c *call) refuseInactive(kind policy.Kind) bool {
 // logDecision writes the decision row (allow included), detached from the
 // client so a disconnect cannot drop it.
 func (c *call) logDecision(req policy.Request, d policy.Decision, approvalID string) {
+	c.logDecisionShadow(req, d, approvalID, "", "")
+}
+
+// logDecisionShadow is logDecision with the Cedar shadow result attached.
+func (c *call) logDecisionShadow(req policy.Request, d policy.Decision, approvalID, cedarVerdict, cedarRule string) {
 	subject := req.Model
 	if req.Kind != policy.KindModel {
 		subject = req.Tool
@@ -87,7 +93,8 @@ func (c *call) logDecision(req policy.Request, d policy.Decision, approvalID str
 	defer cancel()
 	err := c.s.Agents.LogDecision(ctx, agents.Decision{RequestID: c.ev.RequestID, AgentID: c.agent.ID, AccountID: c.agent.AccountID,
 		Kind: string(req.Kind), Subject: subject, Payee: req.Payee, TaskID: req.TaskID, Amount: req.Amount,
-		Verdict: d.Verdict, Rule: d.Rule, Reason: d.Reason, ApprovalID: approvalID})
+		Verdict: d.Verdict, Rule: d.Rule, Reason: d.Reason, ApprovalID: approvalID,
+		CedarVerdict: cedarVerdict, CedarRule: cedarRule})
 	if err != nil {
 		c.s.Log.Error("decision log", "request_id", c.ev.RequestID, "err", err)
 	}
@@ -104,8 +111,38 @@ func (c *call) evaluate(req policy.Request, approvalID string) (policy.Decision,
 	}
 	c.snap = snap
 	d := policy.Evaluate(req, snap)
-	c.logDecision(req, d, approvalID)
+	cv, cr := c.shadow(req, snap, d)
+	c.logDecisionShadow(req, d, approvalID, cv, cr)
 	return d, true
+}
+
+// shadow runs the Cedar engine on the same request and snapshot and returns
+// what to record. It never changes the decision: an error or panic becomes
+// verdict "error", and a disagreement is one Warn line (ids and rules only, no
+// bodies, I9). refuseInactive and the MCP scope-only check do not shadow: they
+// are rule 1 / scope-only shortcuts, not full evaluations.
+func (c *call) shadow(req policy.Request, snap policy.Snapshot, d policy.Decision) (verdict, rule string) {
+	if c.s.Cedar == nil {
+		return "", ""
+	}
+	var err error
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				err = fmt.Errorf("panic: %v", p)
+			}
+		}()
+		verdict, rule, err = c.s.Cedar.Decide(req, snap)
+	}()
+	if err != nil {
+		c.s.Log.Error("cedar shadow", "request_id", c.ev.RequestID, "agent_id", c.agent.ID, "err", err)
+		return "error", ""
+	}
+	if verdict != string(d.Verdict) || rule != d.Rule {
+		c.s.Log.Warn("cedar shadow mismatch", "request_id", c.ev.RequestID, "agent_id", c.agent.ID,
+			"go_verdict", string(d.Verdict), "go_rule", d.Rule, "cedar_verdict", verdict, "cedar_rule", rule)
+	}
+	return verdict, rule
 }
 
 // denyResponse refuses the request with the rule id. Budget and velocity are

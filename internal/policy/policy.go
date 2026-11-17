@@ -191,15 +191,15 @@ func Evaluate(r Request, s Snapshot) Decision {
 	// 2. scope allowlist
 	switch r.Kind {
 	case KindModel:
-		if !matchAny(s.Scope.Models, r.Model, false) {
+		if !MatchAny(s.Scope.Models, r.Model, false) {
 			return deny(RuleScopeModel, "model %q is outside this agent's scope", r.Model)
 		}
 	case KindTool, KindPayment:
-		if !matchAny(s.Scope.Tools, r.Tool, false) {
+		if !MatchAny(s.Scope.Tools, r.Tool, false) {
 			return deny(RuleScopeTool, "tool %q is outside this agent's scope", r.Tool)
 		}
 	}
-	if r.Kind == KindPayment && !matchAny(s.Scope.Payees, r.Payee, true) {
+	if r.Kind == KindPayment && !MatchAny(s.Scope.Payees, r.Payee, true) {
 		return deny(RuleScopePayee, "payee %s is not on this agent's allowlist", r.Payee)
 	}
 
@@ -226,9 +226,13 @@ func Evaluate(r Request, s Snapshot) Decision {
 		allowed: Allowed{req: r, ok: true, used: new(atomic.Bool)}}
 }
 
-// matchAny reports whether name matches one pattern: exact, "*", or a prefix
-// followed by a trailing "*".
-func matchAny(patterns []string, name string, fold bool) bool {
+// MatchAny reports whether name matches one pattern: exact, "*", or a prefix
+// followed by a trailing "*". With fold set the comparison ignores case.
+//
+// It is exported for internal/cedarpolicy: wildcard allowlists cannot be
+// written as Cedar set membership, so the Cedar request carries this answer
+// and the Cedar policies only read it.
+func MatchAny(patterns []string, name string, fold bool) bool {
 	if name == "" {
 		return false
 	}

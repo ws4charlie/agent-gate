@@ -54,6 +54,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = walletCmd(args[1:], stdout)
 	case "paidtool":
 		err = paidtoolCmd(ctx, args[1:], stdout)
+	case "cedar":
+		err = cedarCmd(ctx, args[1:], stdout)
 	case "registry":
 		err = registryCmd(ctx, args[1:], stdout)
 	case "console":
@@ -90,6 +92,7 @@ commands:
   prices      sync: refresh configs/prices.json from OpenRouter
   wallet      new | address: the agent wallet key (testnet only)
   paidtool    run the paid x402 endpoint (--network sim | anvil | base-sepolia)
+  cedar       check DIR | shadow [--since 24h]: Cedar policies in shadow mode
   registry    add | list | status | remove | gaps: the catalogue of allowed models, tools and agents
   console     the local web console: overview, controls, research tasks`)
 }

@@ -492,7 +492,10 @@ type Decision struct {
 	Amount                                                      money.Nanos
 	Verdict                                                     policy.Verdict
 	Rule, Reason, ApprovalID                                    string
-	At                                                          time.Time
+	// CedarVerdict and CedarRule are what the Cedar shadow engine decided for
+	// the same request: empty when shadow is off, "error" when Cedar failed.
+	CedarVerdict, CedarRule string
+	At                      time.Time
 }
 
 // LogDecision appends one row. Every decision is logged, allow included.
@@ -501,16 +504,16 @@ func (s *Store) LogDecision(ctx context.Context, d Decision) error {
 		d.At = s.now()
 	}
 	_, err := s.pool.Exec(ctx, `INSERT INTO policy_decisions (request_id, agent_id, account_id, kind, subject, payee, task_id,
-		amount_nanos, decision, rule, reason, approval_id, at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		amount_nanos, decision, rule, reason, approval_id, at, cedar_verdict, cedar_rule) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
 		d.RequestID, d.AgentID, d.AccountID, d.Kind, d.Subject, d.Payee, d.TaskID, int64(d.Amount),
-		string(d.Verdict), d.Rule, d.Reason, d.ApprovalID, d.At.UTC().Truncate(time.Microsecond))
+		string(d.Verdict), d.Rule, d.Reason, d.ApprovalID, d.At.UTC().Truncate(time.Microsecond), d.CedarVerdict, d.CedarRule)
 	return err
 }
 
 // Decisions returns the logged decisions of one request, oldest first.
 func (s *Store) Decisions(ctx context.Context, requestID string) ([]Decision, error) {
 	rows, err := s.pool.Query(ctx, `SELECT request_id, agent_id, account_id, kind, subject, payee, task_id, amount_nanos,
-		decision, rule, reason, approval_id, at FROM policy_decisions WHERE request_id=$1 ORDER BY id`, requestID)
+		decision, rule, reason, approval_id, at, cedar_verdict, cedar_rule FROM policy_decisions WHERE request_id=$1 ORDER BY id`, requestID)
 	if err != nil {
 		return nil, err
 	}
@@ -520,7 +523,7 @@ func (s *Store) Decisions(ctx context.Context, requestID string) ([]Decision, er
 		var d Decision
 		var v string
 		if err := rows.Scan(&d.RequestID, &d.AgentID, &d.AccountID, &d.Kind, &d.Subject, &d.Payee, &d.TaskID, &d.Amount,
-			&v, &d.Rule, &d.Reason, &d.ApprovalID, &d.At); err != nil {
+			&v, &d.Rule, &d.Reason, &d.ApprovalID, &d.At, &d.CedarVerdict, &d.CedarRule); err != nil {
 			return nil, err
 		}
 		d.Verdict = policy.Verdict(v)
