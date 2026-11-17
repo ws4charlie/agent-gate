@@ -1,13 +1,15 @@
-# Checks on the Terraform in infra/terraform, run by conftest (--parser hcl2).
-# conftest hands each .tf file over as parsed HCL: resource.<type>.<name> is a
-# list-wrapped block, so nested blocks may appear as arrays.
+# Checks on the Terraform in infra/terraform, run by conftest with --parser hcl2 --combine.
+# --combine hands over every file at once as [{"path": ..., "contents": <parsed HCL>}], so a rule
+# can relate resources in different files (an instance and the firewall rules).
+# Parsed blocks may be list-wrapped, so nested blocks may appear as arrays.
 package terraform.agentgate
 
 import rego.v1
 
 # Every resource of a type: [name, body].
 resources(type) := {[name, body] |
-	some name, bodies in object.get(input, ["resource", type], {})
+	some file in input
+	some name, bodies in object.get(file.contents, ["resource", type], {})
 	some body in as_list(bodies)
 }
 
@@ -20,11 +22,23 @@ blocks(body, key) := [b |
 	some b in as_list(v)
 ]
 
+iap_range := "35.235.240.0/20"
+
+# Ingress rules that accept anything other than the IAP range.
+open_ingress := {name |
+	some [name, body] in resources("google_compute_firewall")
+	object.get(body, "direction", "INGRESS") == "INGRESS"
+	some r in body.source_ranges
+	r != iap_range
+}
+
+# A public IP is allowed only while every ingress rule admits the IAP range alone.
 deny contains msg if {
 	some [name, body] in resources("google_compute_instance")
 	some ni in blocks(body, "network_interface")
 	count(blocks(ni, "access_config")) > 0
-	msg := sprintf("google_compute_instance.%s has an access_config, which gives it a public IP", [name])
+	count(open_ingress) > 0
+	msg := sprintf("google_compute_instance.%s has a public IP while an ingress rule allows other sources (%s)", [name, concat(", ", open_ingress)])
 }
 
 public_range := {"0.0.0.0/0", "::/0"}

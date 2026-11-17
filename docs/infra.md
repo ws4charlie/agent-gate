@@ -8,8 +8,8 @@ The code was written after the deployment existed, so it adopts the live resourc
 
 
 
-- the VM never gets a public address;
-- nothing accepts traffic from the whole internet, and SSH comes only through Google's IAP range;
+- the VM may have a public address only while every inbound rule admits Google's IAP range alone;
+- nothing accepts traffic from the whole internet, and SSH comes only through the IAP range;
 - the VM stays a Shielded VM;
 - no one is granted the owner or editor role;
 - no secret value is stored in Terraform;

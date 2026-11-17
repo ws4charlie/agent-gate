@@ -1,6 +1,6 @@
 resource "google_service_account" "agentgate_vm" {
   account_id   = "agentgate-vm"
-  display_name = "agentgate-vm"
+  display_name = "AgentGate VM (reads one secret)"
 }
 
 # The only grant: read the one secret. No project-level roles.

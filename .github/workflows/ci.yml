@@ -212,7 +212,7 @@ jobs:
       - name: conftest
         run: |
           set -euo pipefail
-          conftest test --parser hcl2 --namespace terraform.agentgate -p infra/policy infra/terraform/*.tf
-          n=$(conftest test --parser hcl2 --namespace terraform.agentgate -p infra/policy infra/terraform/*.tf --output json | jq '[.[] | (.successes // 0) + ((.failures // []) | length)] | add // 0')
+          conftest test --parser hcl2 --combine --namespace terraform.agentgate -p infra/policy infra/terraform/*.tf
+          n=$(conftest test --parser hcl2 --combine --namespace terraform.agentgate -p infra/policy infra/terraform/*.tf --output json | jq '[.[] | (.successes // 0) + ((.failures // []) | length)] | add // 0')
           echo "checks evaluated: $n"
           test "$n" -gt 0

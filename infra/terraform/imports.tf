@@ -7,22 +7,12 @@ import {
 
 import {
   to = google_compute_subnetwork.agentgate
-  id = "projects/stone-column-232922/regions/us-central1/subnetworks/agentgate-subnet"
+  id = "projects/stone-column-232922/regions/us-central1/subnetworks/agentgate-sub"
 }
 
 import {
   to = google_compute_firewall.allow_iap_ssh
-  id = "projects/stone-column-232922/global/firewalls/agentgate-allow-iap-ssh"
-}
-
-import {
-  to = google_compute_router.agentgate
-  id = "projects/stone-column-232922/regions/us-central1/routers/agentgate-router"
-}
-
-import {
-  to = google_compute_router_nat.agentgate
-  id = "stone-column-232922/us-central1/agentgate-router/agentgate-nat"
+  id = "projects/stone-column-232922/global/firewalls/agentgate-iap-only"
 }
 
 import {

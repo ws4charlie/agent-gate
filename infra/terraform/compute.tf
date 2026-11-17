@@ -3,15 +3,35 @@ resource "google_compute_instance" "agentgate" {
   machine_type = var.machine_type
   zone         = var.zone
 
+  tags = ["agentgate"]
+
+  can_ip_forward      = false
+  deletion_protection = false
+
   boot_disk {
+    auto_delete = true
+    device_name = "persistent-disk-0"
+
     initialize_params {
-      image = "debian-cloud/debian-12" # lead: confirm from plan
+      image = "projects/debian-cloud/global/images/debian-12-bookworm-v20261102"
+      size  = 30
+      type  = "pd-standard"
     }
   }
 
-  # No access_config block: the VM has no public IP.
   network_interface {
     subnetwork = google_compute_subnetwork.agentgate.id
+
+    # Public IP kept on purpose: no inbound rule from the internet (see the OPA rule).
+    access_config {
+      network_tier = "PREMIUM"
+    }
+  }
+
+  scheduling {
+    on_host_maintenance = "MIGRATE"
+    automatic_restart   = true
+    preemptible         = false
   }
 
   shielded_instance_config {

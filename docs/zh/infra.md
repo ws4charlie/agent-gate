@@ -8,8 +8,8 @@ GCP 部署以代码形式写在 `infra/terraform` 中,涵盖网络、SSH 防火�
 
 `infra/policy` 中的策略用 OPA 的语言编写,每次变更都在 CI 中运行。目的是让任何人(包括 AI)都无法悄悄削弱现有设置:
 
-- 虚拟机永远没有公网地址;
-- 不接受来自整个互联网的流量,SSH 只能经由 Google IAP 的地址段;
+- 只有当每条入站规则都只放行 Google IAP 地址段时,虚拟机才可以有公网地址;
+- 不接受来自整个互联网的流量,SSH 只能经由 IAP 地址段;
 - 虚拟机保持 Shielded VM;
 - 不授予 owner 或 editor 角色;
 - 密钥的值不进 Terraform;

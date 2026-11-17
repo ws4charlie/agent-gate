@@ -16,7 +16,7 @@ variable "zone" {
 variable "network_cidr" {
   description = "Range of the agentgate subnet."
   type        = string
-  default     = "10.10.0.0/24" # lead: confirm from plan
+  default     = "10.10.0.0/24"
 }
 
 variable "machine_type" {

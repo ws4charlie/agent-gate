@@ -3,6 +3,10 @@ resource "google_secret_manager_secret" "agentgate_env" {
   secret_id = "agentgate-env"
 
   replication {
-    auto {}
+    user_managed {
+      replicas {
+        location = "us-central1"
+      }
+    }
   }
 }
