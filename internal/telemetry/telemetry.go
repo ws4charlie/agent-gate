@@ -7,20 +7,34 @@ import (
 	"os"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// EnvExporter selects the exporter: "stdout" prints spans; anything else
-// (default) exports nowhere, so spans cost almost nothing.
+// EnvExporter selects the exporter: "stdout" prints spans, "otlp" sends them
+// over OTLP/HTTP (configured by the standard OTEL_EXPORTER_OTLP_* variables);
+// anything else (default) exports nowhere, so spans cost almost nothing.
 const EnvExporter = "AG_OTEL_EXPORTER"
 
 // Init returns a tracer and a shutdown func that flushes pending spans.
 func Init(ctx context.Context, service string) (trace.Tracer, func(context.Context) error, error) {
-	opts := []sdktrace.TracerProviderOption{}
-	if os.Getenv(EnvExporter) == "stdout" {
+	opts := []sdktrace.TracerProviderOption{
+		sdktrace.WithResource(resource.NewSchemaless(attribute.String("service.name", service))),
+	}
+	switch os.Getenv(EnvExporter) {
+	case "stdout":
 		exp, err := stdouttrace.New()
+		if err != nil {
+			return nil, nil, fmt.Errorf("telemetry: %w", err)
+		}
+		opts = append(opts, sdktrace.WithBatcher(exp))
+	case "otlp":
+		// The exporter connects lazily, so an unreachable collector never blocks start-up.
+		exp, err := otlptracehttp.New(ctx)
 		if err != nil {
 			return nil, nil, fmt.Errorf("telemetry: %w", err)
 		}
