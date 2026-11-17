@@ -170,3 +170,41 @@ func TestApproveCLI(t *testing.T) {
 		t.Fatalf("approver %q", got.DecidedBy)
 	}
 }
+
+func TestAgentSpiffeAndAPIKey(t *testing.T) {
+	c := newCLI(t)
+	if _, err := c.run("agent", "create", "--account", c.acct, "--name", "bot"); err != nil {
+		t.Fatal(err)
+	}
+	const id = "spiffe://example.org/bot"
+	if out, err := c.run("agent", "set-spiffe", "bot", id); err != nil || !strings.Contains(out, id) {
+		t.Fatalf("set-spiffe: %q %v", out, err)
+	}
+	if out, _ := c.run("agent", "list"); !strings.Contains(out, id) {
+		t.Fatalf("list lacks the id: %s", out)
+	}
+	if _, err := c.run("agent", "set-spiffe", "bot", "https://nope"); err == nil {
+		t.Fatal("invalid id accepted")
+	}
+	if out, err := c.run("agent", "api-key", "bot", "off"); err != nil || !strings.Contains(out, "off") {
+		t.Fatalf("api-key off: %q %v", out, err)
+	}
+	if _, err := c.run("agent", "api-key", "bot", "maybe"); err == nil {
+		t.Fatal("bad api-key value accepted")
+	}
+	if _, err := c.run("agent", "api-key", "bot", "on"); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := c.run("agent", "set-spiffe", "bot", "--clear"); err != nil || !strings.Contains(out, "cleared") {
+		t.Fatalf("--clear: %q %v", out, err)
+	}
+	if _, err := c.run("agent", "set-spiffe", "bot", id); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := c.run("agent", "set-spiffe", "bot", ""); err != nil || !strings.Contains(out, "cleared") {
+		t.Fatalf(`"" : %q %v`, out, err)
+	}
+	if _, err := c.run("agent", "set-spiffe", "nobody", id); err == nil {
+		t.Fatal("unknown agent accepted")
+	}
+}

@@ -79,7 +79,7 @@ commands:
   serve       run the gateway (and the background reconciler)
   account     create | deposit | balance
   key         create --account ID: print a client key once (an agent with the default scope)
-  agent       create | list | revoke: scoped credentials (models, tools, payees, budgets)
+  agent       create | list | revoke | set-spiffe | api-key: scoped credentials, SPIFFE identity
   approve     list | allow ID | deny ID: the approval queue
   kill        --agent X [--resume]: the kill switch
   run         list | show ID | kill ID: runs (X-AgentGate-Run): steps, spend, kill as a unit

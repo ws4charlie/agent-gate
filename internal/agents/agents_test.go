@@ -491,3 +491,60 @@ func TestRename(t *testing.T) {
 		t.Fatalf("missing: %v", err)
 	}
 }
+
+func TestSetSpiffeID(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.New(t)
+	acct, err := ledger.New(pool).CreateAccount(ctx, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := agents.NewStore(pool)
+	_, a, err := st.Create(ctx, acct, "one", policy.DefaultScope())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, b, err := st.Create(ctx, acct, "two", policy.DefaultScope())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.APIKeyEnabled || a.SpiffeID != "" {
+		t.Fatalf("new agent: %+v", a)
+	}
+	const id = "spiffe://example.org/ns/one"
+	got, err := st.SetSpiffeID(ctx, "one", id)
+	if err != nil || got.SpiffeID != id {
+		t.Fatalf("set: %+v %v", got, err)
+	}
+	if got, err = st.AuthenticateSPIFFE(ctx, id); err != nil || got.ID != a.ID {
+		t.Fatalf("authenticate: %+v %v", got, err)
+	}
+	if _, err := st.SetSpiffeID(ctx, b.ID, id); !errors.Is(err, agents.ErrSpiffeTaken) {
+		t.Fatalf("duplicate: %v", err)
+	}
+	for _, bad := range []string{"not a uri", "https://example.org/x", "spiffe://", "spiffe://Exa mple.org/x"} {
+		if _, err := st.SetSpiffeID(ctx, a.ID, bad); !errors.Is(err, agents.ErrBadSpiffeID) {
+			t.Fatalf("invalid %q: %v", bad, err)
+		}
+	}
+	if got, err = st.SetSpiffeID(ctx, a.ID, ""); err != nil || got.SpiffeID != "" {
+		t.Fatalf("clear: %+v %v", got, err)
+	}
+	if _, err := st.AuthenticateSPIFFE(ctx, id); !errors.Is(err, agents.ErrUnauthorized) {
+		t.Fatalf("after clear: %v", err)
+	}
+	if _, err := st.AuthenticateSPIFFE(ctx, ""); !errors.Is(err, agents.ErrUnauthorized) {
+		t.Fatalf("empty id: %v", err)
+	}
+	// Two agents without an ID do not collide (NULL, not "").
+	if _, err := st.SetSpiffeID(ctx, b.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Revoked agents cannot be changed.
+	if _, err := st.Revoke(ctx, "one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetSpiffeID(ctx, "one", id); !errors.Is(err, agents.ErrBadState) {
+		t.Fatalf("revoked: %v", err)
+	}
+}
