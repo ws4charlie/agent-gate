@@ -49,7 +49,8 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	reqID := uuid.NewString()
 	name := r.PathValue("server")
 	ctx, span := s.Tracer.Start(r.Context(), "gateway.mcp",
-		trace.WithAttributes(attribute.String("request.id", reqID), attribute.String("mcp.server", name)))
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String("agentgate.request.id", reqID), attribute.String("agentgate.mcp.server", name)))
 	c := &call{s: s, w: w, r: r, f: "mcp", ctx: ctx, span: span, start: time.Now(), rpc: true,
 		ev: audit.Event{RequestID: reqID, Kind: "mcp", Provider: name, At: time.Now()}}
 	w.Header().Set("X-Request-Id", reqID)
@@ -133,7 +134,7 @@ func (c *call) mcp(name string) {
 	}
 	c.agent = agent
 	c.ev.AccountID, c.ev.AgentID = agent.AccountID, agent.ID
-	c.span.SetAttributes(attribute.String("account.id", agent.AccountID), attribute.String("agent.id", agent.ID))
+	c.identify()
 	if c.refuseInactive(policy.KindTool) { // rule 1, before the body is read (I12)
 		return
 	}
@@ -298,7 +299,7 @@ func (c *call) toolsList(server string, srv mcp.Server, req mcp.Request, body []
 	}
 	out, kept, total := filterTools(msg, func(tool string) bool { return c.inScope(snap, server+"/"+tool).Verdict == policy.Allow })
 	c.ev.Err = ""
-	c.span.SetAttributes(attribute.Int("tools.total", total), attribute.Int("tools.listed", kept))
+	c.span.SetAttributes(attribute.Int("agentgate.tools.total", total), attribute.Int("agentgate.tools.listed", kept))
 	c.w.Header().Set("Content-Type", "application/json")
 	c.w.WriteHeader(http.StatusOK)
 	_, _ = c.w.Write(out)
@@ -400,6 +401,8 @@ func (c *call) toolCall(server string, srv mcp.Server, req mcp.Request, body []b
 	}
 	tool := server + "/" + p.Name // the name policy scopes match: no '/' in a tool name, so it is unambiguous
 	c.ev.Model = tool
+	c.tool = p.Name
+	c.nameSpan()
 	price := srv.Price(p.Name)
 	task, ok := c.taskID()
 	if !ok {
@@ -426,6 +429,7 @@ func (c *call) toolCall(server string, srv mcp.Server, req mcp.Request, body []b
 			return
 		}
 		d := c.inScope(snap, tool)
+		c.noteDecision(d)
 		c.logDecision(policy.Request{AgentID: c.agent.ID, Kind: policy.KindTool, Tool: tool, TaskID: task}, d, "")
 		if d.Verdict != policy.Allow {
 			c.denyResponse(d)
@@ -447,6 +451,7 @@ func (c *call) toolCall(server string, srv mcp.Server, req mcp.Request, body []b
 			c.releaseApproved(approved)
 			return
 		}
+		c.noteDecision(d)
 		switch d.Verdict {
 		case policy.Deny:
 			c.releaseApproved(approved)

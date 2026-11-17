@@ -45,7 +45,9 @@ Read more about each part. Each page takes a minute or two:
 | [Runs](docs/runs.md) | Groups one job's steps so you can read or stop them together |
 | [Console](docs/console.md) | A local page to watch agents, change their limits and run tasks |
 | [Python SDK](docs/sdk.md) | A small client for scripts and agents |
+| [Telemetry](docs/telemetry.md) | Reports every model and tool call as standard OpenTelemetry spans |
 | [Testing](docs/testing.md) | How it's tested without spending money |
+| [Infrastructure](docs/infra.md) | The GCP deployment as Terraform, checked by policy in CI |
 
 ## Try it
 
