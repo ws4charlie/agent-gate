@@ -67,17 +67,17 @@ scripts/agentgate-local up
 |---|---|
 | Ledger, gateway, policy, MCP gateway, payments | Tests in CI, with no secrets |
 | Payments on a local chain | Local anvil node with a mock USDC, in CI |
-| Payments on Base Sepolia | 99 testnet settlements so far; the first one is below |
+| Payments on Base Sepolia | 138 testnet settlements as of 2026-11-12, counted on chain; the first one is below |
 | OpenRouter | Early live testing, with more to come |
 | Real traffic | The author's own Claude Code and two research agents, since 2026-11-07; through a gateway on a GCP VM since 2026-11-08 |
 
-**Dogfooding has started.** Over 7–8 November 2026: 221 model calls; 101 paid tool calls, of which 99 were paid on Base Sepolia and 2 were refused before paying; $1.38 spent in all ($0.39 on models, $0.99 on tools); 13 requests refused and 8 tool outputs blocked by screening; 6 agents. These are the console's own numbers. This is still testnet-only software for a single gateway process. See [Limits](docs/limits.md).
+**Dogfooding has started.** Over 7–8 November 2026 (UTC): 221 model calls; 101 paid tool calls, 2 of them refused before paying; $1.12 spent in all ($0.39 on models, $0.73 on tools); 11 requests refused; 8 tool outputs blocked by screening; 6 agents. These are the console's own numbers, each request counted once. This is still testnet-only software for a single gateway process. See [Limits](docs/limits.md).
 
 ### Testnet settlement
 
 This is **testnet** money with no real value. Nothing here is mainnet or production settlement.
 
-On 2026-11-06 the gateway paid for one tool call on Base Sepolia (chain id 84532): [settlement transaction](https://sepolia.basescan.org/tx/0x07682129c2aaa44875659058cd142457d9b065f411a39783c08ea04cacc96141). The tool charged $0.01, policy approved it, the wallet signed, and the tool cashed the signature on chain. To repeat it, see the header of `demo/phase15.sh`.
+On 2026-11-07 (UTC) the gateway paid for one tool call on Base Sepolia (chain id 84532): [settlement transaction](https://sepolia.basescan.org/tx/0x07682129c2aaa44875659058cd142457d9b065f411a39783c08ea04cacc96141). The tool charged $0.01, policy approved it, the wallet signed, and the tool cashed the signature on chain. To repeat it, see the header of `demo/phase15.sh`.
 
 | Role | Address |
 |---|---|
