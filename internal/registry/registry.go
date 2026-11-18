@@ -142,7 +142,7 @@ const inUse = `
 WITH seen AS (
 	SELECT 'model' AS kind, model AS name, at FROM audit_events WHERE kind = 'model' AND model <> '' AND at >= $1
 	UNION ALL
-	SELECT 'tool', model, at FROM audit_events WHERE ` + toolFilter + ` AND at >= $1
+	SELECT 'tool', model, at FROM audit_events WHERE ` + toolFilter + ` AND model <> '' AND at >= $1
 	UNION ALL
 	SELECT 'agent', agent_id, at FROM audit_events WHERE agent_id <> '' AND at >= $1
 ), agg AS (
