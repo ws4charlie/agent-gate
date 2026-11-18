@@ -54,6 +54,7 @@ func consoleCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	runnerGateway := c.fs.String("runner-gateway-url", os.Getenv("AG_RUNNER_GATEWAY_URL"), "the gateway's mutual-TLS address the runs call with that certificate, e.g. https://127.0.0.1:18443")
 	spiffeSocket := c.fs.String("spiffe-socket", envOr("AG_SPIFFE_SOCKET", "unix:///run/spire/agent/sockets/agent.sock"), "SPIFFE Workload API socket the runs' certificates come from")
 	runnerUser := c.fs.String("runner-user", os.Getenv("AG_RUNNER_USER"), "start each run as this unix user through sudo (see deploy/runner-user.md); the runner then fetches its own certificate. Empty: runs start as the console's user")
+	runnerUserRunners := c.fs.String("runner-user-runners", os.Getenv("AG_RUNNER_USER_RUNNERS"), "with --runner-user: the runners (names from --runners, comma separated) that start as that user, e.g. gpt-researcher; the others start as the console's user")
 	runnerGroup := c.fs.String("runner-group", os.Getenv("AG_RUNNER_GROUP"), "the group a run's directory is shared with (default: the runner user's own group); the console's user must belong to it")
 	spireAgentBin := c.fs.String("spire-agent-bin", os.Getenv("AG_SPIRE_AGENT_BIN"), "spire-agent program the runner fetches its certificate with (default: /opt/spire/bin/spire-agent)")
 	_, pool, err := c.open(ctx, args)
@@ -81,14 +82,14 @@ func consoleCmd(ctx context.Context, args []string, stdout io.Writer) error {
 			return errors.New("--runner-spiffe-id needs --runner-gateway-url")
 		}
 		cfg.RunnerGatewayURL = *runnerGateway
-		if *runnerUser != "" {
-			// The runner fetches its own certificate; the console holds none.
-			cfg.RunnerSPIFFEID, cfg.SPIFFESocket, cfg.SpireAgentBin = *runnerSPIFFEID, *spiffeSocket, *spireAgentBin
-		} else if cfg.FetchCert, err = console.WorkloadCertFetcher(*spiffeSocket, *runnerSPIFFEID); err != nil {
+		// Runners that start as the console's user get their certificate from it.
+		if cfg.FetchCert, err = console.WorkloadCertFetcher(*spiffeSocket, *runnerSPIFFEID); err != nil {
 			return err
 		}
+		// Runners that start as the runner user fetch their own; the console holds none of theirs.
+		cfg.RunnerSPIFFEID, cfg.SPIFFESocket, cfg.SpireAgentBin = *runnerSPIFFEID, *spiffeSocket, *spireAgentBin
 	}
-	cfg.RunnerUser, cfg.RunnerGroup = *runnerUser, *runnerGroup
+	cfg.RunnerUser, cfg.RunnerGroup, cfg.RunnerUserRunners = *runnerUser, *runnerGroup, csv(*runnerUserRunners)
 	if *paymentsPath != "" {
 		f, err := readPaymentsFile(*paymentsPath)
 		if err != nil {

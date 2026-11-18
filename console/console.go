@@ -24,6 +24,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
@@ -77,11 +78,14 @@ type Config struct {
 	// from SPIFFESocket (checking it is RunnerSPIFFEID) with the spire-agent
 	// program SpireAgentBin, and the console never holds it (FetchCert is
 	// not used).
-	RunnerUser     string
-	RunnerGroup    string
-	RunnerSPIFFEID string
-	SPIFFESocket   string
-	SpireAgentBin  string
+	RunnerUser string
+	// RunnerUserRunners names the runners (keys of Runners) that start as
+	// RunnerUser; the others start as the console's own user, as before.
+	RunnerUserRunners []string
+	RunnerGroup       string
+	RunnerSPIFFEID    string
+	SPIFFESocket      string
+	SpireAgentBin     string
 }
 
 type Server struct {
@@ -112,6 +116,14 @@ func New(cfg Config, pool *pgxpool.Pool) (*Server, error) {
 		client: &http.Client{Timeout: 3 * time.Minute}, live: map[string]*task{},
 		lookPath: exec.LookPath, kill: syscall.Kill}
 	if cfg.RunnerUser != "" {
+		if len(cfg.RunnerUserRunners) == 0 {
+			return nil, errors.New("--runner-user needs --runner-user-runners: name the runners that start as that user")
+		}
+		for _, r := range cfg.RunnerUserRunners {
+			if _, ok := cfg.Runners[r]; !ok {
+				return nil, fmt.Errorf("--runner-user-runners: no runner named %q", r)
+			}
+		}
 		if err := s.setupRunnerUser(); err != nil {
 			return nil, err
 		}
