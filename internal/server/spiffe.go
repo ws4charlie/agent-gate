@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net/http"
 
 	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
@@ -25,10 +26,26 @@ func SPIFFEIDFromContext(ctx context.Context) (spiffeid.ID, bool) {
 
 // ServerTLSConfig is the mutual-TLS config of the SPIFFE listener: it
 // presents the gateway's own SVID, requires a client certificate and accepts
-// only SVIDs of one trust domain. src and bundles are normally one
-// workloadapi.X509Source, which keeps both fresh as SPIRE rotates them.
-func ServerTLSConfig(src x509svid.Source, bundles x509bundle.Source, td spiffeid.TrustDomain) *tls.Config {
-	return tlsconfig.MTLSServerConfig(src, bundles, tlsconfig.AuthorizeMemberOf(td))
+// only SVIDs of the listed trust domains (ours first, then federated ones).
+// src and bundles are normally one workloadapi.X509Source, which keeps both
+// fresh as SPIRE rotates them and, with federation, also holds the federated
+// bundles. A client chain is verified against the bundle of the client's own
+// trust domain; a listed domain without a bundle fails the handshake.
+func ServerTLSConfig(src x509svid.Source, bundles x509bundle.Source, tds ...spiffeid.TrustDomain) *tls.Config {
+	return tlsconfig.MTLSServerConfig(src, bundles, tlsconfig.AdaptMatcher(MatchMemberOfAny(tds...)))
+}
+
+// MatchMemberOfAny accepts a SPIFFE ID that belongs to any of tds, and
+// nothing else (an empty list accepts nothing).
+func MatchMemberOfAny(tds ...spiffeid.TrustDomain) spiffeid.Matcher {
+	return func(id spiffeid.ID) error {
+		for _, td := range tds {
+			if id.MemberOf(td) {
+				return nil
+			}
+		}
+		return fmt.Errorf("unexpected trust domain %q", id.TrustDomain())
+	}
 }
 
 // SPIFFEHandler wraps the gateway handler for the mutual-TLS listener. It

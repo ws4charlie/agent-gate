@@ -95,7 +95,7 @@ func TestSPIFFEListenerRetriesThenServes(t *testing.T) {
 			}
 			return src, nil
 		},
-		addr: addr, td: spiffeid.RequireTrustDomainFromString("example.org"),
+		addr: addr, tds: []spiffeid.TrustDomain{spiffeid.RequireTrustDomainFromString("example.org")},
 		handler: http.NotFoundHandler(), log: slog.New(slog.NewTextHandler(io.Discard, nil)), stdout: io.Discard,
 		minWait: 5 * time.Millisecond, maxWait: 20 * time.Millisecond,
 	}
@@ -141,7 +141,7 @@ func TestSPIFFEListenerBackoffIsCapped(t *testing.T) {
 			stamps = append(stamps, time.Now())
 			return nil, errors.New("down")
 		},
-		td: spiffeid.RequireTrustDomainFromString("example.org"), log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		tds: []spiffeid.TrustDomain{spiffeid.RequireTrustDomainFromString("example.org")}, log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		stdout: io.Discard, minWait: 5 * time.Millisecond, maxWait: 20 * time.Millisecond,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -201,5 +201,21 @@ func TestServeSurvivesUnreachableSPIRE(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal(fmt.Sprint("serve did not stop; output: ", out.String()))
+	}
+}
+
+func TestParseTrustDomains(t *testing.T) {
+	got, err := parseTrustDomains("agentgate.internal, acme.example,agentgate.internal")
+	if err != nil || len(got) != 2 || got[0].Name() != "agentgate.internal" || got[1].Name() != "acme.example" {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	one, err := parseTrustDomains("example.org")
+	if err != nil || len(one) != 1 {
+		t.Fatalf("single: %v, %v", one, err)
+	}
+	for _, bad := range []string{"", "a.example,", ",a.example", "not a domain"} {
+		if _, err := parseTrustDomains(bad); err == nil {
+			t.Errorf("%q: want an error", bad)
+		}
 	}
 }

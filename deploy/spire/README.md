@@ -97,6 +97,43 @@ On the live VM the gateway, the console, the runner and the paid-tool server all
 
 This is acceptable here because it is one trust boundary already: any process of that user can read the gateway's environment and the agent's key. The runner's certificate does not widen that, it only replaces a long-lived key with a short-lived one that is deleted after the run. It does not stop another process of the same user from asking the Workload API for the runner ID. Separate identities need separate users.
 
+## Federation with a customer's SPIRE
+
+A customer that runs its own SPIRE (trust domain `acme.example`) can reach the gateway with its own certificates. Each side trusts the other's bundle; the gateway does not fetch bundles itself, it takes them from our SPIRE agent's Workload API.
+
+1. **Customer** exposes a bundle endpoint in its `server.conf` and gives us its URL and SPIFFE ID:
+
+   ```hcl
+   federation { bundle_endpoint { address = "0.0.0.0" port = 8443 } }
+   ```
+
+2. **Us**, in our `server.conf`, federate with them (use `https_spiffe` and the bundle they bootstrapped, or `https_web`):
+
+   ```hcl
+   federation {
+     federates_with "acme.example" {
+       bundle_endpoint_url = "https://spire.acme.example:8443"
+       bundle_endpoint_profile "https_spiffe" {
+         endpoint_spiffe_id = "spiffe://acme.example/spire/server"
+       }
+     }
+   }
+   ```
+
+   Bootstrap the first bundle with `spire-server bundle set -format spiffe -id spiffe://acme.example -path acme.bundle`.
+3. **Us**: register the gateway's entry with `-federatesWith spiffe://acme.example`, so the Workload API returns their bundle to the gateway.
+4. **Customer**: do the same the other way round (`federates_with "agentgate.internal"`, our bundle), and register their agents with `-federatesWith spiffe://agentgate.internal`, so they can verify the gateway.
+5. **Gateway**: list both domains, ours first:
+
+   ```bash
+   agentgate serve --spiffe-listen :18443 --spiffe-trust-domain agentgate.internal,acme.example
+   ```
+
+   At start the gateway logs which domains it accepts and which have a bundle now; a listed domain without a bundle is warned about and its clients are refused until the bundle arrives.
+6. **Map** the foreign ID to an agent, as in step 6: `agentgate agent set-spiffe <agent> spiffe://acme.example/agent/billing`.
+
+A domain that is not in the list is refused even if SPIRE holds its bundle. Removing it from the list and restarting the gateway cuts it off.
+
 ## Notes
 
 - The files hold no secrets. The server's signing key and the agent's credentials sit under `/opt/spire/data`; keep that directory readable by root only.

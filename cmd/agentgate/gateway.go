@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -86,7 +87,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	judgeModel := c.fs.String("screen-judge-model", "", "also ask this model (a routable name) about each tool result; off by default, costs provider calls")
 	spiffeListen := c.fs.String("spiffe-listen", "", "address of the mutual-TLS listener for SPIFFE identities, e.g. :18443 (empty: off)")
 	spiffeSocket := c.fs.String("spiffe-socket", envOr("AG_SPIFFE_SOCKET", "unix:///run/spire/agent/sockets/agent.sock"), "SPIFFE Workload API socket (default $AG_SPIFFE_SOCKET)")
-	spiffeDomain := c.fs.String("spiffe-trust-domain", os.Getenv("AG_SPIFFE_TRUST_DOMAIN"), "trust domain whose SVIDs are accepted (required with --spiffe-listen)")
+	spiffeDomain := c.fs.String("spiffe-trust-domain", os.Getenv("AG_SPIFFE_TRUST_DOMAIN"), "trust domains whose SVIDs are accepted, comma-separated; the first is ours, the others are federated (required with --spiffe-listen)")
 	cedarDir := c.fs.String("cedar-policies", os.Getenv("AG_CEDAR_POLICIES"), "directory of Cedar policies to run in shadow mode beside the Go engine (default $AG_CEDAR_POLICIES; empty: off)")
 	spiffeID := c.fs.String("spiffe-id", os.Getenv("AG_SPIFFE_ID"), "the SPIFFE ID of the gateway's own SVID, when the Workload API returns several (default $AG_SPIFFE_ID; empty: the first one)")
 	reconcileEvery := c.fs.Duration("reconcile-every", 30*time.Second, "background reconcile interval")
@@ -95,10 +96,10 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	defer pool.Close()
-	var spiffeTD spiffeid.TrustDomain
+	var spiffeTDs []spiffeid.TrustDomain
 	var spiffeSelf spiffeid.ID
 	if *spiffeListen != "" {
-		if spiffeTD, err = spiffeid.TrustDomainFromString(*spiffeDomain); err != nil {
+		if spiffeTDs, err = parseTrustDomains(*spiffeDomain); err != nil {
 			return fmt.Errorf("--spiffe-trust-domain is required with --spiffe-listen: %w", err)
 		}
 		if *spiffeID != "" {
@@ -205,7 +206,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	spiffeDone := make(chan struct{})
 	close(spiffeDone)
 	if *spiffeListen != "" {
-		l := &spiffeListener{open: workloadSource(*spiffeSocket, spiffeSelf), addr: *spiffeListen, td: spiffeTD,
+		l := &spiffeListener{open: workloadSource(*spiffeSocket, spiffeSelf), addr: *spiffeListen, tds: spiffeTDs,
 			handler: srv.Handler(), log: log, stdout: stdout, minWait: time.Second, maxWait: 30 * time.Second}
 		spiffeDone = make(chan struct{})
 		go func() { defer close(spiffeDone); l.run(ctx) }()
@@ -282,7 +283,7 @@ func workloadSource(socket string, id spiffeid.ID) func(context.Context) (spiffe
 type spiffeListener struct {
 	open    func(context.Context) (spiffeSource, error)
 	addr    string
-	td      spiffeid.TrustDomain
+	tds     []spiffeid.TrustDomain // the first is ours, the rest are federated
 	handler http.Handler
 	log     *slog.Logger
 	stdout  io.Writer
@@ -316,12 +317,24 @@ func (l *spiffeListener) serveOnce(ctx context.Context) error {
 		return err
 	}
 	defer src.Close()
-	ln, err := tls.Listen("tcp", l.addr, server.ServerTLSConfig(src, src, l.td))
+	ln, err := tls.Listen("tcp", l.addr, server.ServerTLSConfig(src, src, l.tds...))
 	if err != nil {
 		return err
 	}
 	hs := &http.Server{Handler: server.SPIFFEHandler(l.handler), ReadHeaderTimeout: 10 * time.Second}
-	fmt.Fprintf(l.stdout, "agentgate listening on %s with SPIFFE mutual TLS (trust domain %s)\n", l.addr, l.td)
+	fmt.Fprintf(l.stdout, "agentgate listening on %s with SPIFFE mutual TLS (trust domains %s)\n", l.addr, joinDomains(l.tds))
+	var have, missing []string
+	for _, td := range l.tds {
+		if b, err := src.GetX509BundleForTrustDomain(td); err == nil && b != nil {
+			have = append(have, td.Name())
+		} else {
+			missing = append(missing, td.Name())
+		}
+	}
+	l.log.Info("spiffe trust domains", "own", l.tds[0].Name(), "accepted", joinDomains(l.tds), "with_bundle", strings.Join(have, ","))
+	if len(missing) > 0 {
+		l.log.Warn("spiffe trust domains listed but without a bundle from the Workload API; their clients are refused until it arrives (is the entry registered with -federatesWith?)", "domains", strings.Join(missing, ","))
+	}
 	errc := make(chan error, 1)
 	go func() { errc <- hs.Serve(ln) }()
 	select {
@@ -540,4 +553,30 @@ func prices(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "wrote %d model prices to %s\n", len(t.Models), *out)
 	return nil
+}
+
+// parseTrustDomains reads the comma-separated --spiffe-trust-domain value:
+// at least one domain, the first is ours, duplicates are dropped.
+func parseTrustDomains(v string) ([]spiffeid.TrustDomain, error) {
+	var out []spiffeid.TrustDomain
+	seen := map[spiffeid.TrustDomain]bool{}
+	for _, f := range strings.Split(v, ",") {
+		td, err := spiffeid.TrustDomainFromString(strings.TrimSpace(f))
+		if err != nil {
+			return nil, err
+		}
+		if !seen[td] {
+			seen[td] = true
+			out = append(out, td)
+		}
+	}
+	return out, nil
+}
+
+func joinDomains(tds []spiffeid.TrustDomain) string {
+	names := make([]string, len(tds))
+	for i, td := range tds {
+		names[i] = td.Name()
+	}
+	return strings.Join(names, ",")
 }
