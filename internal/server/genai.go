@@ -15,7 +15,30 @@ import (
 
 // noteDecision remembers the policy verdict for the span.
 func (c *call) noteDecision(d policy.Decision) {
+	if c.span2.secretConfirmed && d.Verdict == policy.Allow {
+		return // the confirmed secret stays the span's reason; a later refusal still wins
+	}
 	c.decision, c.rule = string(d.Verdict), d.Rule
+}
+
+// spanFacts holds what annotate writes beyond the policy verdict.
+type spanFacts struct {
+	secretConfirmed bool
+	payNetwork      string
+	payAmount       int64
+	payKnown        bool
+}
+
+// noteOutcome records a decision that did not come from the policy engine
+// (the secret gate, the result screen). verdict is a policy verdict name.
+func (c *call) noteOutcome(verdict, rule string) {
+	c.decision, c.rule = verdict, rule
+}
+
+// notePayment records the network and amount of a paid-tool payment. Never
+// the payee, wallet or signature.
+func (c *call) notePayment(network string, amount int64) {
+	c.span2.payNetwork, c.span2.payAmount, c.span2.payKnown = network, amount, true
 }
 
 // identify sets the attributes that exist as soon as the caller is known.
@@ -54,6 +77,12 @@ func (c *call) annotate(status string) {
 	if c.decision != "" {
 		attrs = append(attrs, attribute.String("agentgate.decision", c.decision), attribute.String("agentgate.rule", c.rule))
 	}
+	if c.span2.payKnown {
+		if c.span2.payNetwork != "" {
+			attrs = append(attrs, attribute.String("agentgate.payment.network", c.span2.payNetwork))
+		}
+		attrs = append(attrs, attribute.Int64("agentgate.payment.amount_nanos", c.span2.payAmount))
+	}
 	switch {
 	case c.tool != "":
 		attrs = append(attrs,
@@ -67,6 +96,9 @@ func (c *call) annotate(status string) {
 		}
 		if c.ev.Model != "" {
 			attrs = append(attrs, attribute.String("gen_ai.request.model", c.ev.Model))
+		}
+		if m := c.ev.Usage.Model; m != "" {
+			attrs = append(attrs, attribute.String("gen_ai.response.model", m))
 		}
 		if id := c.ev.Usage.UpstreamID; id != "" {
 			attrs = append(attrs, attribute.String("gen_ai.response.id", id))

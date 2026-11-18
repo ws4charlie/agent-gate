@@ -10,6 +10,12 @@ A model call is a span named after the model it asked for. A tool call is a span
 
 Facts the standard has no name for, such as cost, the policy decision and the run, sit under the `agentgate.` prefix. Other tool-protocol requests, such as listing tools, get a plain span with the same `agentgate.` facts.
 
+Two more facts help an audit:
+
+- `gen_ai.response.model`: the model the provider says answered. It can differ from the requested one. Absent when the provider does not say.
+- `agentgate.decision` and `agentgate.rule`: why the call was allowed, held or refused. They also cover the secret gate (`hold` or `deny` with `secret_held` or `secret_blocked`; a confirmed resend is `allow` with `secret_held`), a screened tool result (`block` with the screen rule) and paid-tool payments.
+- `agentgate.payment.network` and `agentgate.payment.amount_nanos`: the network and amount of a payment. Never the payee, wallet or signature.
+
 ## What is never recorded
 
 Prompts, answers, tool arguments and tool results never appear in a span. Spans hold names, ids, counts and status only.

@@ -100,9 +100,11 @@ type anthropicUsage struct {
 type event struct {
 	Type    string          `json:"type"`
 	ID      string          `json:"id"`
+	Model   string          `json:"model"`
 	Usage   json.RawMessage `json:"usage"`
 	Message *struct {
 		ID      string          `json:"id"`
+		Model   string          `json:"model"`
 		Usage   json.RawMessage `json:"usage"`
 		Content []contentPart   `json:"content"`
 	} `json:"message"`
@@ -148,6 +150,9 @@ func (p *Parser) object(raw []byte) {
 	if e.ID != "" && p.u.UpstreamID == "" && !p.pinned {
 		p.u.UpstreamID = e.ID
 	}
+	if e.Model != "" && p.u.Model == "" {
+		p.u.Model = e.Model
+	}
 	switch p.format {
 	case FormatOpenAI:
 		if len(e.Usage) > 0 && string(e.Usage) != "null" {
@@ -166,6 +171,9 @@ func (p *Parser) object(raw []byte) {
 		}
 	case FormatAnthropic:
 		if e.Message != nil {
+			if e.Message.Model != "" && p.u.Model == "" {
+				p.u.Model = e.Message.Model
+			}
 			if e.Message.ID != "" && !p.pinned {
 				p.u.UpstreamID = e.Message.ID
 			}

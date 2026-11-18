@@ -193,6 +193,7 @@ type call struct {
 	tool     string // tools/call: the tool name without the server (span naming)
 	decision string // the policy verdict, for the span
 	rule     string
+	span2    spanFacts // extra span facts (payment network and amount, secret confirmed)
 
 	agent  agents.Agent    // who is calling (T4: the credential's agent)
 	snap   policy.Snapshot // what the engine saw for this request
