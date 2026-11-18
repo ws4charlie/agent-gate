@@ -14,6 +14,7 @@
     <button data-tab="overview" class="on">Overview</button>
     <button data-tab="agents">Agents</button>
     <button data-tab="tasks">Tasks</button>
+    <button data-tab="registry">Registry</button>
     <button data-tab="events">Events <span id="ev-badge" class="badge hide">0</span></button>
   </nav>
   <div class="live"><span class="dot"></span><span id="clock">connecting…</span></div>
@@ -49,6 +50,16 @@
         <div class="card" id="launcher"></div>
         <div class="card"><h3>Runs</h3><div id="runlist"></div><div class="runpanel hide" id="runview"></div></div>
       </div>
+    </div>
+  </section>
+
+  <!-- Registry: the catalogue of allowed models, tools and agents (read-only) -->
+  <section id="registry" class="tab">
+    <p class="intro">Every model, tool and agent that is allowed to exist, with an owner and a purpose. It records and reports; it does not block anything. Edit it with <code>agentgate registry</code>.</p>
+    <div class="card" id="reg-gaps"><h3>In use, not registered · last 30 days</h3><div id="reg-gaps-body"></div></div>
+    <div class="card"><h3>Registered</h3>
+      <div class="tblwrap"><table class="tbl"><thead><tr><th>Kind</th><th>Name</th><th>Owner</th><th>Purpose</th><th>Status</th><th>Updated</th></tr></thead>
+        <tbody id="reg-body"></tbody></table></div>
     </div>
   </section>
 

@@ -128,6 +128,7 @@ func (s *Server) routes(protect func(http.Handler) http.Handler) http.Handler {
 
 	api.HandleFunc("GET /api/overview", s.handleOverview)
 	api.HandleFunc("GET /api/events", s.handleEvents)
+	api.HandleFunc("GET /api/registry", s.handleRegistry)
 	api.HandleFunc("PUT /api/agents/{ref}/scope", s.handleSetScope)
 	api.HandleFunc("POST /api/agents/{ref}/kill", s.handleKill)
 	api.HandleFunc("POST /api/agents/{ref}/resume", s.handleResume)

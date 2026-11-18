@@ -47,6 +47,7 @@ Read more about each part. Each page takes a minute or two:
 | [Python SDK](docs/sdk.md) | A small client for scripts and agents |
 | [Telemetry](docs/telemetry.md) | Reports every model and tool call as standard OpenTelemetry spans |
 | [Testing](docs/testing.md) | How it's tested without spending money |
+| [Registry](docs/registry.md) | Lists the models, tools and agents allowed to exist, with owner and purpose, and shows what runs unlisted |
 | [Infrastructure](docs/infra.md) | The GCP deployment as Terraform, checked by policy in CI |
 
 ## Try it

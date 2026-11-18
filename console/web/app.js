@@ -140,7 +140,7 @@ function route() {
   const [path, qs = ""] = h.split("?");
   const [name, sub = ""] = path.split("/");
   prevTab = tab;
-  tab = ["overview", "agents", "tasks", "events"].includes(name) ? name : "overview";
+  tab = ["overview", "agents", "tasks", "registry", "events"].includes(name) ? name : "overview";
   if (tab === "agents") agentSel = decodeURIComponent(sub);
   if (tab === "events") {
     const q = new URLSearchParams(qs);
@@ -149,6 +149,7 @@ function route() {
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
   document.querySelectorAll(".tab").forEach((s) => s.classList.toggle("on", s.id === tab));
   if (tab === "tasks") loadRunTab();
+  if (tab === "registry") loadRegistry();
   if (tab === "events") {
     if (prevTab !== "events") { freshSince = seenAt; markSeen(); }
     drawEventFilters(); loadEvents();
@@ -828,8 +829,27 @@ function drawEvents() {
     : `<tr><td colspan="8" class="muted">Nothing here. Good.</td></tr>`);
 }
 
+// ---- registry tab ----
+// An agent is shown by name, with its id beside it.
+const regName = (x) => x.agent_name ? `<a href="${esc(agentHref(x.agent_name))}">${esc(x.agent_name)}</a> <span class="muted">${esc(x.name)}</span>` : esc(x.name);
+async function loadRegistry() {
+  try { drawRegistry(await api("/api/registry")); } catch (e) { /* the header shows the connection state */ }
+}
+function drawRegistry(r) {
+  setHTML($("#reg-gaps-body"), r.unregistered.length
+    ? `<div class="tblwrap"><table class="tbl"><thead><tr><th>Kind</th><th>Name</th><th>Calls</th><th>Last seen</th></tr></thead><tbody>` +
+      r.unregistered.map((u) => `<tr><td>${esc(u.kind)}</td><td>${regName(u)}</td><td>${esc(u.calls)}</td><td class="nowrap">${esc(when(u.last_seen))}</td></tr>`).join("") + `</tbody></table></div>`
+    : `<p class="muted">Everything in use is registered.</p>`);
+  setHTML($("#reg-body"), r.entries.length ? r.entries.map((e) => {
+    const flag = e.in_use ? ` <span class="chip bad" title="${esc(e.status)} but used ${esc(e.in_use.calls)} time(s), last ${esc(when(e.in_use.last_seen))}">in use</span>` : "";
+    return `<tr class="${e.in_use ? "hot" : ""}"><td>${esc(e.kind)}</td><td>${regName(e)}</td><td>${esc(e.owner)}</td><td>${esc(e.purpose)}</td>
+      <td><span class="chip ${e.status === "approved" ? "" : e.status === "proposed" ? "warn" : "bad"}">${esc(e.status)}</span>${flag}</td><td class="nowrap">${esc(when(e.updated_at))}</td></tr>`;
+  }).join("") : `<tr><td colspan="6" class="muted">Nothing registered yet. Add the first with <code>agentgate registry add</code>.</td></tr>`);
+}
+
 // ---- start ----
 route();
 loadOverview(); loadBadge();
 setInterval(() => { if (tab === "overview" || tab === "agents") loadOverview(); }, 4000);
+setInterval(() => { if (tab === "registry") loadRegistry(); }, 10000);
 setInterval(() => { loadBadge(); if (tab === "events") loadEvents(); }, 10000);
