@@ -138,7 +138,8 @@ func (s *Server) handleStartRun(w http.ResponseWriter, r *http.Request) {
 	}
 	id := runs.NewID()
 	dir := filepath.Join(s.cfg.DataDir, "runs", id)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	// Shared with the runner's group when this runner runs as the runner user.
+	if err := s.makeRunDir(dir, t.Runner); err != nil {
 		writeErr(w, statusFor(err), err)
 		return
 	}
