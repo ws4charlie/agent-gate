@@ -236,7 +236,9 @@ func TestRunStartsTheAgentsRunner(t *testing.T) {
 func TestRunOutcomes(t *testing.T) {
 	s := newTestServer(t, map[string]string{
 		"gpt-researcher": fakeRunner(t, `echo "▸ started"`), // exits without a report
-		"claude-code":    fakeRunner(t, `exit 1`),
+		// Waits for the test to record the refusal first, so the outcome does
+		// not depend on which of the two finishes first.
+		"claude-code": fakeRunner(t, `for i in $(seq 1 200); do [ -f "$AG_RUN_DIR/go" ] && break; sleep 0.05; done; exit 1`),
 	})
 	h := s.Handler()
 	if m := startAndWait(t, s, h, `{"template_id":"agent-security"}`); m.Status != stFailed {
@@ -246,6 +248,9 @@ func TestRunOutcomes(t *testing.T) {
 	m := start(t, s, h, `{"template_id":"agent-payments"}`)
 	if _, err := s.pool.Exec(context.Background(), `INSERT INTO audit_events (request_id, agent_id, run_id, kind, model, status, err, at)
 		VALUES ('r1', 'a1', $1, 'model', 'claude-haiku-5-5', 'policy_denied', 'budget_task: over the per-task budget', now())`, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.cfg.DataDir, "runs", m.ID, "go"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if m = wait(t, s, m.ID); m.Status != stRefused || !strings.Contains(m.Error, "budget_task") {
