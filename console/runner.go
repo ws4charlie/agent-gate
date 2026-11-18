@@ -452,12 +452,11 @@ func (s *Server) shareDir(d string, mode os.FileMode) error {
 	if err := os.Chown(d, -1, s.runnerGID); err != nil {
 		return fmt.Errorf("giving %s to group %d (the console's user must belong to it): %w", d, s.runnerGID, err)
 	}
-	return os.Chmod(d, mode) // Chmod, not the Mkdir mode: it keeps setgid and ignores umask
+	return os.Chmod(d, mode) // Chmod, not the Mkdir mode: it ignores umask
 }
 
 // makeRunDir creates a run's directory: private to the console, or with a
-// runner user shared with the runner's group (setgid, so what the runner makes
-// there belongs to the group, readable by the console).
+// runner user shared with the runner's group (0770, no setgid).
 func (s *Server) makeRunDir(dir, runner string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -465,7 +464,10 @@ func (s *Server) makeRunDir(dir, runner string) error {
 	if !s.viaUnit(runner) {
 		return nil
 	}
-	return s.shareDir(dir, os.ModeSetgid|0o770)
+	// No setgid: the console's unit forbids it (RestrictSUIDSGID). What the
+	// runner writes belongs to its own primary group, the runner group, and the
+	// console sets the group of the files it writes for the runner itself.
+	return s.shareDir(dir, 0o770)
 }
 
 // removeStaleCerts deletes certificate directories a crashed console left in
