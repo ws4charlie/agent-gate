@@ -50,6 +50,9 @@ func consoleCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	tailnetKey := c.fs.String("tailnet-key", os.Getenv("AG_CONSOLE_TAILNET_KEY"), "key file from `tailscale cert`")
 	tailscaleSocket := c.fs.String("tailscale-socket", envOr("AG_TAILSCALE_SOCKET", "/var/run/tailscale/tailscaled.sock"), "tailscaled's LocalAPI socket, used to tell who is calling")
 	allow := c.fs.String("allow", os.Getenv("AG_CONSOLE_ALLOW"), "logins that may open the console over the tailnet, comma separated, e.g. you@gmail.com")
+	runnerSPIFFEID := c.fs.String("runner-spiffe-id", os.Getenv("AG_RUNNER_SPIFFE_ID"), "SPIFFE ID the runs present to the gateway, e.g. spiffe://agentgate.internal/runner; each run fetches its own certificate. Empty: runs use the agent's API key")
+	runnerGateway := c.fs.String("runner-gateway-url", os.Getenv("AG_RUNNER_GATEWAY_URL"), "the gateway's mutual-TLS address the runs call with that certificate, e.g. https://127.0.0.1:18443")
+	spiffeSocket := c.fs.String("spiffe-socket", envOr("AG_SPIFFE_SOCKET", "unix:///run/spire/agent/sockets/agent.sock"), "SPIFFE Workload API socket the runs' certificates come from")
 	_, pool, err := c.open(ctx, args)
 	if err != nil {
 		return err
@@ -70,6 +73,15 @@ func consoleCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	cfg := console.Config{Gateway: *gateway, DataDir: *dataDir, Runners: run,
 		WalletAddress: *walletAddr, RPCURL: os.Getenv("AG_RPC_URL"), USDC: *usdc}
+	if *runnerSPIFFEID != "" {
+		if *runnerGateway == "" {
+			return errors.New("--runner-spiffe-id needs --runner-gateway-url")
+		}
+		if cfg.FetchCert, err = console.WorkloadCertFetcher(*spiffeSocket, *runnerSPIFFEID); err != nil {
+			return err
+		}
+		cfg.RunnerGatewayURL = *runnerGateway
+	}
 	if *paymentsPath != "" {
 		f, err := readPaymentsFile(*paymentsPath)
 		if err != nil {

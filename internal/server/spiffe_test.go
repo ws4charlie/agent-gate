@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -248,4 +249,36 @@ func TestAPIKeyDisabledRefusesKeyKeepsSPIFFE(t *testing.T) {
 	if code, _ := balanceAs(t, http.DefaultClient, e.gw.URL, secret, nil); code != 200 {
 		t.Fatalf("key back on: got %d, want 200", code)
 	}
+}
+
+// The span says how the caller proved who it is, and carries no credential.
+func TestSPIFFESpanRecordsAuthMethod(t *testing.T) {
+	e := newSPIFFEEnv(t)
+	post := func(c *http.Client, base, key string) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, base+"/v1/chat/completions", strings.NewReader(chatBody("oa/m", false)))
+		req.Header.Set("Content-Type", "application/json")
+		if key != "" {
+			req.Header.Set("Authorization", "Bearer "+key)
+		}
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("status %d", resp.StatusCode)
+		}
+	}
+	post(e.ca.clientTo(e.ca.svid(t, spiffeRunner)), e.mtls.URL, "")
+	if got := attrs(rootSpan(t, e.env, "chat oa/m"))["agentgate.auth"].AsString(); got != "spiffe" {
+		t.Errorf("agentgate.auth over mTLS = %q, want spiffe", got)
+	}
+	e.spans.Reset()
+	post(http.DefaultClient, e.gw.URL, e.secret)
+	if got := attrs(rootSpan(t, e.env, "chat oa/m"))["agentgate.auth"].AsString(); got != "api_key" {
+		t.Errorf("agentgate.auth on the plain listener = %q, want api_key", got)
+	}
+	noContent(t, e.env, e.secret, "BEGIN CERTIFICATE")
 }

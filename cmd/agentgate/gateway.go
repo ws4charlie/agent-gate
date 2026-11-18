@@ -16,7 +16,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/spiffe/go-spiffe/v2/svid/x509svid"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 
 	"github.com/ws4charlie/agent-gate/internal/agents"
@@ -86,6 +88,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	spiffeSocket := c.fs.String("spiffe-socket", envOr("AG_SPIFFE_SOCKET", "unix:///run/spire/agent/sockets/agent.sock"), "SPIFFE Workload API socket (default $AG_SPIFFE_SOCKET)")
 	spiffeDomain := c.fs.String("spiffe-trust-domain", os.Getenv("AG_SPIFFE_TRUST_DOMAIN"), "trust domain whose SVIDs are accepted (required with --spiffe-listen)")
 	cedarDir := c.fs.String("cedar-policies", os.Getenv("AG_CEDAR_POLICIES"), "directory of Cedar policies to run in shadow mode beside the Go engine (default $AG_CEDAR_POLICIES; empty: off)")
+	spiffeID := c.fs.String("spiffe-id", os.Getenv("AG_SPIFFE_ID"), "the SPIFFE ID of the gateway's own SVID, when the Workload API returns several (default $AG_SPIFFE_ID; empty: the first one)")
 	reconcileEvery := c.fs.Duration("reconcile-every", 30*time.Second, "background reconcile interval")
 	cfg, pool, err := c.open(ctx, args)
 	if err != nil {
@@ -93,9 +96,15 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	defer pool.Close()
 	var spiffeTD spiffeid.TrustDomain
+	var spiffeSelf spiffeid.ID
 	if *spiffeListen != "" {
 		if spiffeTD, err = spiffeid.TrustDomainFromString(*spiffeDomain); err != nil {
 			return fmt.Errorf("--spiffe-trust-domain is required with --spiffe-listen: %w", err)
+		}
+		if *spiffeID != "" {
+			if spiffeSelf, err = spiffeid.FromString(*spiffeID); err != nil {
+				return fmt.Errorf("--spiffe-id: %w", err)
+			}
 		}
 	}
 	if _, err := db.Migrate(ctx, pool); err != nil {
@@ -193,60 +202,137 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	}()
 
 	hs := &http.Server{Addr: cfg.Listen, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
-	var shutdowns []func(context.Context) error
-	shutdowns = append(shutdowns, hs.Shutdown)
+	spiffeDone := make(chan struct{})
+	close(spiffeDone)
 	if *spiffeListen != "" {
-		ss, err := startSPIFFE(ctx, srv, *spiffeListen, *spiffeSocket, spiffeTD, log, stdout)
-		if err != nil {
-			return err
-		}
-		defer ss.src.Close()
-		shutdowns = append(shutdowns, ss.hs.Shutdown)
+		l := &spiffeListener{open: workloadSource(*spiffeSocket, spiffeSelf), addr: *spiffeListen, td: spiffeTD,
+			handler: srv.Handler(), log: log, stdout: stdout, minWait: time.Second, maxWait: 30 * time.Second}
+		spiffeDone = make(chan struct{})
+		go func() { defer close(spiffeDone); l.run(ctx) }()
 	}
 	go func() {
 		<-ctx.Done()
 		sc, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		for _, f := range shutdowns {
-			f(sc)
-		}
+		_ = hs.Shutdown(sc)
 	}()
 	fmt.Fprintf(stdout, "agentgate listening on %s\n", cfg.Listen)
-	if err := hs.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	err = hs.ListenAndServe()
+	stop() // a plain listener that failed to start must not leave the other one running
+	<-spiffeDone
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
 }
 
-type spiffeServer struct {
-	hs  *http.Server
-	src *workloadapi.X509Source
+// spiffeSource is what the mutual-TLS listener needs from the Workload API:
+// the gateway's SVID and the trust bundles. workloadapi.X509Source is one.
+type spiffeSource interface {
+	x509svid.Source
+	x509bundle.Source
+	Close() error
 }
 
-// startSPIFFE opens the mutual-TLS listener next to the plain one. Its SVID
-// and trust bundle come from the SPIFFE Workload API and rotate on their own.
-// It refuses to start when the Workload API does not answer in time: running
-// without the identity the operator asked for would fail open.
-func startSPIFFE(ctx context.Context, srv *server.Server, addr, socket string, td spiffeid.TrustDomain, log *slog.Logger, stdout io.Writer) (*spiffeServer, error) {
-	sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	src, err := workloadapi.NewX509Source(sctx, workloadapi.WithClientOptions(workloadapi.WithAddr(socket)))
-	if err != nil {
-		return nil, fmt.Errorf("spiffe: Workload API at %s not reachable: %w", socket, err)
+// pickSVID returns the picker that chooses the SVID whose ID is id. The
+// gateway and the runner share a unix user on the VM, so the Workload API
+// returns both identities and each process must say which one is its own. A
+// nil result means "none matches"; an empty id keeps the default (first SVID).
+func pickSVID(id spiffeid.ID) func([]*x509svid.SVID) *x509svid.SVID {
+	if id.IsZero() {
+		return nil
 	}
-	ln, err := tls.Listen("tcp", addr, server.ServerTLSConfig(src, src, td))
-	if err != nil {
-		src.Close()
-		return nil, err
-	}
-	hs := &http.Server{Handler: server.SPIFFEHandler(srv.Handler()), ReadHeaderTimeout: 10 * time.Second}
-	go func() {
-		if err := hs.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("spiffe listener", "err", err)
+	return func(svids []*x509svid.SVID) *x509svid.SVID {
+		for _, s := range svids {
+			if s.ID == id {
+				return s
+			}
 		}
-	}()
-	fmt.Fprintf(stdout, "agentgate listening on %s with SPIFFE mutual TLS (trust domain %s)\n", addr, td)
-	return &spiffeServer{hs: hs, src: src}, nil
+		return nil
+	}
+}
+
+// workloadSource opens the Workload API source for the gateway's own SVID. It
+// fails when the API does not answer in time or has no SVID with that ID.
+func workloadSource(socket string, id spiffeid.ID) func(context.Context) (spiffeSource, error) {
+	return func(ctx context.Context) (spiffeSource, error) {
+		opts := []workloadapi.X509SourceOption{workloadapi.WithClientOptions(workloadapi.WithAddr(socket))}
+		if pk := pickSVID(id); pk != nil {
+			opts = append(opts, workloadapi.WithDefaultX509SVIDPicker(pk))
+		}
+		sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		src, err := workloadapi.NewX509Source(sctx, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("Workload API at %s not reachable: %w", socket, err)
+		}
+		if _, err := src.GetX509SVID(); err != nil {
+			src.Close()
+			return nil, fmt.Errorf("Workload API at %s has no SVID %s", socket, id)
+		}
+		return src, nil
+	}
+}
+
+// spiffeListener keeps the mutual-TLS listener alive next to the plain one
+// without ever being a reason for the gateway to stop: while SPIRE is not
+// there, it logs, waits and tries again (at most maxWait apart), and opens
+// the listener once an SVID is available. Everything on the plain listener
+// goes on as usual meanwhile.
+type spiffeListener struct {
+	open    func(context.Context) (spiffeSource, error)
+	addr    string
+	td      spiffeid.TrustDomain
+	handler http.Handler
+	log     *slog.Logger
+	stdout  io.Writer
+	minWait time.Duration
+	maxWait time.Duration
+}
+
+// run blocks until ctx ends, then closes the listener and the source.
+func (l *spiffeListener) run(ctx context.Context) {
+	wait := l.minWait
+	for ctx.Err() == nil {
+		err := l.serveOnce(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		l.log.Error("spiffe mutual-TLS listener not available; the plain listener keeps serving", "err", err, "retry_in", wait.String())
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		wait = min(wait*2, l.maxWait)
+	}
+}
+
+// serveOnce opens the source and the listener and serves until ctx ends (nil)
+// or the listener fails (the error).
+func (l *spiffeListener) serveOnce(ctx context.Context) error {
+	src, err := l.open(ctx)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	ln, err := tls.Listen("tcp", l.addr, server.ServerTLSConfig(src, src, l.td))
+	if err != nil {
+		return err
+	}
+	hs := &http.Server{Handler: server.SPIFFEHandler(l.handler), ReadHeaderTimeout: 10 * time.Second}
+	fmt.Fprintf(l.stdout, "agentgate listening on %s with SPIFFE mutual TLS (trust domain %s)\n", l.addr, l.td)
+	errc := make(chan error, 1)
+	go func() { errc <- hs.Serve(ln) }()
+	select {
+	case <-ctx.Done():
+		sc, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = hs.Shutdown(sc)
+		return nil
+	case err := <-errc:
+		return err
+	}
 }
 
 func account(ctx context.Context, args []string, stdout io.Writer) error {
