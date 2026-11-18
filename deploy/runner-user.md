@@ -23,7 +23,7 @@ Only the runners you list move (for example `gpt-researcher`). Others, like `cla
 | `/opt/agentgate-runner/home` | `agentgate-runner`, 0700 | the runner's writable home (`HOME`, `HF_HOME`, `XDG_CACHE_HOME`) |
 | `/opt/agentgate` | `agentgate`, group `agentgate-runner`, 0710 | the console's data dir (`/opt/agentgate/console`), Claude config, keys |
 
-Set `/opt/agentgate` to 0710 only after its 0755 subfolders are 0700, so the group can pass through but list or read nothing else. The console sets `console/` and `runs/` to 0710 and each run directory to 2770 (setgid, group `agentgate-runner`). The runner program sets `HOME`, `HF_HOME` and `XDG_CACHE_HOME` itself.
+Set `/opt/agentgate` to 0710 only after its 0755 subfolders are 0700, so the group can pass through but list or read nothing else. The console sets `console/` and `runs/` to 0710 and each run directory to 0770 with group `agentgate-runner`, and gives the files it writes for the runner that group itself. No setgid: the console's unit forbids it (`RestrictSUIDSGID`). The runner program sets `HOME`, `HF_HOME` and `XDG_CACHE_HOME` itself.
 
 The unit file assumes the console's data directory is `/opt/agentgate/console` and the runner program is `/opt/agentgate-runner/bin/runner-gpt-researcher`. Edit the file if yours differ.
 

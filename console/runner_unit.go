@@ -103,9 +103,14 @@ func envFile(env []string) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-// writeShared writes a file the runner's group can read and write.
-func writeShared(path string, data []byte) error {
+// writeShared writes a file the runner's group can read and write. The group is
+// set explicitly: the console's unit forbids setgid directories
+// (RestrictSUIDSGID), so files do not inherit the run directory's group.
+func writeShared(path string, data []byte, gid int) error {
 	if err := os.WriteFile(path, data, 0o660); err != nil {
+		return err
+	}
+	if err := os.Chown(path, -1, gid); err != nil {
 		return err
 	}
 	return os.Chmod(path, 0o660) // the console's umask must not narrow it
@@ -122,7 +127,7 @@ func (t *task) runUnit(ctx context.Context, instructions string) {
 	if err == nil {
 		for name, data := range map[string][]byte{"topic.txt": []byte(t.meta.Topic), "instructions.txt": []byte(instructions),
 			"runner.env": env, "runner.out": nil} { // systemd appends to runner.out, so it must exist and be ours
-			if err = writeShared(filepath.Join(t.dir, name), data); err != nil {
+			if err = writeShared(filepath.Join(t.dir, name), data, t.s.runnerGID); err != nil {
 				break
 			}
 		}

@@ -34,6 +34,7 @@ func currentUser(t *testing.T) (name, group string) {
 // fakeUnits stands in for systemd: Start runs fn, Stop ends a Start that waits.
 type fakeUnits struct {
 	dataDir string // set by a test that inspects the run directory
+	wantGID int
 	mu      sync.Mutex
 	started []string
 	stopped []string
@@ -184,20 +185,29 @@ func TestUnitExitStatus(t *testing.T) {
 func TestUnitRunDirIsSharedWhenTheUnitStarts(t *testing.T) {
 	var mode os.FileMode
 	var gid int
+	var fileErrs []string
 	var units *fakeUnits
 	units = newFakeUnits(func(ctx context.Context, unit string) error {
 		id := strings.TrimSuffix(strings.TrimPrefix(unit, "agentgate-run@"), ".service")
 		if fi, err := os.Stat(filepath.Join(units.dataDir, "runs", id)); err == nil {
 			mode, gid = fi.Mode(), int(fi.Sys().(*syscall.Stat_t).Gid)
 		}
+		for _, f := range []string{"topic.txt", "instructions.txt", "runner.out"} {
+			if fi, err := os.Stat(filepath.Join(units.dataDir, "runs", id, f)); err != nil || int(fi.Sys().(*syscall.Stat_t).Gid) != units.wantGID {
+				fileErrs = append(fileErrs, f)
+			}
+		}
 		return errors.New("exit status 1")
 	})
 	s := unitServer(t, []string{"gpt-researcher"}, map[string]string{"gpt-researcher": "/unused"}, units)
-	units.dataDir = s.cfg.DataDir
+	units.dataDir, units.wantGID = s.cfg.DataDir, s.runnerGID
 	m := start(t, s, s.Handler(), `{"template_id":"agent-security"}`)
 	wait(t, s, m.ID)
-	if mode.Perm() != 0o770 || mode&os.ModeSetgid == 0 || gid != s.runnerGID {
-		t.Errorf("run dir when the unit started: mode %v group %d, want setgid 0770 group %d", mode, gid, s.runnerGID)
+	if mode.Perm() != 0o770 || mode&os.ModeSetgid != 0 || gid != s.runnerGID {
+		t.Errorf("run dir when the unit started: mode %v group %d, want 0770 (no setgid) group %d", mode, gid, s.runnerGID)
+	}
+	if len(fileErrs) > 0 {
+		t.Errorf("files not in the runner group: %v", fileErrs)
 	}
 }
 
@@ -323,7 +333,7 @@ func TestTailReader(t *testing.T) {
 }
 
 // The runner's group id is found and the run directory is shared with it,
-// setgid; the data directory can be passed through but not listed.
+// (0770, no setgid); the data directory can be passed through but not listed.
 func TestRunDirShared(t *testing.T) {
 	s := unitServer(t, []string{"gpt-researcher"}, map[string]string{"gpt-researcher": "/x"}, nil)
 	for _, d := range []string{s.cfg.DataDir, filepath.Join(s.cfg.DataDir, "runs")} {
@@ -336,8 +346,8 @@ func TestRunDirShared(t *testing.T) {
 		t.Fatal(err)
 	}
 	fi, _ := os.Stat(dir)
-	if fi.Mode().Perm() != 0o770 || fi.Mode()&os.ModeSetgid == 0 {
-		t.Errorf("run dir mode %v, want setgid 0770", fi.Mode())
+	if fi.Mode().Perm() != 0o770 || fi.Mode()&os.ModeSetgid != 0 {
+		t.Errorf("run dir mode %v, want 0770 without setgid", fi.Mode())
 	}
 	if st := fi.Sys().(*syscall.Stat_t); int(st.Gid) != s.runnerGID {
 		t.Errorf("run dir group %d, want %d", st.Gid, s.runnerGID)
