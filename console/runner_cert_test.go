@@ -40,31 +40,54 @@ func eventTexts(t *testing.T, s *Server, id string) string {
 // The runner gets its certificate in a private directory, is pointed at the
 // gateway's mutual-TLS address, and the directory is gone when the run ends.
 func TestRunGetsACertificateAndItIsDeleted(t *testing.T) {
-	// The runner copies what it sees into its report; the test reads it afterwards.
+	// The runner reports where its files are and waits for the test to look at
+	// them, so their modes are checked while they exist.
 	s := certServer(t, fakeRunner(t, `
 d=$(dirname "$AG_SPIFFE_CERT")
 {
 echo "url=$AG_GATEWAY_URL"
 echo "dir=$d"
-echo "dirmode=$(stat -f %Lp "$d" 2>/dev/null || stat -c %a "$d")"
 echo "cert=$(cat "$AG_SPIFFE_CERT") key=$(cat "$AG_SPIFFE_KEY") bundle=$(cat "$AG_SPIFFE_BUNDLE")"
-echo "keymode=$(stat -f %Lp "$AG_SPIFFE_KEY" 2>/dev/null || stat -c %a "$AG_SPIFFE_KEY")"
-} > "$AG_RUN_DIR/report.md"`), okCert)
-	m := startAndWait(t, s, s.Handler(), `{"template_id":"agent-security"}`)
-	if m.Status != stDone {
-		t.Fatalf("status %s (%s): %s", m.Status, m.Error, eventTexts(t, s, m.ID))
-	}
-	rep, _ := os.ReadFile(filepath.Join(s.cfg.DataDir, "runs", m.ID, "report.md"))
-	got := string(rep)
-	for _, want := range []string{"url=https://127.0.0.1:18443\n", "dirmode=700", "keymode=600", "cert=CERT key=KEY bundle=BUNDLE"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("runner saw %q, want it to contain %q", got, want)
+} > "$AG_RUN_DIR/report.md"
+touch "$AG_RUN_DIR/reported"
+while [ ! -e "$AG_RUN_DIR/go" ]; do sleep 0.05; done`), okCert)
+	h := s.Handler()
+	m := start(t, s, h, `{"template_id":"agent-security"}`)
+	runDir := filepath.Join(s.cfg.DataDir, "runs", m.ID)
+	for i := 0; ; i++ {
+		if _, err := os.Stat(filepath.Join(runDir, "reported")); err == nil {
+			break
 		}
+		if i > 500 {
+			t.Fatal("runner never reported")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
+	rep, _ := os.ReadFile(filepath.Join(runDir, "report.md"))
+	got := string(rep)
 	var dir string
 	for _, l := range strings.Split(got, "\n") {
 		if v, ok := strings.CutPrefix(l, "dir="); ok {
 			dir = v
+		}
+	}
+	if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Errorf("certificate directory %q: %v %v, want mode 0700", dir, fi, err)
+	}
+	for _, f := range []string{"svid.pem", "svid.key", "bundle.pem"} {
+		if fi, err := os.Stat(filepath.Join(dir, f)); err != nil || fi.Mode().Perm() != 0o600 {
+			t.Errorf("%s: %v %v, want mode 0600", f, fi, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "go"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if m = wait(t, s, m.ID); m.Status != stDone {
+		t.Fatalf("status %s (%s): %s", m.Status, m.Error, eventTexts(t, s, m.ID))
+	}
+	for _, want := range []string{"url=https://127.0.0.1:18443\n", "cert=CERT key=KEY bundle=BUNDLE"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("runner saw %q, want it to contain %q", got, want)
 		}
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {

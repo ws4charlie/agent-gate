@@ -282,3 +282,16 @@ func TestSPIFFESpanRecordsAuthMethod(t *testing.T) {
 	}
 	noContent(t, e.env, e.secret, "BEGIN CERTIFICATE")
 }
+
+// Handler and WatchKills both fill in the server's defaults; serve starts them
+// together. Under -race this fails if defaults() is not safe to call twice at once.
+func TestDefaultsSafeFromTwoGoroutines(t *testing.T) {
+	e := newEnv(t, 0, nil)
+	s := &server.Server{Pool: e.pool, Ledger: e.led, Audit: e.audit}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); s.WatchKills(ctx) }()
+	_ = s.Handler()
+	cancel()
+	<-done
+}
