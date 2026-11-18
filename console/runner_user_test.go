@@ -33,6 +33,7 @@ func currentUser(t *testing.T) (name, group string) {
 
 // fakeUnits stands in for systemd: Start runs fn, Stop ends a Start that waits.
 type fakeUnits struct {
+	dataDir string // set by a test that inspects the run directory
 	mu      sync.Mutex
 	started []string
 	stopped []string
@@ -174,6 +175,29 @@ func TestUnitExitStatus(t *testing.T) {
 				t.Errorf("status %s error %q, want failed %q", m.Status, m.Error, tc.want)
 			}
 		})
+	}
+}
+
+// A run started through the API gets a shared run directory before its unit
+// starts (systemd enters it as the runner user). Regression: the start handler
+// used to create it private to the console.
+func TestUnitRunDirIsSharedWhenTheUnitStarts(t *testing.T) {
+	var mode os.FileMode
+	var gid int
+	var units *fakeUnits
+	units = newFakeUnits(func(ctx context.Context, unit string) error {
+		id := strings.TrimSuffix(strings.TrimPrefix(unit, "agentgate-run@"), ".service")
+		if fi, err := os.Stat(filepath.Join(units.dataDir, "runs", id)); err == nil {
+			mode, gid = fi.Mode(), int(fi.Sys().(*syscall.Stat_t).Gid)
+		}
+		return errors.New("exit status 1")
+	})
+	s := unitServer(t, []string{"gpt-researcher"}, map[string]string{"gpt-researcher": "/unused"}, units)
+	units.dataDir = s.cfg.DataDir
+	m := start(t, s, s.Handler(), `{"template_id":"agent-security"}`)
+	wait(t, s, m.ID)
+	if mode.Perm() != 0o770 || mode&os.ModeSetgid == 0 || gid != s.runnerGID {
+		t.Errorf("run dir when the unit started: mode %v group %d, want setgid 0770 group %d", mode, gid, s.runnerGID)
 	}
 }
 
