@@ -252,6 +252,10 @@ func (c *call) payChallenge(t payTarget) {
 	preq := policy.Request{AgentID: agent.ID, Kind: policy.KindPayment, Tool: t.PolicyTool, Payee: req.PayTo, Network: req.Network,
 		Amount: amount, TaskID: task, HoldID: hold.ID, Approved: approved}
 	d, ok := c.evaluate(preq, approvalID)
+	c.notePayment(req.Network, int64(amount))
+	if ok {
+		c.noteDecision(d)
+	}
 	if !ok {
 		c.release(hold, "policy unavailable")
 		return

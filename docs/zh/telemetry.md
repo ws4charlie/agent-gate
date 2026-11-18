@@ -10,6 +10,12 @@
 
 标准里没有对应名称的信息，例如费用、策略决定和运行，放在 `agentgate.` 前缀下。其他工具协议请求（如列出工具）只生成一个普通 span，带同样的 `agentgate.` 信息。
 
+还有几项对审计有用：
+
+- `gen_ai.response.model`：服务商声明实际回答的模型，可能与请求的模型不同；服务商没说时不出现。
+- `agentgate.decision` 和 `agentgate.rule`：调用被放行、挂起或拒绝的原因。也覆盖密钥闸门（`hold` 或 `deny`，规则为 `secret_held` 或 `secret_blocked`；确认后重发为 `allow`，规则仍为 `secret_held`）、被筛查拦下的工具结果（`block`，规则为筛查规则）和付费工具的支付。
+- `agentgate.payment.network` 和 `agentgate.payment.amount_nanos`：支付的网络和金额。绝不包含收款方、钱包或签名。
+
 ## 绝不记录什么
 
 提示词、回答、工具参数和工具结果永远不会出现在 span 里。span 只含名称、id、数量和状态。

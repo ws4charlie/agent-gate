@@ -75,6 +75,8 @@ func (c *call) secretGate(tool, task string, req mcp.Request, p *mcp.CallParams,
 	if mode == policy.SecretsConfirm && hadCode && hmac.Equal([]byte(code), []byte(want)) {
 		c.s.Log.Warn("secret sent on confirmation", "request_id", c.ev.RequestID, "tool", tool, "what", sec.What, "where", sec.Where)
 		c.ev.Err = "secret_confirmed: " + sec.What
+		c.noteOutcome(string(policy.Allow), "secret_held")
+		c.span2.secretConfirmed = true
 		return false
 	}
 
@@ -85,6 +87,7 @@ func (c *call) secretGate(tool, task string, req mcp.Request, p *mcp.CallParams,
 	c.w.WriteHeader(http.StatusOK)
 	if mode == policy.SecretsBlock {
 		risk["action"] = "blocked"
+		c.noteOutcome(string(policy.Deny), "secret_blocked")
 		_, _ = c.w.Write(mcp.ErrorResponse(c.rpcID, mcp.Error{Code: mcp.CodeScreened,
 			Message: fmt.Sprintf("not sent: %s contains what looks like a %s", sec.Where, readable(sec.What)),
 			Data:    map[string]any{"agentgate_risk": risk, "request_id": c.ev.RequestID}}))
@@ -92,6 +95,7 @@ func (c *call) secretGate(tool, task string, req mcp.Request, p *mcp.CallParams,
 		return true
 	}
 	risk["action"] = "held"
+	c.noteOutcome("hold", "secret_held")
 	risk["to_send_anyway"] = map[string]string{"add_argument": confirmArg, "value": want}
 	text := fmt.Sprintf("AgentGate held this tool call: %s contains what looks like a %s (%s). Nothing was sent. "+
 		"Ask the user before sending it. To send it anyway, repeat the same call with the argument %q set to %q; "+

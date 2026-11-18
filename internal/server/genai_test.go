@@ -9,7 +9,9 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/ws4charlie/agent-gate/internal/money"
 	"github.com/ws4charlie/agent-gate/internal/policy"
+	"github.com/ws4charlie/agent-gate/internal/screen"
 )
 
 // rootSpan returns the request span: the one with no parent.
@@ -179,4 +181,102 @@ func TestGenAIOtherMCPMethodKeepsPlainName(t *testing.T) {
 		t.Error("gen_ai attributes on tools/list")
 	}
 	wantAttrs(t, got, map[string]any{"agentgate.request.status": "ok"})
+}
+
+func absent(t *testing.T, got map[string]attribute.Value, keys ...string) {
+	t.Helper()
+	for _, k := range keys {
+		if v, ok := got[k]; ok {
+			t.Errorf("attribute %s set to %q, want absent", k, v.Emit())
+		}
+	}
+}
+
+func TestGenAIResponseModel(t *testing.T) {
+	for _, c := range []struct{ name, path, model, body string }{
+		{"openai-json", "/v1/chat/completions", "oa/m", chatBody("oa/m", false)},
+		{"openai-stream", "/v1/chat/completions", "oa/m", chatBody("oa/m", true)},
+		{"anthropic-json", "/v1/messages", "an/m", msgBody("an/m", false)},
+		{"anthropic-stream", "/v1/messages", "an/m", msgBody("an/m", true)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t, 10*usd, nil)
+			resp, _ := e.do(c.path, c.body, nil)
+			e.auditRow(resp)
+			got := attrs(rootSpan(t, e, "chat "+c.model))
+			rm, ok := got["gen_ai.response.model"]
+			if !ok || rm.AsString() == "" {
+				t.Fatalf("gen_ai.response.model = %v (set %v)", rm, ok)
+			}
+		})
+	}
+}
+
+func TestGenAISecretGateSpans(t *testing.T) {
+	m := newMCPEnv(t, 10*usd, map[string]money.Nanos{"paid": 1_000_000})
+	args := map[string]any{"text": "debug " + testKey}
+	resp, b := m.call("paid", args, nil)
+	_, risk := heldResult(t, b)
+	m.auditRow(resp)
+	code := risk["to_send_anyway"].(map[string]any)["value"].(string)
+	held := attrs(rootSpan(t, m.env, "execute_tool paid"))
+	wantAttrs(t, held, map[string]any{"agentgate.decision": "hold", "agentgate.rule": "secret_held", "agentgate.request.status": "secret_held"})
+	noContent(t, m.env, testKey, "AbCdEfGh", code, "debug")
+
+	m2 := newMCPEnv(t, 10*usd, map[string]money.Nanos{"paid": 1_000_000})
+	resp, b = m2.call("paid", args, nil)
+	_, risk = heldResult(t, b)
+	m2.auditRow(resp)
+	code = risk["to_send_anyway"].(map[string]any)["value"].(string)
+	args["_agentgate_confirm"] = code
+	resp, _ = m2.call("paid", args, nil)
+	m2.auditRow(resp)
+	var got map[string]attribute.Value
+	for _, s := range m2.spans.GetSpans() {
+		if !s.Parent.IsValid() && s.Name == "execute_tool paid" {
+			if a := attrs(s.Snapshot()); a["agentgate.request.status"].AsString() == "ok" {
+				got = a
+			}
+		}
+	}
+	if got == nil {
+		t.Fatal("no span for the confirmed call")
+	}
+	wantAttrs(t, got, map[string]any{"agentgate.decision": "allow", "agentgate.rule": "secret_held"})
+	noContent(t, m2.env, testKey, "AbCdEfGh", code)
+
+	m3 := newMCPEnv(t, 10*usd, map[string]money.Nanos{"paid": 1_000_000})
+	m3.setScope(func(s *policy.Scope) { s.Secrets = policy.SecretsBlock })
+	resp, _ = m3.call("paid", map[string]any{"text": "https://admin:hunter2pass@db.example.com"}, nil)
+	m3.auditRow(resp)
+	wantAttrs(t, attrs(rootSpan(t, m3.env, "execute_tool paid")), map[string]any{"agentgate.decision": "deny", "agentgate.rule": "secret_blocked"})
+	noContent(t, m3.env, "hunter2", "db.example.com")
+}
+
+func TestGenAIScreenedResultSpan(t *testing.T) {
+	m := newMCPEnv(t, 10*usd, map[string]money.Nanos{"inject": 1_000_000})
+	resp, _ := m.call("inject", map[string]any{"text": "SECRET-TOOL-ARGUMENT"}, nil)
+	m.auditRow(resp)
+	got := attrs(rootSpan(t, m.env, "execute_tool inject"))
+	wantAttrs(t, got, map[string]any{"agentgate.decision": "block", "agentgate.rule": screen.RuleInstructionOverride, "agentgate.request.status": "screened"})
+	noContent(t, m.env, "SECRET-TOOL-ARGUMENT", "evil.example", "Ignore all previous")
+}
+
+func TestGenAIPaymentSpans(t *testing.T) {
+	p := newPayMCPEnv(t)
+	resp, _ := p.call("sp-1")
+	p.auditRow(resp)
+	got := attrs(rootSpan(t, p.env, "execute_tool lookup"))
+	wantAttrs(t, got, map[string]any{"agentgate.decision": "allow", "agentgate.rule": policy.RuleAllow, "agentgate.payment.amount_nanos": int64(10_000_000)})
+	if n, ok := got["agentgate.payment.network"]; !ok || n.AsString() == "" {
+		t.Error("agentgate.payment.network missing")
+	}
+	noContent(t, p.env, p.payTo.Hex(), "paid answer")
+
+	q := newPayMCPEnv(t)
+	q.setScope(func(sc *policy.Scope) { sc.Payees = []string{q.payTo.Hex()}; sc.ApprovalThreshold = 5_000_000 })
+	resp, _ = q.call("sp-2")
+	q.auditRow(resp)
+	wantAttrs(t, attrs(rootSpan(t, q.env, "execute_tool lookup")), map[string]any{
+		"agentgate.decision": string(policy.RequireApproval), "agentgate.rule": policy.RuleApprovalThreshold})
 }

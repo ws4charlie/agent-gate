@@ -588,6 +588,7 @@ func (c *call) blocked(server, tool string, v screen.Verdict, hold ledger.Hold, 
 	}
 	c.s.Log.Warn("tool output blocked", "request_id", c.ev.RequestID, "run", c.runID, "server", server, "tool", tool, "rule", v.Rule, "sha256", v.Hash)
 	c.span.AddEvent("screen " + v.Rule)
+	c.noteOutcome("block", v.Rule)
 	c.ev.Err = v.Rule
 	c.w.Header().Set("Content-Type", "application/json")
 	c.w.WriteHeader(http.StatusOK)
@@ -673,6 +674,7 @@ func (c *call) blockedStream(server, tool string, v screen.Verdict, hold ledger.
 		c.s.Log.Error("screen event", "request_id", c.ev.RequestID, "err", err)
 	}
 	c.ev.Err = v.Rule
+	c.noteOutcome("block", v.Rule)
 	_ = mcp.WriteEvent(c.w, mcp.ErrorResponse(c.rpcID, mcp.Error{Code: mcp.CodeScreened, Message: "tool output blocked by the gateway's screen",
 		Data: map[string]any{"rule": v.Rule, "request_id": c.ev.RequestID}}))
 	if fl, ok := c.w.(http.Flusher); ok {

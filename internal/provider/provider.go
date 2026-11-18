@@ -12,4 +12,7 @@ type Usage struct {
 	InputTokens, OutputTokens, CacheReadTokens, CacheWriteTokens int64
 	CostNanos                                                    *money.Nanos
 	UpstreamID                                                   string
+	// Model is the model the upstream says answered. In memory only: it is a
+	// span attribute, not a database column.
+	Model string
 }

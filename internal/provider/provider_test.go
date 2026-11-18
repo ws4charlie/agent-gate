@@ -143,3 +143,26 @@ func TestSSETranslatorTextStream(t *testing.T) {
 		}
 	}
 }
+
+func TestResponseModel(t *testing.T) {
+	// OpenAI JSON and stream, Anthropic JSON and stream; absent when unknown.
+	if u, _, _ := ParseBody(FormatOpenAI, []byte(`{"id":"x","model":"gpt-snap-2026","usage":{"prompt_tokens":1,"completion_tokens":1}}`)); u.Model != "gpt-snap-2026" {
+		t.Fatalf("openai json %q", u.Model)
+	}
+	if u, _, _ := ParseBody(FormatAnthropic, []byte(`{"id":"m","model":"claude-snap","usage":{"input_tokens":1,"output_tokens":1}}`)); u.Model != "claude-snap" {
+		t.Fatalf("anthropic json %q", u.Model)
+	}
+	p := NewParser(FormatOpenAI)
+	p.Write([]byte("data: {\"id\":\"g\",\"model\":\"routed/m\",\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\ndata: [DONE]\n\n"))
+	if u, _ := p.Usage(); u.Model != "routed/m" {
+		t.Fatalf("openai stream %q", u.Model)
+	}
+	p = NewParser(FormatAnthropic)
+	p.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"model\":\"claude-snap\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"))
+	if u, _ := p.Usage(); u.Model != "claude-snap" {
+		t.Fatalf("anthropic stream %q", u.Model)
+	}
+	if u, _, _ := ParseBody(FormatOpenAI, []byte(`{"id":"x"}`)); u.Model != "" {
+		t.Fatalf("unknown model %q", u.Model)
+	}
+}
