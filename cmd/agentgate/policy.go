@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/user"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -40,11 +41,11 @@ func usd(flag, v string) (money.Nanos, error) {
 	return n, nil
 }
 
-// agentCmd: agent create | list | revoke | set-spiffe | api-key. Needs direct database access, like
+// agentCmd: agent create | list | revoke | set-spiffe | api-key | rotate-key | key-expiry. Needs direct database access, like
 // every administrative command: there is no HTTP route that changes an agent.
 func agentCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("agent: need create | list | revoke | set-spiffe | api-key")
+		return errors.New("agent: need create | list | revoke | set-spiffe | api-key | rotate-key | key-expiry")
 	}
 	c := newCommon("agent " + args[0])
 	acct := c.fs.String("account", "", "ledger account the agent spends from (create)")
@@ -56,11 +57,13 @@ func agentCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	task := c.fs.String("task", "", "per-task budget in USD (X-AgentGate-Task); empty: no limit (create)")
 	velocity := c.fs.String("velocity", "", "most USD per rolling minute; empty: no limit (create)")
 	approvalOver := c.fs.String("approval-over", "", "a single request above this many USD needs a human; empty: never (create)")
+	keyTTL := c.fs.String("key-ttl", "", "key lifetime such as 90d or 12h; empty: never expires (create, rotate-key)")
+	grace := c.fs.String("grace", "24h", "how long the old key keeps working, such as 24h; 0: stops now (rotate-key)")
 	clearID := c.fs.Bool("clear", false, "remove the SPIFFE ID (set-spiffe)")
 	sub, rest := args[0], args[1:]
 	ref, value := "", ""
 	switch sub {
-	case "revoke", "set-spiffe", "api-key":
+	case "revoke", "set-spiffe", "api-key", "rotate-key", "key-expiry":
 		if len(rest) == 0 || strings.HasPrefix(rest[0], "-") {
 			return fmt.Errorf("agent %s: need an agent id or name first", sub)
 		}
@@ -68,10 +71,10 @@ func agentCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	// The value of set-spiffe (an ID, or "" to clear) and api-key (on|off) is
 	// the next word; flags such as --clear may follow it or take its place.
-	if sub == "set-spiffe" || sub == "api-key" {
+	if sub == "set-spiffe" || sub == "api-key" || sub == "key-expiry" {
 		if len(rest) > 0 && (!strings.HasPrefix(rest[0], "-") || rest[0] == "") {
 			value, rest = rest[0], rest[1:]
-		} else if sub == "api-key" || !hasFlag(rest, "clear") {
+		} else if sub != "set-spiffe" || !hasFlag(rest, "clear") {
 			return fmt.Errorf("agent %s: need a value after the agent", sub)
 		}
 	}
@@ -96,12 +99,19 @@ func agentCmd(ctx context.Context, args []string, stdout io.Writer) error {
 				return perr
 			}
 		}
-		secret, a, err := st.Create(ctx, *acct, *name, sc)
+		ttl, perr := parseLifetime(*keyTTL)
+		if perr != nil {
+			return fmt.Errorf("--key-ttl: %w", perr)
+		}
+		secret, a, err := st.CreateWithTTL(ctx, *acct, *name, sc, ttl)
 		if err != nil {
 			return err
 		}
 		fmt.Fprintln(stdout, secret) // the only time the secret exists in plaintext
 		fmt.Fprintf(os.Stderr, "agent %s (%s): store the secret now, it cannot be shown again\n", a.Name, a.ID)
+		if a.KeyExpiresAt != nil {
+			fmt.Fprintf(os.Stderr, "the key expires %s\n", a.KeyExpiresAt.Local().Format(time.RFC3339))
+		}
 		if len(sc.Models) == 0 {
 			fmt.Fprintln(os.Stderr, "note: --models is empty, so this agent may call no model")
 		}
@@ -111,12 +121,12 @@ func agentCmd(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "ID\tNAME\tACCOUNT\tSTATUS\tMODELS\tTOOLS\tPAYEES\tDAILY\tTASK\tPER-MIN\tAPPROVE-OVER\tKEY\tSPIFFE-ID")
+		fmt.Fprintln(tw, "ID\tNAME\tACCOUNT\tSTATUS\tMODELS\tTOOLS\tPAYEES\tDAILY\tTASK\tPER-MIN\tAPPROVE-OVER\tKEY\tKEY EXPIRES\tSPIFFE-ID")
 		for _, a := range list {
 			s := a.Scope
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n", a.ID, a.Name, a.AccountID, a.Status,
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", a.ID, a.Name, a.AccountID, a.Status,
 				strings.Join(s.Models, ","), strings.Join(s.Tools, ","), len(s.Payees),
-				lim(s.DailyBudget), lim(s.TaskBudget), lim(s.VelocityPerMinute), lim(s.ApprovalThreshold), onOff(a.APIKeyEnabled), dash(a.SpiffeID))
+				lim(s.DailyBudget), lim(s.TaskBudget), lim(s.VelocityPerMinute), lim(s.ApprovalThreshold), onOff(a.APIKeyEnabled), keyExpiry(a.KeyExpiresAt, time.Now()), dash(a.SpiffeID))
 		}
 		return tw.Flush()
 	case "revoke":
@@ -155,10 +165,85 @@ func agentCmd(ctx context.Context, args []string, stdout io.Writer) error {
 		if !on && a.SpiffeID == "" {
 			fmt.Fprintln(os.Stderr, "note: this agent has no SPIFFE ID, so it can no longer authenticate")
 		}
+	case "rotate-key":
+		g, err := parseLifetime(*grace)
+		if err != nil {
+			return fmt.Errorf("--grace: %w", err)
+		}
+		ttl, err := parseLifetime(*keyTTL)
+		if err != nil {
+			return fmt.Errorf("--key-ttl: %w", err)
+		}
+		secret, a, err := st.RotateKey(ctx, ref, g, ttl)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, secret) // the only time the new secret exists in plaintext
+		fmt.Fprintf(os.Stderr, "agent %s (%s): store the new secret now, it cannot be shown again\n", a.Name, a.ID)
+		if g > 0 {
+			fmt.Fprintf(os.Stderr, "the old key keeps working for %s\n", g)
+		} else {
+			fmt.Fprintln(os.Stderr, "the old key stopped working now")
+		}
+		if a.KeyExpiresAt != nil {
+			fmt.Fprintf(os.Stderr, "the new key expires %s\n", a.KeyExpiresAt.Local().Format(time.RFC3339))
+		}
+	case "key-expiry":
+		ttl, err := parseLifetime(value)
+		if err != nil {
+			return fmt.Errorf("agent key-expiry: %w", err)
+		}
+		a, err := st.SetKeyExpiry(ctx, ref, ttl)
+		if err != nil {
+			return err
+		}
+		if a.KeyExpiresAt == nil {
+			fmt.Fprintf(stdout, "the key of %s (%s) never expires\n", a.Name, a.ID)
+		} else {
+			fmt.Fprintf(stdout, "the key of %s (%s) expires %s\n", a.Name, a.ID, a.KeyExpiresAt.Local().Format(time.RFC3339))
+		}
 	default:
 		return fmt.Errorf("agent: unknown subcommand %q", sub)
 	}
 	return nil
+}
+
+// parseLifetime reads a duration such as 90d, 24h or 30m. "", "0" and "never"
+// mean none (0). Days are 24 hours.
+func parseLifetime(v string) (time.Duration, error) {
+	v = strings.TrimSpace(v)
+	switch v {
+	case "", "0", "never":
+		return 0, nil
+	}
+	var d time.Duration
+	if n, ok := strings.CutSuffix(v, "d"); ok {
+		days, err := strconv.ParseUint(n, 10, 32)
+		if err != nil {
+			return 0, fmt.Errorf("want a duration like 90d or 24h, got %q", v)
+		}
+		d = time.Duration(days) * 24 * time.Hour
+	} else {
+		var err error
+		if d, err = time.ParseDuration(v); err != nil {
+			return 0, fmt.Errorf("want a duration like 90d or 24h, got %q", v)
+		}
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("must not be negative, got %q", v)
+	}
+	return d, nil
+}
+
+// keyExpiry is the KEY EXPIRES column: a date, "never" or "expired".
+func keyExpiry(t *time.Time, now time.Time) string {
+	switch {
+	case t == nil:
+		return "never"
+	case !now.Before(*t):
+		return "expired"
+	}
+	return t.Local().Format("2006-01-02")
 }
 
 func hasFlag(args []string, name string) bool {

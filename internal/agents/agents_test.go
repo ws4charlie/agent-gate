@@ -548,3 +548,199 @@ func TestSetSpiffeID(t *testing.T) {
 		t.Fatalf("revoked: %v", err)
 	}
 }
+
+// fakeClock lets a test move time forward.
+type fakeClock struct{ t time.Time }
+
+func (c *fakeClock) now() time.Time      { return c.t }
+func (c *fakeClock) add(d time.Duration) { c.t = c.t.Add(d) }
+func (r *rig) clock() *fakeClock {
+	c := &fakeClock{t: time.Now()}
+	r.st.SetClock(c.now)
+	return c
+}
+
+func authErr(t *testing.T, st *agents.Store, key string) error {
+	t.Helper()
+	_, err := st.Authenticate(context.Background(), key)
+	return err
+}
+
+func TestKeyExpiry(t *testing.T) {
+	r := newRig(t)
+	clk := r.clock()
+	ctx := context.Background()
+	secret, a, err := r.st.CreateWithTTL(ctx, r.acct, "ttl", policy.DefaultScope(), 90*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.KeyExpiresAt == nil {
+		t.Fatal("no expiry on the created agent")
+	}
+	got, err := r.st.Authenticate(ctx, secret)
+	if err != nil || got.ID != a.ID || got.UsedKeyExpiresAt == nil {
+		t.Fatalf("fresh key: %v %+v", err, got)
+	}
+	clk.add(90*24*time.Hour + time.Second)
+	err = authErr(t, r.st, secret)
+	if !errors.Is(err, agents.ErrKeyExpired) || !errors.Is(err, agents.ErrUnauthorized) {
+		t.Fatalf("expired key: %v", err)
+	}
+	// Clearing the expiry brings the same key back; setting one in the past kills it.
+	if _, err := r.st.SetKeyExpiry(ctx, "ttl", 0); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.st.Authenticate(ctx, secret); err != nil || got.KeyExpiresAt != nil || got.UsedKeyExpiresAt != nil {
+		t.Fatalf("expiry cleared: %v %+v", err, got)
+	}
+	if _, err := r.st.SetKeyExpiry(ctx, "ttl", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := authErr(t, r.st, secret); err != nil {
+		t.Fatal(err)
+	}
+	clk.add(2 * time.Hour)
+	if err := authErr(t, r.st, secret); !errors.Is(err, agents.ErrKeyExpired) {
+		t.Fatalf("after set expiry: %v", err)
+	}
+	// An agent made without a ttl never expires.
+	plain, _ := r.agent("plain", policy.DefaultScope())
+	clk.add(10 * 365 * 24 * time.Hour)
+	if err := authErr(t, r.st, plain); err != nil {
+		t.Fatalf("no-expiry key: %v", err)
+	}
+	if err := authErr(t, r.st, "ag_unknown"); errors.Is(err, agents.ErrKeyExpired) || !errors.Is(err, agents.ErrUnauthorized) {
+		t.Fatalf("unknown key must be plain unauthorized: %v", err)
+	}
+}
+
+func TestRotateKeyGrace(t *testing.T) {
+	r := newRig(t)
+	clk := r.clock()
+	ctx := context.Background()
+	old, a := r.agent("rot", policy.DefaultScope())
+	fresh, a2, err := r.st.RotateKey(ctx, "rot", 24*time.Hour, 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a2.ID != a.ID || fresh == old || a2.KeyExpiresAt == nil {
+		t.Fatalf("rotate: %+v", a2)
+	}
+	got, err := r.st.Authenticate(ctx, fresh)
+	if err != nil || got.UsedPrevKey {
+		t.Fatalf("new key: %v %+v", err, got)
+	}
+	got, err = r.st.Authenticate(ctx, old)
+	if err != nil || got.ID != a.ID || !got.UsedPrevKey || got.UsedKeyExpiresAt == nil {
+		t.Fatalf("old key in grace: %v %+v", err, got)
+	}
+	if want := clk.t.Add(24 * time.Hour); got.UsedKeyExpiresAt.Sub(want).Abs() > time.Second {
+		t.Fatalf("grace end %v, want %v", got.UsedKeyExpiresAt, want)
+	}
+	clk.add(24*time.Hour + time.Second)
+	if err := authErr(t, r.st, old); !errors.Is(err, agents.ErrKeyExpired) {
+		t.Fatalf("old key after grace: %v", err)
+	}
+	if err := authErr(t, r.st, fresh); err != nil {
+		t.Fatalf("new key after grace: %v", err)
+	}
+}
+
+func TestRotateKeyTwiceAndZeroGrace(t *testing.T) {
+	r := newRig(t)
+	r.clock()
+	ctx := context.Background()
+	k1, _ := r.agent("rot2", policy.DefaultScope())
+	k2, _, err := r.st.RotateKey(ctx, "rot2", time.Hour, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k3, _, err := r.st.RotateKey(ctx, "rot2", time.Hour, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only one previous key is kept: k2 is in grace, k1 is gone.
+	if err := authErr(t, r.st, k2); err != nil {
+		t.Fatalf("k2 in grace: %v", err)
+	}
+	if err := authErr(t, r.st, k1); !errors.Is(err, agents.ErrUnauthorized) {
+		t.Fatalf("k1 should be gone: %v", err)
+	}
+	if err := authErr(t, r.st, k3); err != nil {
+		t.Fatal(err)
+	}
+	// Grace 0: the old key stops now, and any earlier previous key goes too.
+	k4, _, err := r.st.RotateKey(ctx, "rot2", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, k := range map[string]string{"k2": k2, "k3": k3} {
+		if err := authErr(t, r.st, k); !errors.Is(err, agents.ErrUnauthorized) {
+			t.Fatalf("%s after grace 0: %v", name, err)
+		}
+	}
+	if err := authErr(t, r.st, k4); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.st.RotateKey(ctx, "nobody", time.Hour, 0); !errors.Is(err, agents.ErrNotFound) {
+		t.Fatalf("unknown agent: %v", err)
+	}
+	if _, _, err := r.st.RotateKey(ctx, "rot2", -time.Hour, 0); !errors.Is(err, agents.ErrBadTTL) {
+		t.Fatalf("negative grace: %v", err)
+	}
+}
+
+// The grace period never outlives the old key's own expiry.
+func TestRotateGraceCappedByOldExpiry(t *testing.T) {
+	r := newRig(t)
+	clk := r.clock()
+	ctx := context.Background()
+	old, _, err := r.st.CreateWithTTL(ctx, r.acct, "cap", policy.DefaultScope(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.st.RotateKey(ctx, "cap", 24*time.Hour, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := authErr(t, r.st, old); err != nil {
+		t.Fatalf("within old expiry: %v", err)
+	}
+	clk.add(2 * time.Hour)
+	if err := authErr(t, r.st, old); !errors.Is(err, agents.ErrKeyExpired) {
+		t.Fatalf("past old expiry: %v", err)
+	}
+}
+
+func TestKeyOffStillWins(t *testing.T) {
+	r := newRig(t)
+	r.clock()
+	ctx := context.Background()
+	old, _ := r.agent("off", policy.DefaultScope())
+	fresh, _, err := r.st.RotateKey(ctx, "off", time.Hour, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.st.SetAPIKeyEnabled(ctx, "off", false); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{old, fresh} {
+		if err := authErr(t, r.st, k); !errors.Is(err, agents.ErrUnauthorized) || errors.Is(err, agents.ErrKeyExpired) {
+			t.Fatalf("key off: %v", err)
+		}
+	}
+}
+
+func TestRevokedAgentKeyCannotRotate(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	r.agent("gone", policy.DefaultScope())
+	if _, err := r.st.Revoke(ctx, "gone"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.st.RotateKey(ctx, "gone", time.Hour, 0); !errors.Is(err, agents.ErrBadState) {
+		t.Fatalf("rotate revoked: %v", err)
+	}
+	if _, err := r.st.SetKeyExpiry(ctx, "gone", time.Hour); !errors.Is(err, agents.ErrBadState) {
+		t.Fatalf("expiry revoked: %v", err)
+	}
+}

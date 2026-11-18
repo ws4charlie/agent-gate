@@ -34,9 +34,13 @@ var (
 	ErrNotFound     = errors.New("agents: no such agent")
 	ErrBadName      = errors.New("agents: name must be 1-64 characters of letters, digits, '.', '_' or '-'")
 	ErrBadState     = errors.New("agents: wrong state for this change")
+	ErrBadTTL       = errors.New("agents: a key lifetime or grace period cannot be negative")
 	ErrNameTaken    = errors.New("agents: another agent has this name")
 	ErrBadSpiffeID  = errors.New("agents: not a valid SPIFFE ID")
 	ErrSpiffeTaken  = errors.New("agents: another agent has this SPIFFE ID")
+	// ErrKeyExpired is an ErrUnauthorized: the key was valid once and its time
+	// is over. The gateway answers it with its own error code.
+	ErrKeyExpired = fmt.Errorf("%w: key expired", ErrUnauthorized)
 )
 
 var nameRE = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
@@ -47,8 +51,15 @@ type Agent struct {
 	Scope               policy.Scope
 	Status              policy.Status
 	CreatedAt           time.Time
-	SpiffeID            string // "" when the agent has no SPIFFE identity
-	APIKeyEnabled       bool   // false: the API key is refused, SPIFFE is the only way in
+	SpiffeID            string     // "" when the agent has no SPIFFE identity
+	APIKeyEnabled       bool       // false: the API key is refused, SPIFFE is the only way in
+	KeyExpiresAt        *time.Time // when the current key stops working; nil: never
+
+	// UsedKeyExpiresAt is set only by Authenticate: when the key that just
+	// authenticated stops working (the current key's expiry, or the end of the
+	// grace period when the previous key was used). nil: it does not expire.
+	UsedKeyExpiresAt *time.Time
+	UsedPrevKey      bool // the request used the key a rotation replaced
 }
 
 type Store struct {
@@ -64,6 +75,14 @@ func (s *Store) SetClock(f func() time.Time) { s.now = f }
 // Create makes an agent and returns its secret, the only time it exists in
 // plaintext.
 func (s *Store) Create(ctx context.Context, accountID, name string, scope policy.Scope) (secret string, a Agent, err error) {
+	return s.CreateWithTTL(ctx, accountID, name, scope, 0)
+}
+
+// CreateWithTTL is Create with a key that expires after ttl (0: never).
+func (s *Store) CreateWithTTL(ctx context.Context, accountID, name string, scope policy.Scope, ttl time.Duration) (secret string, a Agent, err error) {
+	if ttl < 0 {
+		return "", Agent{}, ErrBadTTL
+	}
 	if !nameRE.MatchString(name) {
 		return "", Agent{}, ErrBadName
 	}
@@ -77,22 +96,36 @@ func (s *Store) Create(ctx context.Context, accountID, name string, scope policy
 	if err != nil {
 		return "", Agent{}, err
 	}
-	err = s.pool.QueryRow(ctx, `INSERT INTO agents (account_id, name, key_hash, scope) VALUES ($1,$2,$3,$4)
-		RETURNING id, created_at`, accountID, name, h[:], sj).Scan(&a.ID, &a.CreatedAt)
+	exp := s.expiry(ttl)
+	err = s.pool.QueryRow(ctx, `INSERT INTO agents (account_id, name, key_hash, scope, key_expires_at) VALUES ($1,$2,$3,$4,$5)
+		RETURNING id, created_at`, accountID, name, h[:], sj, exp).Scan(&a.ID, &a.CreatedAt)
 	if err != nil {
 		return "", Agent{}, fmt.Errorf("create agent: %w", err)
 	}
-	a.AccountID, a.Name, a.Scope, a.Status, a.APIKeyEnabled = accountID, name, scope, policy.StatusActive, true
+	a.AccountID, a.Name, a.Scope, a.Status, a.APIKeyEnabled, a.KeyExpiresAt = accountID, name, scope, policy.StatusActive, true, exp
 	return secret, a, nil
 }
 
-const agentCols = `id, account_id, name, scope, status, created_at, COALESCE(spiffe_id, ''), api_key_enabled`
+// expiry is now+ttl, or nil (never) for ttl 0.
+func (s *Store) expiry(ttl time.Duration) *time.Time {
+	if ttl <= 0 {
+		return nil
+	}
+	t := s.now().Add(ttl)
+	return &t
+}
 
-func scan(row pgx.Row) (Agent, error) {
+const agentCols = `id, account_id, name, scope, status, created_at, COALESCE(spiffe_id, ''), api_key_enabled, key_expires_at`
+
+func scan(row pgx.Row) (Agent, error) { return scanMore(row) }
+
+// scanMore reads agentCols followed by the extra destinations.
+func scanMore(row pgx.Row, extra ...any) (Agent, error) {
 	var a Agent
 	var sj []byte
 	var st string
-	if err := row.Scan(&a.ID, &a.AccountID, &a.Name, &sj, &st, &a.CreatedAt, &a.SpiffeID, &a.APIKeyEnabled); err != nil {
+	dst := append([]any{&a.ID, &a.AccountID, &a.Name, &sj, &st, &a.CreatedAt, &a.SpiffeID, &a.APIKeyEnabled, &a.KeyExpiresAt}, extra...)
+	if err := row.Scan(dst...); err != nil {
 		return Agent{}, err
 	}
 	a.Status = policy.Status(st)
@@ -114,12 +147,82 @@ func (s *Store) Authenticate(ctx context.Context, token string) (Agent, error) {
 		return Agent{}, ErrUnauthorized
 	}
 	h := sha256.Sum256([]byte(token))
-	a, err := scan(s.pool.QueryRow(ctx, `SELECT `+agentCols+` FROM agents WHERE key_hash=$1`, h[:]))
+	var prevExp *time.Time
+	var isCurrent bool
+	row := s.pool.QueryRow(ctx, `SELECT `+agentCols+`, prev_key_expires_at, key_hash=$1 FROM agents
+		WHERE key_hash=$1 OR prev_key_hash=$1`, h[:])
+	// scan reads agentCols; the two extra columns follow it.
+	a, err := scanMore(row, &prevExp, &isCurrent)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Agent{}, ErrUnauthorized
 	}
-	if err == nil && !a.APIKeyEnabled {
+	if err != nil {
+		return Agent{}, err
+	}
+	if !a.APIKeyEnabled {
 		return Agent{}, ErrUnauthorized // keys are turned off for this agent
+	}
+	now := s.now()
+	if isCurrent {
+		if a.KeyExpiresAt != nil && !now.Before(*a.KeyExpiresAt) {
+			return Agent{}, ErrKeyExpired
+		}
+		a.UsedKeyExpiresAt = a.KeyExpiresAt
+		return a, nil
+	}
+	if prevExp == nil || !now.Before(*prevExp) {
+		return Agent{}, ErrKeyExpired
+	}
+	a.UsedKeyExpiresAt, a.UsedPrevKey = prevExp, true
+	return a, nil
+}
+
+// RotateKey replaces an agent's key and returns the new secret, shown once.
+// The old key keeps working for grace (0: it stops now), but never past its
+// own expiry; a key from an earlier rotation stops now. ttl sets the new key's
+// lifetime (0: never expires). A revoked agent cannot be changed.
+func (s *Store) RotateKey(ctx context.Context, ref string, grace, ttl time.Duration) (string, Agent, error) {
+	if grace < 0 || ttl < 0 {
+		return "", Agent{}, ErrBadTTL
+	}
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", Agent{}, err
+	}
+	secret := keyPrefix + base64.RawURLEncoding.EncodeToString(raw[:])
+	h := sha256.Sum256([]byte(secret))
+	now := s.now()
+	var prevUntil *time.Time
+	if grace > 0 {
+		t := now.Add(grace)
+		prevUntil = &t
+	}
+	// prev_* follow the old key only when there is a grace period. The old
+	// key's own expiry caps it.
+	a, err := scan(s.pool.QueryRow(ctx, `UPDATE agents SET
+			prev_key_hash = CASE WHEN $3::timestamptz IS NULL THEN NULL ELSE key_hash END,
+			prev_key_expires_at = CASE WHEN $3::timestamptz IS NULL THEN NULL ELSE LEAST($3::timestamptz, COALESCE(key_expires_at, $3::timestamptz)) END,
+			key_hash = $2, key_expires_at = $4
+		WHERE (id=$1 OR name=$1) AND status <> 'revoked' RETURNING `+agentCols, ref, h[:], prevUntil, s.expiry(ttl)))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", Agent{}, s.notChangeable(ctx, ref)
+	}
+	if err != nil {
+		return "", Agent{}, err
+	}
+	return secret, a, nil
+}
+
+// SetKeyExpiry sets the current key's expiry to now+ttl, or clears it (ttl 0:
+// never). The key itself does not change. A revoked agent cannot be changed.
+func (s *Store) SetKeyExpiry(ctx context.Context, ref string, ttl time.Duration) (Agent, error) {
+	if ttl < 0 {
+		return Agent{}, ErrBadTTL
+	}
+	a, err := scan(s.pool.QueryRow(ctx, `UPDATE agents SET key_expires_at=$2
+		WHERE (id=$1 OR name=$1) AND status <> 'revoked' RETURNING `+agentCols, ref, s.expiry(ttl)))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Agent{}, s.notChangeable(ctx, ref)
 	}
 	return a, err
 }
