@@ -5,7 +5,89 @@
 # With AG_SPIFFE_CERT set (the console fetched this run's SPIFFE certificate),
 # every connection to the gateway uses mutual TLS with that certificate and no
 # API key is sent. Without it, the run uses the agent's key as before.
-import asyncio, os, ssl, sys
+#
+# With AG_SPIFFE_SELF_FETCH=1 (the runner is its own unix user), the run fetches
+# its own certificate from the SPIRE agent, checks it is the expected identity
+# and keeps it in a private temporary directory that is deleted when the run
+# ends, also on SIGTERM. There is no API key to fall back to.
+import asyncio, atexit, os, re, shutil, signal, ssl, subprocess, sys, tempfile
+
+
+class SelfFetchError(Exception):
+    pass
+
+
+def uri_sans(pem_file):
+    """The URI subject alternative names of the first (leaf) certificate in the file.
+
+    Uses `openssl x509 -noout -ext subjectAltName` when openssl is there, else
+    Python's ssl._ssl._test_decode_cert (an internal helper; the only parser
+    in the standard library).
+    """
+    if shutil.which("openssl"):
+        r = subprocess.run(["openssl", "x509", "-noout", "-ext", "subjectAltName", "-in", pem_file],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            return re.findall(r"URI:([^\s,]+)", r.stdout)
+        # openssl too old for -ext, or it cannot read the file: try Python
+    try:
+        info = ssl._ssl._test_decode_cert(pem_file)
+    except Exception as e:  # noqa: BLE001
+        raise SelfFetchError(f"cannot read the certificate: {e}") from e
+    return [v for k, v in info.get("subjectAltName", ()) if k == "URI"]
+
+
+def fetch_own_certificate(env, workdir):
+    """Ask the SPIRE agent for this process's SVID and return (cert, key, bundle) paths.
+
+    `spire-agent api fetch x509` writes svid.N.pem, svid.N.key and
+    bundle.N.pem. The one used is the SVID whose only URI name is the expected
+    ID. Raises SelfFetchError with the reason otherwise.
+    """
+    expect = env.get("AG_SPIFFE_EXPECT_ID", "")
+    sock = env.get("AG_SPIFFE_SOCKET", "")
+    if not expect or not sock:
+        raise SelfFetchError("AG_SPIFFE_EXPECT_ID and AG_SPIFFE_SOCKET must be set")
+    sock = sock[len("unix://"):] if sock.startswith("unix://") else sock
+    agent = env.get("AG_SPIRE_AGENT_BIN") or "/opt/spire/bin/spire-agent"
+    try:
+        r = subprocess.run([agent, "api", "fetch", "x509", "-socketPath", sock, "-write", workdir],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise SelfFetchError(f"cannot run {agent}: {e}") from e
+    if r.returncode != 0:
+        raise SelfFetchError(f"{agent} failed: {(r.stderr or r.stdout).strip()[:300]}")
+    seen = []
+    for name in sorted(os.listdir(workdir)):
+        m = re.fullmatch(r"svid\.(\d+)\.pem", name)
+        if not m:
+            continue
+        n = m.group(1)
+        cert = os.path.join(workdir, name)
+        ids = uri_sans(cert)
+        seen.append(ids)
+        if ids == [expect]:
+            return cert, os.path.join(workdir, f"svid.{n}.key"), os.path.join(workdir, f"bundle.{n}.pem")
+    raise SelfFetchError(f"the SPIRE agent has no certificate for {expect} for this process (it has {seen or 'none'})")
+
+
+_selfdir = None
+
+
+def _remove_selfdir():
+    global _selfdir
+    d, _selfdir = _selfdir, None
+    if d:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def self_fetch(env):
+    """Fetch this run's certificate into a private temporary directory (mode
+    0700) that is removed when the process ends. Returns (cert, key, bundle)."""
+    global _selfdir
+    _selfdir = tempfile.mkdtemp(prefix="agentgate-svid-")
+    atexit.register(_remove_selfdir)
+    return fetch_own_certificate(env, _selfdir)
 
 
 def build_ssl_context(cert, key, bundle):
@@ -107,6 +189,14 @@ def main():
 
     run = os.environ["AG_RUN_ID"]
     tags = {"X-AgentGate-Run": run, "X-AgentGate-Task": run}
+    if os.environ.get("AG_SPIFFE_SELF_FETCH") == "1":
+        try:
+            cert, key, bundle = self_fetch(os.environ)
+        except SelfFetchError as e:
+            _remove_selfdir()
+            sys.exit(f"could not get this run's SPIFFE certificate: {e}. The API key is off for this agent, so the run stops.")
+        os.environ.update(AG_SPIFFE_CERT=cert, AG_SPIFFE_KEY=key, AG_SPIFFE_BUNDLE=bundle)
+        print(f"▸ certificate fetched ({os.environ['AG_SPIFFE_EXPECT_ID']})", flush=True)
     ctx = context_from_env(os.environ)
     patch_openai(openai, tags, ctx)
     if ctx is not None:
@@ -121,6 +211,10 @@ def main():
         r = GPTResearcher(query=os.environ["AG_TOPIC"], report_type="research_report",
                           role=os.environ.get("AG_INSTRUCTIONS") or None,
                           mcp_configs=[{"name": n, "connection_url": mcp + n, "connection_headers": headers} for n in servers])
+        # SIGTERM (the console's kill) cancels the work; the certificate is
+        # deleted and the process leaves at once.
+        me = asyncio.current_task()
+        asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, me.cancel)
         print("▸ researching", flush=True)
         await r.conduct_research()
         print("▸ writing the report", flush=True)
@@ -129,7 +223,12 @@ def main():
             f.write(report)
         print(f"▸ report written ({len(report)} characters)", flush=True)
 
-    asyncio.run(go())
+    try:
+        asyncio.run(go())
+    except asyncio.CancelledError:
+        _remove_selfdir()
+        print("▸ stopped", flush=True)
+        os._exit(143)  # do not wait for the search threads
 
 
 if __name__ == "__main__":

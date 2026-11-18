@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -308,7 +311,7 @@ func runnerEnv(dir, id, topic, instructions, gateway, certDir, certGateway strin
 // never fails the run: without a certificate the run goes on with the key.
 func (t *task) prepareCert(ctx context.Context) string {
 	f := t.s.cfg.FetchCert
-	if f == nil || t.s.cfg.RunnerGatewayURL == "" {
+	if f == nil || t.s.cfg.RunnerGatewayURL == "" || t.s.cfg.RunnerUser != "" {
 		return ""
 	}
 	c, err := f(ctx)
@@ -330,9 +333,23 @@ func (t *task) run(ctx context.Context, prog string, tm Template) {
 	if certDir != "" {
 		defer os.RemoveAll(certDir) // the key lives only as long as the run
 	}
-	cmd := exec.Command(prog)
+	var env []string
+	if t.s.selfFetch() {
+		// The runner is another unix user and gets its own certificate; the
+		// console never holds it.
+		env = runnerEnv(t.dir, t.meta.ID, t.meta.Topic, instructions, t.s.cfg.RunnerGatewayURL, "", "")
+		env = append(env, t.s.selfFetchEnv()...)
+		t.emit("step", "the runner fetches its own SPIFFE certificate (%s)", t.s.cfg.RunnerSPIFFEID)
+	} else {
+		env = runnerEnv(t.dir, t.meta.ID, t.meta.Topic, instructions, t.s.cfg.Gateway, certDir, t.s.cfg.RunnerGatewayURL)
+	}
+	cmd, err := t.s.runnerCmd(prog, env)
+	if err != nil {
+		t.finish(stFailed, err.Error())
+		return
+	}
 	cmd.Dir = t.dir
-	cmd.Env = runnerEnv(t.dir, t.meta.ID, t.meta.Topic, instructions, t.s.cfg.Gateway, certDir, t.s.cfg.RunnerGatewayURL)
+	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // so a kill stops everything it started
 	out, err := cmd.StdoutPipe()
 	if err != nil {
@@ -344,10 +361,19 @@ func (t *task) run(ctx context.Context, prog string, tm Template) {
 		t.finish(stFailed, "could not start the runner: "+err.Error())
 		return
 	}
-	stop := context.AfterFunc(ctx, func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) })
+	exited := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		if t.s.cfg.RunnerUser == "" {
+			_ = t.s.kill(-cmd.Process.Pid, syscall.SIGTERM)
+			return
+		}
+		// The runner is another user's process: only sudo can be signalled.
+		go stopThroughSudo(func(sig syscall.Signal) { _ = t.s.kill(cmd.Process.Pid, sig) }, exited, killGrace)
+	})
 	defer stop()
 	t.read(out)
 	werr := cmd.Wait()
+	close(exited)
 
 	switch {
 	case t.snapshot().Status == stKilled:
@@ -404,3 +430,126 @@ func clip(s string, n int) string {
 }
 
 func utf8Start(b byte) bool { return b&0xC0 != 0x80 }
+
+// killGrace is how long a runner under sudo gets to leave after SIGTERM.
+const killGrace = 10 * time.Second
+
+// stopThroughSudo asks the sudo process to stop: SIGTERM, which sudo relays to
+// the runner, then SIGKILL to sudo itself if the run has not ended after grace.
+// Killing sudo cannot reach the runner (another user), so a runner that
+// ignores SIGTERM keeps running; the gateway's run kill still refuses its
+// requests (runs.Store.Kill, set before this is called).
+func stopThroughSudo(send func(syscall.Signal), exited <-chan struct{}, grace time.Duration) {
+	send(syscall.SIGTERM)
+	select {
+	case <-exited:
+	case <-time.After(grace):
+		send(syscall.SIGKILL)
+	}
+}
+
+// ---- running the runner as another unix user ----
+
+// runnerUserMode is on when the runner is started as another unix user.
+func (s *Server) runnerUserMode() bool { return s.cfg.RunnerUser != "" }
+
+// selfFetch is on when that runner fetches its own SPIFFE certificate.
+func (s *Server) selfFetch() bool {
+	return s.runnerUserMode() && s.cfg.RunnerSPIFFEID != "" && s.cfg.RunnerGatewayURL != ""
+}
+
+// selfFetchEnv tells the runner how to fetch and check its certificate.
+func (s *Server) selfFetchEnv() []string {
+	env := []string{"AG_SPIFFE_SELF_FETCH=1", "AG_SPIFFE_SOCKET=" + s.cfg.SPIFFESocket, "AG_SPIFFE_EXPECT_ID=" + s.cfg.RunnerSPIFFEID}
+	if s.cfg.SpireAgentBin != "" {
+		env = append(env, "AG_SPIRE_AGENT_BIN="+s.cfg.SpireAgentBin)
+	}
+	return env
+}
+
+func envKeys(env []string) []string {
+	keys := make([]string, 0, len(env))
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// runnerCmd is the command for one run: the program itself, or with a runner
+// user, sudo starting it as that user with exactly env's names passed through.
+// The sudo rule names the program, so nothing else can be started this way.
+func (s *Server) runnerCmd(prog string, env []string) (*exec.Cmd, error) {
+	if !s.runnerUserMode() {
+		return exec.Command(prog), nil
+	}
+	sudo, err := s.lookPath("sudo")
+	if err != nil {
+		return nil, fmt.Errorf("--runner-user needs sudo: %w", err)
+	}
+	return exec.Command(sudo, "-n", "-u", s.cfg.RunnerUser, "--preserve-env="+strings.Join(envKeys(env), ","), prog), nil
+}
+
+// setupRunnerUser finds the runner group's id. The group defaults to the
+// runner user's primary group.
+func (s *Server) setupRunnerUser() error {
+	u, err := user.Lookup(s.cfg.RunnerUser)
+	if err != nil {
+		return fmt.Errorf("--runner-user: %w", err)
+	}
+	gid := u.Gid
+	if s.cfg.RunnerGroup != "" {
+		g, err := user.LookupGroup(s.cfg.RunnerGroup)
+		if err != nil {
+			return fmt.Errorf("--runner-group: %w", err)
+		}
+		gid = g.Gid
+	}
+	s.runnerGID, err = strconv.Atoi(gid)
+	if err != nil {
+		return fmt.Errorf("group id %q: %w", gid, err)
+	}
+	// The runner must reach its run directory: the data directory and runs/
+	// are open to the group for passing through only (no listing), and their
+	// files (console.key, other runs) keep their own modes.
+	for _, d := range []string{s.cfg.DataDir, filepath.Join(s.cfg.DataDir, "runs")} {
+		if err := s.shareDir(d, 0o710); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) shareDir(d string, mode os.FileMode) error {
+	if err := os.Chown(d, -1, s.runnerGID); err != nil {
+		return fmt.Errorf("giving %s to group %d (the console's user must belong to it): %w", d, s.runnerGID, err)
+	}
+	return os.Chmod(d, mode) // Chmod, not the Mkdir mode: it keeps setgid and ignores umask
+}
+
+// makeRunDir creates a run's directory: private to the console, or with a
+// runner user shared with the runner's group (setgid, so what the runner makes
+// there belongs to the group, readable by the console).
+func (s *Server) makeRunDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if !s.runnerUserMode() {
+		return nil
+	}
+	return s.shareDir(dir, os.ModeSetgid|0o770)
+}
+
+// removeStaleCerts deletes certificate directories a crashed console left in
+// run directories (the mode where the console fetched them) and says how many.
+func removeStaleCerts(dataDir string) int {
+	left, _ := filepath.Glob(filepath.Join(dataDir, "runs", "*", ".svid-*"))
+	n := 0
+	for _, d := range left {
+		if os.RemoveAll(d) == nil {
+			n++
+		}
+	}
+	log.Printf("console: removed %d leftover certificate directories from earlier runs", n)
+	return n
+}

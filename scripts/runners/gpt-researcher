@@ -3,14 +3,18 @@
 #
 # The console starts this with a small environment:
 #   AG_RUN_ID, AG_RUN_DIR, AG_TOPIC, AG_INSTRUCTIONS, AG_GATEWAY_URL
+# With --runner-user it also gets AG_SPIFFE_SELF_FETCH, AG_SPIFFE_SOCKET and
+# AG_SPIFFE_EXPECT_ID: the run fetches its own certificate and needs no key.
 # Your wrapper adds:
-#   AGENT_KEY     the gateway key of the agent this runs as
+#   AGENT_KEY     the gateway key of the agent this runs as (not needed with AG_SPIFFE_SELF_FETCH=1)
 #   GPTR_PYTHON   a Python (3.12+) with gpt-researcher and langchain-mcp-adapters installed
 # Optional: GPTR_MODEL (default openai/gpt-4o-mini), GPTR_MCP (default "litescraper firecrawl").
 #
 # Writes report.md to AG_RUN_DIR. Lines starting with "▸ " are progress the
 # console shows as steps; everything else goes to the run's log.
 set -euo pipefail
+umask 0007 # what this makes in the run directory is for its owner and group only
+if [ "${AG_SPIFFE_SELF_FETCH:-}" = 1 ]; then AGENT_KEY=${AGENT_KEY:-unused-the-certificate-is-the-credential}; fi
 : "${AGENT_KEY:?}" "${GPTR_PYTHON:?}" "${AG_RUN_ID:?}" "${AG_RUN_DIR:?}" "${AG_TOPIC:?}" "${AG_GATEWAY_URL:?}"
 M=${GPTR_MODEL:-openai/gpt-4o-mini}
 export OPENAI_API_KEY="$AGENT_KEY" OPENAI_BASE_URL="$AG_GATEWAY_URL/v1" RETRIEVER=mcp MCP_STRATEGY=fast \
@@ -19,5 +23,12 @@ export OPENAI_API_KEY="$AGENT_KEY" OPENAI_BASE_URL="$AG_GATEWAY_URL/v1" RETRIEVE
   ANONYMIZED_TELEMETRY=false PYTHONUNBUFFERED=1
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # GPT Researcher logs "INFO: [time] message"; those messages become steps.
-"$GPTR_PYTHON" -I "$here/gpt_researcher_run.py" 2>&1 |
-  sed -u -E $'s/\x1b\\[[0-9;]*m//g; s/^INFO:[[:space:]]+\\[[0-9:]+\\][[:space:]]+/▸ /'
+# Python runs in the background so a SIGTERM (the console's kill, relayed by
+# sudo) reaches it at once instead of waiting for the pipeline to end.
+"$GPTR_PYTHON" -I "$here/gpt_researcher_run.py" > >(sed -u -E $'s/\x1b\\[[0-9;]*m//g; s/^INFO:[[:space:]]+\\[[0-9:]+\\][[:space:]]+/▸ /') 2>&1 &
+py=$!
+trap 'kill -TERM "$py" 2>/dev/null || true' TERM INT
+rc=0
+wait "$py" || rc=$?
+while kill -0 "$py" 2>/dev/null; do wait "$py" || rc=$?; done  # a trapped signal ends wait early
+exit "$rc"
