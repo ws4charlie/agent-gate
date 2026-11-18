@@ -5,8 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -36,6 +39,44 @@ func CreateKey(ctx context.Context, pool *pgxpool.Pool, accountID, label string)
 
 var errUnauthorized = errors.New("unauthorized")
 
+// errKeyExpired is an errUnauthorized, so every caller that refuses with 401
+// keeps doing so; authFailure gives it its own code.
+var errKeyExpired = fmt.Errorf("%w: key expired", errUnauthorized)
+
+// authFailure is the error code and message for a refused credential. An
+// expired key says so; nothing else tells whether a key ever existed.
+func authFailure(err error) (code, msg string) {
+	if errors.Is(err, errKeyExpired) {
+		return "key_expired", "API key expired"
+	}
+	return "unauthorized", "missing or invalid API key"
+}
+
+// keyWarnWindow is how long before expiry responses start carrying the
+// X-AgentGate-Key-Expires header.
+const keyWarnWindow = 7 * 24 * time.Hour
+
+// keyWarned remembers when each agent was last warned about, so the log gets
+// one line per agent per hour.
+var keyWarned sync.Map // agent id -> time.Time
+
+// noteKeyExpiry tells the operator that the key just used is about to stop
+// working: a header on the response, and one WARN per agent per hour. It does
+// nothing for a key that does not expire soon. The key is never logged.
+func (s *Server) noteKeyExpiry(w http.ResponseWriter, a agents.Agent) {
+	exp := a.UsedKeyExpiresAt
+	if exp == nil || (!a.UsedPrevKey && time.Until(*exp) > keyWarnWindow) {
+		return
+	}
+	w.Header().Set("X-AgentGate-Key-Expires", exp.UTC().Format(time.RFC3339))
+	now := time.Now()
+	if last, ok := keyWarned.Load(a.ID); ok && now.Sub(last.(time.Time)) < time.Hour {
+		return
+	}
+	keyWarned.Store(a.ID, now)
+	s.Log.Warn("api key expires soon", "agent", a.ID, "expires_at", exp.UTC().Format(time.RFC3339), "previous_key", a.UsedPrevKey)
+}
+
 // bearer pulls the credential out of the request. Claude Code sends
 // Authorization: Bearer or x-api-key depending on setup; both are accepted.
 func bearer(r *http.Request) string {
@@ -62,6 +103,9 @@ func (s *Server) authenticate(ctx context.Context, r *http.Request) (agents.Agen
 		a, err = s.Agents.AuthenticateSPIFFE(ctx, id.String())
 	} else {
 		a, err = s.Agents.Authenticate(ctx, bearer(r))
+	}
+	if errors.Is(err, agents.ErrKeyExpired) {
+		return agents.Agent{}, errKeyExpired
 	}
 	if errors.Is(err, agents.ErrUnauthorized) {
 		return agents.Agent{}, errUnauthorized

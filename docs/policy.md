@@ -27,6 +27,12 @@ The money stays held and the request waits for a decision. After a yes, the agen
 
 New requests are refused and running calls are cut off within about a second. You pay for what already happened.
 
+## Keys expire and rotate
+
+An API key can have an expiry date, set when the agent is created or changed later; by default it never expires. A key past its date is refused with the error `key_expired`. To replace a key without downtime, rotate it: the new key is shown once, and the old key keeps working for a grace period (24 hours unless you choose otherwise), but never past its own expiry. Only one old key is kept, so rotating again ends the earlier one. Turning the key off still refuses every key at once.
+
+Before a key runs out, the gateway warns the operator. Once a key has less than seven days left, or a request uses an old key during its grace period, every response carries the header `X-AgentGate-Key-Expires` with the end time, and the gateway logs one warning per agent per hour. The key itself is never logged. `agentgate agent list` shows each agent's expiry.
+
 ## The same rules as Cedar policies
 
 The rules also exist as [Cedar](https://www.cedarpolicy.com) policies kept in git, in `policies/cedar/`. In shadow mode, switched on with `--cedar-policies`, both versions run on every decision and each decision records whether they agree. Nothing changes for agents: the built-in rules still decide, and a Cedar failure never affects a request. `agentgate cedar shadow` shows the record. The plan is to let Cedar enforce only after the record shows no disagreement.

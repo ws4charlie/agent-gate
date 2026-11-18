@@ -208,3 +208,107 @@ func TestAgentSpiffeAndAPIKey(t *testing.T) {
 		t.Fatal("unknown agent accepted")
 	}
 }
+
+func TestParseLifetime(t *testing.T) {
+	for in, want := range map[string]time.Duration{"": 0, "0": 0, "never": 0, "90d": 90 * 24 * time.Hour, "24h": 24 * time.Hour, "30m": 30 * time.Minute} {
+		if got, err := parseLifetime(in); err != nil || got != want {
+			t.Errorf("%q: %v %v, want %v", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"x", "-1h", "d", "1.5d", "-2d"} {
+		if _, err := parseLifetime(in); err == nil {
+			t.Errorf("%q accepted", in)
+		}
+	}
+}
+
+func TestAgentKeyExpiryAndRotateCLI(t *testing.T) {
+	c := newCLI(t)
+	ctx := context.Background()
+	key, err := c.run("agent", "create", "--account", c.acct, "--name", "bot", "--key-ttl", "90d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key = strings.TrimSpace(key)
+	a, err := c.st.Get(ctx, "bot")
+	if err != nil || a.KeyExpiresAt == nil {
+		t.Fatalf("create --key-ttl: %v %+v", err, a)
+	}
+	if d := time.Until(*a.KeyExpiresAt); d < 89*24*time.Hour || d > 91*24*time.Hour {
+		t.Fatalf("expiry in %v, want about 90d", d)
+	}
+	if _, err := c.run("agent", "create", "--account", c.acct, "--name", "bad", "--key-ttl", "soon"); err == nil {
+		t.Fatal("bad --key-ttl accepted")
+	}
+	if _, err := c.run("agent", "create", "--account", c.acct, "--name", "plain"); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := c.run("agent", "list")
+	if !strings.Contains(out, "KEY EXPIRES") || !strings.Contains(out, a.KeyExpiresAt.Local().Format("2006-01-02")) || !strings.Contains(out, "never") {
+		t.Fatalf("list: %s", out)
+	}
+
+	// key-expiry: set, clear, expire now-ish.
+	if out, err := c.run("agent", "key-expiry", "bot", "never"); err != nil || !strings.Contains(out, "never expires") {
+		t.Fatalf("key-expiry never: %q %v", out, err)
+	}
+	if _, err := c.run("agent", "key-expiry", "bot"); err == nil {
+		t.Fatal("key-expiry without a value accepted")
+	}
+	if _, err := c.run("agent", "key-expiry", "bot", "-5h"); err == nil {
+		t.Fatal("negative key-expiry accepted")
+	}
+	if out, err := c.run("agent", "key-expiry", "bot", "12h"); err != nil || !strings.Contains(out, "expires") {
+		t.Fatalf("key-expiry 12h: %q %v", out, err)
+	}
+	if _, err := c.st.Authenticate(ctx, key); err != nil {
+		t.Fatalf("key unchanged by key-expiry: %v", err)
+	}
+
+	// rotate-key: new secret printed, old one lives through the grace period.
+	nk, err := c.run("agent", "rotate-key", "bot", "--grace", "2h", "--key-ttl", "30d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nk = strings.TrimSpace(nk)
+	if !strings.HasPrefix(nk, "ag_") || nk == key {
+		t.Fatalf("new key %q", nk)
+	}
+	if _, err := c.st.Authenticate(ctx, nk); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := c.st.Authenticate(ctx, key); err != nil || !got.UsedPrevKey {
+		t.Fatalf("old key in grace: %v %+v", err, got)
+	}
+	nk2, err := c.run("agent", "rotate-key", "bot", "--grace", "0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.st.Authenticate(ctx, key); err == nil {
+		t.Fatal("old key still works after rotating twice")
+	}
+	if _, err := c.st.Authenticate(ctx, nk); err == nil {
+		t.Fatal("--grace 0: the replaced key still works")
+	}
+	if _, err := c.st.Authenticate(ctx, strings.TrimSpace(nk2)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.run("agent", "rotate-key", "bot", "--grace", "later"); err == nil {
+		t.Fatal("bad --grace accepted")
+	}
+	if _, err := c.run("agent", "rotate-key", "nobody"); err == nil {
+		t.Fatal("rotated an unknown agent")
+	}
+	if _, err := c.run("agent", "rotate-key"); err == nil {
+		t.Fatal("rotate-key without an agent accepted")
+	}
+
+	// An expired key shows as expired in the list.
+	if _, err := c.st.SetKeyExpiry(ctx, "bot", time.Nanosecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if out, _ := c.run("agent", "list"); !strings.Contains(out, "expired") {
+		t.Fatalf("list lacks expired: %s", out)
+	}
+}

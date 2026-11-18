@@ -82,7 +82,8 @@ func (c *call) pay() {
 	agent, err := s.authenticate(c.ctx, c.r)
 	if err != nil {
 		if errors.Is(err, errUnauthorized) {
-			c.fail(http.StatusUnauthorized, audit.StatusUnauthorized, "unauthorized", "missing or invalid API key", nil)
+			code, msg := authFailure(err)
+			c.fail(http.StatusUnauthorized, audit.StatusUnauthorized, code, msg, nil)
 		} else {
 			s.Log.Error("auth lookup", "err", err)
 			c.fail(http.StatusInternalServerError, audit.StatusInternal, "internal_error", "internal error", nil)
@@ -90,6 +91,7 @@ func (c *call) pay() {
 		return
 	}
 	c.agent = agent
+	s.noteKeyExpiry(c.w, agent)
 	acct := agent.AccountID
 	c.ev.AccountID, c.ev.AgentID = acct, agent.ID
 	if c.refuseInactive(policy.KindPayment) { // rule 1, before anything else (I12)
