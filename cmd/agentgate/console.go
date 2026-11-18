@@ -53,6 +53,9 @@ func consoleCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	runnerSPIFFEID := c.fs.String("runner-spiffe-id", os.Getenv("AG_RUNNER_SPIFFE_ID"), "SPIFFE ID the runs present to the gateway, e.g. spiffe://agentgate.internal/runner; each run fetches its own certificate. Empty: runs use the agent's API key")
 	runnerGateway := c.fs.String("runner-gateway-url", os.Getenv("AG_RUNNER_GATEWAY_URL"), "the gateway's mutual-TLS address the runs call with that certificate, e.g. https://127.0.0.1:18443")
 	spiffeSocket := c.fs.String("spiffe-socket", envOr("AG_SPIFFE_SOCKET", "unix:///run/spire/agent/sockets/agent.sock"), "SPIFFE Workload API socket the runs' certificates come from")
+	runnerUser := c.fs.String("runner-user", os.Getenv("AG_RUNNER_USER"), "start each run as this unix user through sudo (see deploy/runner-user.md); the runner then fetches its own certificate. Empty: runs start as the console's user")
+	runnerGroup := c.fs.String("runner-group", os.Getenv("AG_RUNNER_GROUP"), "the group a run's directory is shared with (default: the runner user's own group); the console's user must belong to it")
+	spireAgentBin := c.fs.String("spire-agent-bin", os.Getenv("AG_SPIRE_AGENT_BIN"), "spire-agent program the runner fetches its certificate with (default: /opt/spire/bin/spire-agent)")
 	_, pool, err := c.open(ctx, args)
 	if err != nil {
 		return err
@@ -77,11 +80,15 @@ func consoleCmd(ctx context.Context, args []string, stdout io.Writer) error {
 		if *runnerGateway == "" {
 			return errors.New("--runner-spiffe-id needs --runner-gateway-url")
 		}
-		if cfg.FetchCert, err = console.WorkloadCertFetcher(*spiffeSocket, *runnerSPIFFEID); err != nil {
+		cfg.RunnerGatewayURL = *runnerGateway
+		if *runnerUser != "" {
+			// The runner fetches its own certificate; the console holds none.
+			cfg.RunnerSPIFFEID, cfg.SPIFFESocket, cfg.SpireAgentBin = *runnerSPIFFEID, *spiffeSocket, *spireAgentBin
+		} else if cfg.FetchCert, err = console.WorkloadCertFetcher(*spiffeSocket, *runnerSPIFFEID); err != nil {
 			return err
 		}
-		cfg.RunnerGatewayURL = *runnerGateway
 	}
+	cfg.RunnerUser, cfg.RunnerGroup = *runnerUser, *runnerGroup
 	if *paymentsPath != "" {
 		f, err := readPaymentsFile(*paymentsPath)
 		if err != nil {
