@@ -18,4 +18,4 @@ Run 显示的花费直接来自账本，所以不会和账目对不上。
 
 ## 让研究任务以独立用户运行
 
-在单台机器上，研究任务可以用独立的 unix 用户启动（`--runner-user`），并由 runner 自己获取 SPIFFE 证书。这样 runner 的身份只会发给这个用户，即使某次运行被攻破，也读不到网关的文件和密钥。停止任务仍然有效：控制台先在网关里把这个 Run 标记为已停止，网关此后拒绝它的全部请求，同时通过 `sudo` 向 runner 发出终止信号。设置和回滚步骤见 [deploy/runner-user.md](../../deploy/runner-user.md)。
+在单台机器上，研究任务可以用独立的 unix 用户启动（`--runner-user`），并由 runner 自己获取 SPIFFE 证书。这样 runner 的身份只会发给这个用户，即使某次运行被攻破，也读不到网关的文件和密钥。停止任务仍然有效：控制台先在网关里把这个 Run 标记为已停止，网关此后拒绝它的全部请求，同时停止 runner 的 systemd 单元。设置和回滚步骤见 [deploy/runner-user.md](../../deploy/runner-user.md)。

@@ -18,4 +18,4 @@ If a job goes off the rails, you can stop its whole run and leave the agent's ot
 
 ## Run research under its own user
 
-On a single machine, a research run can start as its own unix user (`--runner-user`), with its own SPIFFE certificate that the runner fetches itself. Then the runner's identity is issued to that user alone, and a compromised run cannot read the gateway's files or keys. Stopping a run still works: the console marks it killed in the gateway, which refuses all its further requests, and signals the runner through `sudo`. Setup and roll back are in [deploy/runner-user.md](../deploy/runner-user.md).
+On a single machine, a research run can start as its own unix user (`--runner-user`), with its own SPIFFE certificate that the runner fetches itself. Then the runner's identity is issued to that user alone, and a compromised run cannot read the gateway's files or keys. Stopping a run still works: the console marks it killed in the gateway, which refuses all its further requests, and stops the runner's systemd unit. Setup and roll back are in [deploy/runner-user.md](../deploy/runner-user.md).

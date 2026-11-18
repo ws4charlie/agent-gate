@@ -1,0 +1,56 @@
+# One research run as the runner user. The console starts an instance per run:
+#   systemctl start --wait agentgate-run@run_<uuid>.service
+# and stops it to kill the run. Install (as root):
+#   cp agentgate-run@.service /etc/systemd/system/ && systemctl daemon-reload
+# See deploy/runner-user.md.
+#
+# The instance name is the run id. The console only makes ids of the form
+# run_<uuid>, and the polkit rule (50-agentgate-runs.rules) lets it start only
+# units whose name has exactly that form, so %i cannot point outside runs/.
+# The paths assume the console's data directory is /opt/agentgate/console.
+[Unit]
+Description=AgentGate research run %i
+# The console writes these before it starts the unit.
+AssertPathExists=/opt/agentgate/console/runs/%i/runner.env
+AssertPathExists=/opt/agentgate/console/runs/%i/runner.out
+# A unit that fails is removed instead of lingering as failed.
+CollectMode=inactive-or-failed
+
+[Service]
+Type=exec
+User=agentgate-runner
+Group=agentgate-runner
+UMask=0007
+WorkingDirectory=/opt/agentgate/console/runs/%i
+EnvironmentFile=/opt/agentgate/console/runs/%i/runner.env
+ExecStart=/opt/agentgate-runner/bin/runner-gpt-researcher
+# The console created runner.out (the console's user owns it, the runner's group
+# may write); systemd only appends to it. The console follows it for progress.
+StandardOutput=append:/opt/agentgate/console/runs/%i/runner.out
+StandardError=append:/opt/agentgate/console/runs/%i/runner.out
+
+# Stopping kills everything the run started.
+KillMode=control-group
+TimeoutStopSec=10
+Restart=no
+# A little above the console's own 20 minute limit.
+RuntimeMaxSec=1260
+
+# The runner writes its run directory and its own home, nothing else.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ReadWritePaths=/opt/agentgate/console/runs/%i /opt/agentgate-runner/home
+# /opt is not under /home, so ProtectHome does not hide the runner's home.
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+# The SPIRE agent socket (/run/spire/agent/sockets) stays reachable: connecting to
+# a socket works on a read-only file system. The gateway is reached over TCP.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

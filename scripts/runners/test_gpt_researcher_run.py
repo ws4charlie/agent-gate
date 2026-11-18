@@ -33,6 +33,21 @@ class SSLContextTest(unittest.TestCase):
             run.build_ssl_context(self.cert, self.key, os.path.join(self.dir, "none.pem"))
 
 
+class TextSettingTest(unittest.TestCase):
+    def test_file_wins_and_keeps_special_characters(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "topic.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write('What is "x"?\nSecond line \\ ▸\n')
+        env = {"AG_TOPIC": "old", "AG_TOPIC_FILE": path}
+        self.assertEqual(run.text_setting(env, "AG_TOPIC"), 'What is "x"?\nSecond line \\ ▸')
+
+    def test_plain_variable_still_works(self):
+        self.assertEqual(run.text_setting({"AG_TOPIC": "hello"}, "AG_TOPIC"), "hello")
+        self.assertEqual(run.text_setting({}, "AG_INSTRUCTIONS"), "")
+
+
 class DropCredentialsTest(unittest.TestCase):
     def test_strips_api_key_headers(self):
         try:
@@ -151,7 +166,8 @@ class WrapperTest(unittest.TestCase):
             f.write("#!/bin/sh\necho started\nexec sleep 30\n")
         os.chmod(py, 0o700)
         env = {"PATH": os.environ["PATH"], "GPTR_PYTHON": py, "AG_RUN_ID": "run_1", "AG_RUN_DIR": d, "AG_TOPIC": "t",
-               "AG_GATEWAY_URL": "https://127.0.0.1:1", "AG_SPIFFE_SELF_FETCH": "1"}  # no AGENT_KEY
+               "AG_GATEWAY_URL": "https://127.0.0.1:1", "AG_SPIFFE_SELF_FETCH": "1",
+               "AG_TOPIC_FILE": os.path.join(d, "topic.txt")}  # no AGENT_KEY, no AG_TOPIC
         p = subprocess.Popen(["bash", os.path.join(here, "gpt-researcher")], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         self.assertEqual(p.stdout.readline().strip(), b"started")
         t0 = time.time()
