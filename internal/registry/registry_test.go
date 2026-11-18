@@ -98,6 +98,7 @@ func TestUnregistered(t *testing.T) {
 	}
 	audit("mcp", "", "ag_1")
 	audit("payment", "seller/search", "ag_1")
+	audit("payment", "", "ag_1")   // a payment with no tool name: not listed as a tool
 	audit("model", "claude-x", "") // no agent: not listed as an agent
 	since := time.Now().Add(-time.Hour)
 
@@ -105,7 +106,7 @@ func TestUnregistered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]int64{"model/gpt-4o": 2, "model/claude-x": 1, "tool/fs/read": 1, "tool/seller/search": 1, "agent/ag_1": 10}
+	want := map[string]int64{"model/gpt-4o": 2, "model/claude-x": 1, "tool/fs/read": 1, "tool/seller/search": 1, "agent/ag_1": 11}
 	if len(got) != len(want) {
 		t.Fatalf("%+v", got)
 	}
