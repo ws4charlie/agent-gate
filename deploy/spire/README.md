@@ -4,14 +4,14 @@ SPIRE gives each workload a short-lived certificate (an SVID) that names it as a
 
 ## 1. Install
 
-Pick a release on <https://github.com/spiffe/spire/releases>, then download the tarball and its `.sha256` file, check it, and unpack it.
+Pick a release on <https://github.com/spiffe/spire/releases>, then download the tarball and its checksum file (`_sha256sum.txt`), check it, and unpack it.
 
 ```bash
 V=<version, e.g. 1.x.y>
 cd /tmp
 curl -fLO https://github.com/spiffe/spire/releases/download/v$V/spire-$V-linux-amd64-musl.tar.gz
-curl -fLO https://github.com/spiffe/spire/releases/download/v$V/spire-$V-linux-amd64-musl.tar.gz.sha256
-sha256sum -c spire-$V-linux-amd64-musl.tar.gz.sha256
+curl -fLO https://github.com/spiffe/spire/releases/download/v$V/spire-$V-linux-amd64-musl_sha256sum.txt
+sha256sum -c spire-$V-linux-amd64-musl_sha256sum.txt
 sudo mkdir -p /opt/spire && sudo tar -xzf spire-$V-linux-amd64-musl.tar.gz -C /opt/spire --strip-components=1
 sudo mkdir -p /opt/spire/conf /opt/spire/data/server /opt/spire/data/agent /run/spire/agent/sockets
 sudo cp server.conf agent.conf /opt/spire/conf/   # the two files from this folder
@@ -69,5 +69,7 @@ A client then calls `https://<host>:18443` with the certificate from its Workloa
 ## Notes
 
 - The files hold no secrets. The server's signing key and the agent's credentials sit under `/opt/spire/data`; keep that directory readable by root only.
-- Both services need a systemd unit for a real deployment; that is left to the operator.
+- On the live VM both services run as systemd units that restart on failure. The agent reads the one-time join token from a root-only file on its first start; the file is deleted once the agent is healthy.
+- The unix attestor tells workloads apart by user. Two workloads under the same user get the same identity, so give the runner its own user before it gets its own ID.
+- The gateway refuses to start while the SPIRE agent is down, so turn on its listener only when a client needs it.
 - The workload's certificates and the gateway's own certificate renew themselves roughly every half hour.
