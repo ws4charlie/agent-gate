@@ -18,6 +18,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/spiffe/go-spiffe/v2/workloadapi"
+
 	runs "github.com/ws4charlie/agent-gate/internal/run"
 )
 
@@ -212,12 +215,86 @@ func houseRules(now time.Time) string {
 		"If you found nothing useful, say so plainly."
 }
 
+// A runCert is the identity one run presents to the gateway: PEM text for its
+// certificate chain (leaf first), its private key and the trust bundle that
+// verifies the gateway.
+type runCert struct {
+	ID                         string
+	CertPEM, KeyPEM, BundlePEM []byte
+}
+
+// CertFetcher gets a fresh runCert, normally from the SPIFFE Workload API.
+type CertFetcher func(ctx context.Context) (*runCert, error)
+
+// WorkloadCertFetcher fetches the SVID with the given ID, and its trust
+// bundle, from the SPIFFE Workload API at socket. The gateway and the runner
+// share a unix user on the VM, so the API returns both of their identities and
+// the one wanted is picked by ID.
+func WorkloadCertFetcher(socket, id string) (CertFetcher, error) {
+	want, err := spiffeid.FromString(id)
+	if err != nil {
+		return nil, fmt.Errorf("runner SPIFFE ID: %w", err)
+	}
+	return func(ctx context.Context) (*runCert, error) {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		xc, err := workloadapi.FetchX509Context(ctx, workloadapi.WithAddr(socket))
+		if err != nil {
+			return nil, err
+		}
+		for _, sv := range xc.SVIDs {
+			if sv.ID != want {
+				continue
+			}
+			bundle, err := xc.Bundles.GetX509BundleForTrustDomain(want.TrustDomain())
+			if err != nil {
+				return nil, err
+			}
+			bpem, err := bundle.Marshal()
+			if err != nil {
+				return nil, err
+			}
+			cpem, kpem, err := sv.Marshal()
+			if err != nil {
+				return nil, err
+			}
+			return &runCert{ID: want.String(), CertPEM: cpem, KeyPEM: kpem, BundlePEM: bpem}, nil
+		}
+		return nil, fmt.Errorf("the Workload API has no SVID %s", want)
+	}, nil
+}
+
+// writeRunCert puts the certificate in a new private directory under parent
+// (0700, files 0600) and returns the directory.
+func writeRunCert(parent string, c *runCert) (string, error) {
+	dir, err := os.MkdirTemp(parent, ".svid-")
+	if err != nil {
+		return "", err
+	}
+	for name, data := range map[string][]byte{"svid.pem": c.CertPEM, "svid.key": c.KeyPEM, "bundle.pem": c.BundlePEM} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			os.RemoveAll(dir)
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
 // runnerEnv is everything the runner sees: no secrets from the console's own
 // environment (provider keys stay with the gateway). The runner's wrapper adds
-// the agent's key itself.
-func runnerEnv(dir, id, topic, instructions, gateway string) []string {
+// the agent's key itself. With certDir set the runner is told to prove itself
+// with the certificate in that directory, at the gateway's mutual-TLS address.
+func runnerEnv(dir, id, topic, instructions, gateway, certDir, certGateway string) []string {
+	if certDir != "" {
+		gateway = certGateway
+	}
 	env := []string{"AG_RUN_ID=" + id, "AG_RUN_DIR=" + dir, "AG_TOPIC=" + topic,
 		"AG_INSTRUCTIONS=" + instructions, "AG_GATEWAY_URL=" + strings.TrimRight(gateway, "/")}
+	if certDir != "" {
+		env = append(env, "AG_SPIFFE_CERT="+filepath.Join(certDir, "svid.pem"),
+			"AG_SPIFFE_KEY="+filepath.Join(certDir, "svid.key"),
+			"AG_SPIFFE_BUNDLE="+filepath.Join(certDir, "bundle.pem"))
+	}
 	for _, k := range []string{"PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "TERM"} {
 		if v, ok := os.LookupEnv(k); ok {
 			env = append(env, k+"="+v)
@@ -226,12 +303,36 @@ func runnerEnv(dir, id, topic, instructions, gateway string) []string {
 	return env
 }
 
+// prepareCert gets this run's certificate when the console is set up for it.
+// It returns the directory holding it ("" when the run uses the API key) and
+// never fails the run: without a certificate the run goes on with the key.
+func (t *task) prepareCert(ctx context.Context) string {
+	f := t.s.cfg.FetchCert
+	if f == nil || t.s.cfg.RunnerGatewayURL == "" {
+		return ""
+	}
+	c, err := f(ctx)
+	if err == nil {
+		var dir string
+		if dir, err = writeRunCert(t.dir, c); err == nil {
+			t.emit("step", "running with a SPIFFE certificate (%s)", c.ID)
+			return dir
+		}
+	}
+	t.emit("step", "certificate unavailable, using API key")
+	return ""
+}
+
 func (t *task) run(ctx context.Context, prog string, tm Template) {
 	t.emit("start", "%s · run by %s", tm.Name, tm.Runner)
 	instructions := strings.TrimSpace(tm.SystemPrompt + "\n\n" + houseRules(time.Now()))
+	certDir := t.prepareCert(ctx)
+	if certDir != "" {
+		defer os.RemoveAll(certDir) // the key lives only as long as the run
+	}
 	cmd := exec.Command(prog)
 	cmd.Dir = t.dir
-	cmd.Env = runnerEnv(t.dir, t.meta.ID, t.meta.Topic, instructions, t.s.cfg.Gateway)
+	cmd.Env = runnerEnv(t.dir, t.meta.ID, t.meta.Topic, instructions, t.s.cfg.Gateway, certDir, t.s.cfg.RunnerGatewayURL)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // so a kill stops everything it started
 	out, err := cmd.StdoutPipe()
 	if err != nil {

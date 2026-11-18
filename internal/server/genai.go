@@ -43,7 +43,14 @@ func (c *call) notePayment(network string, amount int64) {
 
 // identify sets the attributes that exist as soon as the caller is known.
 func (c *call) identify() {
+	// How the caller proved who it is: a verified certificate or an API key.
+	// Never the certificate or the key itself.
+	auth := "api_key"
+	if _, ok := SPIFFEIDFromContext(c.r.Context()); ok {
+		auth = "spiffe"
+	}
 	c.span.SetAttributes(
+		attribute.String("agentgate.auth", auth),
 		attribute.String("agentgate.account.id", c.agent.AccountID),
 		attribute.String("agentgate.agent.id", c.agent.ID),
 		attribute.String("gen_ai.agent.id", c.agent.ID),

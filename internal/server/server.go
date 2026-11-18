@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -50,6 +51,7 @@ const (
 )
 
 type Server struct {
+	once      sync.Once // guards defaults
 	Pool      *pgxpool.Pool
 	Ledger    ledger.Ledger
 	Audit     *audit.Store
@@ -94,7 +96,11 @@ type ShadowEngine interface {
 	Decide(policy.Request, policy.Snapshot) (verdict, rule string, err error)
 }
 
-func (s *Server) defaults() {
+// defaults fills in unset fields, once: serve calls it from Handler and from
+// the WatchKills goroutine at the same time.
+func (s *Server) defaults() { s.once.Do(s.initDefaults) }
+
+func (s *Server) initDefaults() {
 	if s.Client == nil {
 		// No overall timeout: streams may run long. Header timeout bounds a dead upstream.
 		s.Client = &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 120 * time.Second, MaxIdleConnsPerHost: 64}}

@@ -60,6 +60,13 @@ type Config struct {
 	// Explorer is the block explorer for the payments network, so addresses
 	// and transactions on the page link to it; "" shows them as plain text.
 	Explorer string
+
+	// RunnerGatewayURL is the gateway's mutual-TLS address, e.g.
+	// https://127.0.0.1:18443. With FetchCert set, each run gets its own
+	// SPIFFE certificate and calls the gateway there instead of using the
+	// agent's API key. Both empty: runs behave as they always did.
+	RunnerGatewayURL string
+	FetchCert        CertFetcher
 }
 
 type Server struct {

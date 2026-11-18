@@ -12,7 +12,7 @@ Each agent gets a key that is only good for talking to the gateway. The real pro
 
 ## Identity without a key
 
-An agent can prove who it is with a short-lived SPIFFE certificate instead of a key. The gateway has an optional second port that requires mutual TLS and accepts only certificates from one trust domain. The certificate's SPIFFE ID is mapped to one agent, for example with `agentgate agent set-spiffe`. A request on that port is that agent, and any key it also sends is ignored.
+An agent can prove who it is with a short-lived SPIFFE certificate instead of a key. The gateway has an optional second port that requires mutual TLS and accepts only certificates from one trust domain. The certificate's SPIFFE ID is mapped to one agent, for example with `agentgate agent set-spiffe`. A request on that port is that agent, and any key it also sends is ignored. The gateway keeps serving its plain port if SPIRE is down and opens the second port once a certificate is available. The console can give each research run its own short-lived certificate in place of the agent's key, and each request's span records which of the two proved the caller.
 
 Keys stay as the fallback for clients that cannot get a certificate. You can turn the key off for an agent, so the certificate is its only way in. See [deploy/spire](../deploy/spire/README.md) for a single-VM setup.
 
