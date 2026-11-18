@@ -7,6 +7,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -36,9 +37,9 @@ func fakeSudo(path string, err error) func(string) (string, error) {
 
 // With a runner user the command is sudo with the exact environment names.
 func TestRunnerCmdThroughSudo(t *testing.T) {
-	s := &Server{cfg: Config{RunnerUser: "agentgate-runner"}, lookPath: fakeSudo("/usr/bin/sudo", nil)}
+	s := &Server{cfg: Config{RunnerUser: "agentgate-runner", RunnerUserRunners: []string{"gpt-researcher"}}, lookPath: fakeSudo("/usr/bin/sudo", nil)}
 	env := []string{"AG_RUN_ID=run_1", "AG_TOPIC=a=b, c", "PATH=/bin"}
-	cmd, err := s.runnerCmd("/opt/agentgate/bin/runner-gpt-researcher", env)
+	cmd, err := s.runnerCmd(true, "/opt/agentgate/bin/runner-gpt-researcher", env)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +51,7 @@ func TestRunnerCmdThroughSudo(t *testing.T) {
 
 func TestRunnerCmdWithoutUserIsTheProgram(t *testing.T) {
 	s := &Server{lookPath: fakeSudo("", errors.New("must not be called"))}
-	cmd, err := s.runnerCmd("/x/runner", []string{"A=1"})
+	cmd, err := s.runnerCmd(false, "/x/runner", []string{"A=1"})
 	if err != nil || !reflect.DeepEqual(cmd.Args, []string{"/x/runner"}) {
 		t.Errorf("%q %v", cmd.Args, err)
 	}
@@ -58,7 +59,7 @@ func TestRunnerCmdWithoutUserIsTheProgram(t *testing.T) {
 
 func TestRunnerCmdNeedsSudo(t *testing.T) {
 	s := &Server{cfg: Config{RunnerUser: "r"}, lookPath: fakeSudo("", errors.New("not found"))}
-	if _, err := s.runnerCmd("/x", nil); err == nil || !strings.Contains(err.Error(), "needs sudo") {
+	if _, err := s.runnerCmd(true, "/x", nil); err == nil || !strings.Contains(err.Error(), "needs sudo") {
 		t.Errorf("err %v", err)
 	}
 }
@@ -102,7 +103,7 @@ func TestRunThroughSudoEndToEnd(t *testing.T) {
 echo "▸ hello"; echo ok > "$AG_RUN_DIR/report.md"`)
 	fetched := false
 	s, err := New(Config{Gateway: "http://127.0.0.1:1", DataDir: t.TempDir(), Runners: map[string]string{"gpt-researcher": runner},
-		RunnerGatewayURL: "https://127.0.0.1:18443", RunnerUser: name, RunnerGroup: group,
+		RunnerGatewayURL: "https://127.0.0.1:18443", RunnerUser: name, RunnerGroup: group, RunnerUserRunners: []string{"gpt-researcher"},
 		RunnerSPIFFEID: "spiffe://example.org/runner", SPIFFESocket: "unix:///x.sock",
 		FetchCert: func(context.Context) (*runCert, error) { fetched = true; return okCert(nil) }}, dbtest.New(t))
 	if err != nil {
@@ -152,7 +153,8 @@ func TestStopThroughSudo(t *testing.T) {
 // directory can be passed through but not listed by the group.
 func TestRunDirShared(t *testing.T) {
 	name, group := currentUser(t)
-	s, err := New(Config{Gateway: "http://127.0.0.1:1", DataDir: t.TempDir(), RunnerUser: name, RunnerGroup: group}, dbtest.New(t))
+	s, err := New(Config{Gateway: "http://127.0.0.1:1", DataDir: t.TempDir(), RunnerUser: name, RunnerGroup: group,
+		RunnerUserRunners: []string{"gpt-researcher"}, Runners: map[string]string{"gpt-researcher": "/x"}}, dbtest.New(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +164,7 @@ func TestRunDirShared(t *testing.T) {
 		}
 	}
 	dir := filepath.Join(s.cfg.DataDir, "runs", "run_x")
-	if err := s.makeRunDir(dir); err != nil {
+	if err := s.makeRunDir(dir, "gpt-researcher"); err != nil {
 		t.Fatal(err)
 	}
 	fi, _ := os.Stat(dir)
@@ -178,7 +180,7 @@ func TestRunDirShared(t *testing.T) {
 func TestRunDirPrivateWithoutRunnerUser(t *testing.T) {
 	s := newTestServer(t, nil)
 	dir := filepath.Join(s.cfg.DataDir, "runs", "run_x")
-	if err := s.makeRunDir(dir); err != nil {
+	if err := s.makeRunDir(dir, "gpt-researcher"); err != nil {
 		t.Fatal(err)
 	}
 	if fi, _ := os.Stat(dir); fi.Mode() != os.ModeDir|0o700 {
@@ -187,7 +189,7 @@ func TestRunDirPrivateWithoutRunnerUser(t *testing.T) {
 }
 
 func TestUnknownRunnerUserFails(t *testing.T) {
-	_, err := New(Config{DataDir: t.TempDir(), RunnerUser: "no-such-user-xyz"}, dbtest.New(t))
+	_, err := New(Config{DataDir: t.TempDir(), RunnerUser: "no-such-user-xyz", RunnerUserRunners: []string{"a"}, Runners: map[string]string{"a": "/x"}}, dbtest.New(t))
 	if err == nil || !strings.Contains(err.Error(), "--runner-user") {
 		t.Errorf("err %v", err)
 	}
@@ -219,5 +221,81 @@ func TestStartRemovesLeftoverCertificates(t *testing.T) {
 	}
 	if _, err := os.Stat(keep); err != nil {
 		t.Errorf("the report was removed: %v", err)
+	}
+}
+
+// sudo refuses HOME, PATH and USER from the caller: the console never passes
+// them, and passes nothing the sudoers rule does not list.
+func TestSudoEnvIsTheAllowlist(t *testing.T) {
+	t.Setenv("HOME", "/home/agentgate")
+	t.Setenv("USER", "agentgate")
+	t.Setenv("LANG", "C.UTF-8")
+	env := runnerEnv("/d", "run_1", "t", "i", "http://g", "", "")
+	env = append(env, (&Server{cfg: Config{RunnerUser: "r", RunnerSPIFFEID: "spiffe://x/r", SPIFFESocket: "unix:///s", SpireAgentBin: "/b"}}).selfFetchEnv()...)
+	env = sudoEnv(env)
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		if k == "HOME" || k == "PATH" || k == "USER" || !slices.Contains(runnerSudoEnv, k) {
+			t.Errorf("%s must not be passed through sudo", k)
+		}
+	}
+	s := &Server{cfg: Config{RunnerUser: "r", RunnerUserRunners: []string{"gpt-researcher"}}, lookPath: fakeSudo("/usr/bin/sudo", nil)}
+	cmd, _ := s.runnerCmd(true, "/p", env)
+	list := strings.Split(strings.TrimPrefix(cmd.Args[4], "--preserve-env="), ",")
+	for _, k := range list {
+		if !slices.Contains(runnerSudoEnv, k) {
+			t.Errorf("--preserve-env names %s, not in the allowlist", k)
+		}
+	}
+	if !slices.Contains(list, "AG_SPIFFE_SELF_FETCH") || !slices.Contains(list, "LANG") {
+		t.Errorf("list %v misses variables that were set", list)
+	}
+}
+
+// Only the listed runners start through sudo; the others run as before, with
+// the console's certificate and none of the self-fetch variables.
+func TestOnlyListedRunnersUseSudo(t *testing.T) {
+	name, group := currentUser(t)
+	dir := t.TempDir()
+	sudo := filepath.Join(dir, "sudo")
+	if err := os.WriteFile(sudo, []byte("#!/bin/sh\necho sudo > "+filepath.Join(dir, "used")+"\nshift 4\nexec \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	direct := fakeRunner(t, `[ -z "$AG_SPIFFE_SELF_FETCH" ] || exit 7
+[ -n "$AG_SPIFFE_CERT" ] || exit 8
+[ -n "$HOME" ] || exit 9
+echo ok > "$AG_RUN_DIR/report.md"`)
+	s, err := New(Config{Gateway: "http://127.0.0.1:1", DataDir: t.TempDir(),
+		Runners:          map[string]string{"gpt-researcher": direct, "claude-code": "/unused"},
+		RunnerGatewayURL: "https://127.0.0.1:18443", FetchCert: okCert, RunnerSPIFFEID: "spiffe://example.org/runner",
+		RunnerUser: name, RunnerGroup: group, RunnerUserRunners: []string{"claude-code"}}, dbtest.New(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.lookPath = fakeSudo(sudo, nil)
+	if !s.viaSudo("claude-code") || s.viaSudo("gpt-researcher") {
+		t.Fatal("viaSudo wrong")
+	}
+	m := startAndWait(t, s, s.Handler(), `{"template_id":"agent-security"}`)
+	if m.Status != stDone {
+		t.Fatalf("status %s (%s): %s", m.Status, m.Error, eventTexts(t, s, m.ID))
+	}
+	if _, err := os.Stat(filepath.Join(dir, "used")); err == nil {
+		t.Error("an unlisted runner went through sudo")
+	}
+	fi, _ := os.Stat(filepath.Join(s.cfg.DataDir, "runs", m.ID))
+	if fi.Mode() != os.ModeDir|0o700 {
+		t.Errorf("unlisted runner's run dir mode %v, want 0700", fi.Mode())
+	}
+}
+
+func TestRunnerUserNeedsTheRunnerList(t *testing.T) {
+	_, err := New(Config{DataDir: t.TempDir(), RunnerUser: "x", Runners: map[string]string{"a": "/x"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "--runner-user-runners") {
+		t.Errorf("err %v", err)
+	}
+	_, err = New(Config{DataDir: t.TempDir(), RunnerUser: "x", RunnerUserRunners: []string{"b"}, Runners: map[string]string{"a": "/x"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), `"b"`) {
+		t.Errorf("err %v", err)
 	}
 }

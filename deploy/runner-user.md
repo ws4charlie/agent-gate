@@ -24,11 +24,21 @@ The runner's group is `agentgate-runner`. Run directories belong to it (setgid, 
 The runner needs read access to its program and Python:
 
 ```bash
-sudo -u agentgate-runner /opt/agentgate/venv/bin/python -c 'import gpt_researcher'
-sudo -u agentgate-runner test -x /opt/agentgate/bin/runner-gpt-researcher && echo ok
+sudo -u agentgate-runner /opt/agentgate-runner/venv/bin/python -c 'import gpt_researcher'
+sudo -u agentgate-runner test -x /opt/agentgate-runner/bin/runner-gpt-researcher && echo ok
 ```
 
 Both must work. The runner must not be able to read the gateway's environment file or the console key (`console.key`); check step 5.
+
+## Layout
+
+| Path | Owner | Holds |
+|---|---|---|
+| `/opt/agentgate-runner/` | root, group `agentgate-runner` | runner program, scripts, venv, Hugging Face cache; no keys |
+| `/opt/agentgate-runner/home` | `agentgate-runner`, 0700 | the runner's writable home (`HOME`, `HF_HOME`, `XDG_CACHE_HOME`) |
+| `/opt/agentgate` | `agentgate`, group `agentgate-runner`, 0710 | the console's data dir, Claude config, keys |
+
+The runner program sets `HOME`, `HF_HOME` and `XDG_CACHE_HOME` itself, because sudo gives it no home. Set `/opt/agentgate` to 0710 only after its 0755 subfolders are 0700, so the group can pass through but list or read nothing else. The console sets its own `console/` and `runs/` to 0710 and each run directory to 2770.
 
 ## 2. Add the sudo rule
 
@@ -36,13 +46,14 @@ Both must work. The runner must not be able to read the gateway's environment fi
 sudo visudo -f /etc/sudoers.d/agentgate-runner
 ```
 
-One line, exact path, nothing else:
+An allowlist of variables and one line with the exact program path:
 
 ```
-agentgate ALL=(agentgate-runner) NOPASSWD:SETENV: /opt/agentgate/bin/runner-gpt-researcher
+Defaults>agentgate-runner env_keep += "AG_RUN_ID AG_RUN_DIR AG_TOPIC AG_INSTRUCTIONS AG_GATEWAY_URL AG_SPIFFE_SELF_FETCH AG_SPIFFE_SOCKET AG_SPIFFE_EXPECT_ID AG_SPIRE_AGENT_BIN LANG LC_ALL TERM TMPDIR"
+agentgate ALL=(agentgate-runner) NOPASSWD: /opt/agentgate-runner/bin/runner-gpt-researcher
 ```
 
-`SETENV` lets the console pass the run's variables (`--preserve-env`). Give no capability and no setuid binary.
+This list is `runnerSudoEnv` in `console/runner.go`; the console passes nothing else. It never passes `HOME`, `PATH` or `USER`: sudo sets those for the target user and refuses them from the caller. No `SETENV`, no capability, no setuid binary.
 
 ## 3. Move the SPIRE entry to the runner's uid
 
@@ -64,6 +75,7 @@ The socket directory `/run/spire/agent/sockets` must be connectable by the runne
 | Flag | Env | Value |
 |---|---|---|
 | `--runner-user` | `AG_RUNNER_USER` | `agentgate-runner` |
+| `--runner-user-runners` | `AG_RUNNER_USER_RUNNERS` | required with `--runner-user`: the runners (names from `--runners`) that start as that user, e.g. `gpt-researcher`. Others, like `claude-code`, keep starting as `agentgate`. |
 | `--runner-group` | `AG_RUNNER_GROUP` | optional; default is the runner user's own group |
 | `--spire-agent-bin` | `AG_SPIRE_AGENT_BIN` | optional; default `/opt/spire/bin/spire-agent` |
 
@@ -75,7 +87,7 @@ The existing `--runner-spiffe-id`, `--runner-gateway-url` and `--spiffe-socket` 
 # the runner is not the gateway: only the runner user gets the runner certificate
 sudo -u agentgate-runner /opt/spire/bin/spire-agent api fetch x509 -socketPath /run/spire/agent/sockets/agent.sock | grep 'SPIFFE ID'
 # the runner cannot read the console key or the gateway's environment
-sudo -u agentgate-runner cat /var/lib/agentgate/console/console.key        # must say: Permission denied
+sudo -u agentgate-runner cat /opt/agentgate/console/console.key        # must say: Permission denied
 ```
 
 Then start a research task from the console. It should finish with a report; the run's log shows `certificate fetched (spiffe://agentgate.internal/runner)`, and the gateway's audit shows the agent as the one mapped to that ID. Start a second task and stop it: the run shows as killed within a few seconds, and no `agentgate-runner` process is left (`pgrep -u agentgate-runner`).

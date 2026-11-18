@@ -14,6 +14,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -309,9 +310,9 @@ func runnerEnv(dir, id, topic, instructions, gateway, certDir, certGateway strin
 // prepareCert gets this run's certificate when the console is set up for it.
 // It returns the directory holding it ("" when the run uses the API key) and
 // never fails the run: without a certificate the run goes on with the key.
-func (t *task) prepareCert(ctx context.Context) string {
+func (t *task) prepareCert(ctx context.Context, viaSudo bool) string {
 	f := t.s.cfg.FetchCert
-	if f == nil || t.s.cfg.RunnerGatewayURL == "" || t.s.cfg.RunnerUser != "" {
+	if f == nil || t.s.cfg.RunnerGatewayURL == "" || viaSudo {
 		return ""
 	}
 	c, err := f(ctx)
@@ -329,12 +330,13 @@ func (t *task) prepareCert(ctx context.Context) string {
 func (t *task) run(ctx context.Context, prog string, tm Template) {
 	t.emit("start", "%s · run by %s", tm.Name, tm.Runner)
 	instructions := strings.TrimSpace(tm.SystemPrompt + "\n\n" + houseRules(time.Now()))
-	certDir := t.prepareCert(ctx)
+	viaSudo := t.s.viaSudo(tm.Runner)
+	certDir := t.prepareCert(ctx, viaSudo)
 	if certDir != "" {
 		defer os.RemoveAll(certDir) // the key lives only as long as the run
 	}
 	var env []string
-	if t.s.selfFetch() {
+	if viaSudo && t.s.selfFetch() {
 		// The runner is another unix user and gets its own certificate; the
 		// console never holds it.
 		env = runnerEnv(t.dir, t.meta.ID, t.meta.Topic, instructions, t.s.cfg.RunnerGatewayURL, "", "")
@@ -343,7 +345,10 @@ func (t *task) run(ctx context.Context, prog string, tm Template) {
 	} else {
 		env = runnerEnv(t.dir, t.meta.ID, t.meta.Topic, instructions, t.s.cfg.Gateway, certDir, t.s.cfg.RunnerGatewayURL)
 	}
-	cmd, err := t.s.runnerCmd(prog, env)
+	if viaSudo {
+		env = sudoEnv(env) // sudo sets HOME, PATH and USER for the runner user itself
+	}
+	cmd, err := t.s.runnerCmd(viaSudo, prog, env)
 	if err != nil {
 		t.finish(stFailed, err.Error())
 		return
@@ -363,7 +368,7 @@ func (t *task) run(ctx context.Context, prog string, tm Template) {
 	}
 	exited := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() {
-		if t.s.cfg.RunnerUser == "" {
+		if !viaSudo {
 			_ = t.s.kill(-cmd.Process.Pid, syscall.SIGTERM)
 			return
 		}
@@ -450,12 +455,34 @@ func stopThroughSudo(send func(syscall.Signal), exited <-chan struct{}, grace ti
 
 // ---- running the runner as another unix user ----
 
-// runnerUserMode is on when the runner is started as another unix user.
-func (s *Server) runnerUserMode() bool { return s.cfg.RunnerUser != "" }
+// runnerSudoEnv is every variable a runner started through sudo may be given.
+// The sudoers rule names the same list (Defaults>agentgate-runner env_keep, see
+// deploy/runner-user.md). HOME, PATH and USER are not in it: sudo sets them for
+// the runner user itself and refuses to take them from the caller.
+var runnerSudoEnv = []string{"AG_RUN_ID", "AG_RUN_DIR", "AG_TOPIC", "AG_INSTRUCTIONS", "AG_GATEWAY_URL",
+	"AG_SPIFFE_SELF_FETCH", "AG_SPIFFE_SOCKET", "AG_SPIFFE_EXPECT_ID", "AG_SPIRE_AGENT_BIN",
+	"LANG", "LC_ALL", "TERM", "TMPDIR"}
+
+// sudoEnv keeps only the allowed variables.
+func sudoEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		k, _, _ := strings.Cut(kv, "=")
+		if slices.Contains(runnerSudoEnv, k) {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
+// viaSudo is true when the named runner is one that starts as the runner user.
+func (s *Server) viaSudo(runner string) bool {
+	return s.cfg.RunnerUser != "" && slices.Contains(s.cfg.RunnerUserRunners, runner)
+}
 
 // selfFetch is on when that runner fetches its own SPIFFE certificate.
 func (s *Server) selfFetch() bool {
-	return s.runnerUserMode() && s.cfg.RunnerSPIFFEID != "" && s.cfg.RunnerGatewayURL != ""
+	return s.cfg.RunnerUser != "" && s.cfg.RunnerSPIFFEID != "" && s.cfg.RunnerGatewayURL != ""
 }
 
 // selfFetchEnv tells the runner how to fetch and check its certificate.
@@ -479,8 +506,8 @@ func envKeys(env []string) []string {
 // runnerCmd is the command for one run: the program itself, or with a runner
 // user, sudo starting it as that user with exactly env's names passed through.
 // The sudo rule names the program, so nothing else can be started this way.
-func (s *Server) runnerCmd(prog string, env []string) (*exec.Cmd, error) {
-	if !s.runnerUserMode() {
+func (s *Server) runnerCmd(viaSudo bool, prog string, env []string) (*exec.Cmd, error) {
+	if !viaSudo {
 		return exec.Command(prog), nil
 	}
 	sudo, err := s.lookPath("sudo")
@@ -530,11 +557,11 @@ func (s *Server) shareDir(d string, mode os.FileMode) error {
 // makeRunDir creates a run's directory: private to the console, or with a
 // runner user shared with the runner's group (setgid, so what the runner makes
 // there belongs to the group, readable by the console).
-func (s *Server) makeRunDir(dir string) error {
+func (s *Server) makeRunDir(dir, runner string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	if !s.runnerUserMode() {
+	if !s.viaSudo(runner) {
 		return nil
 	}
 	return s.shareDir(dir, os.ModeSetgid|0o770)

@@ -12,6 +12,9 @@
 #
 # Writes report.md to AG_RUN_DIR. Lines starting with "▸ " are progress the
 # console shows as steps; everything else goes to the run's log.
+# Started through sudo, the runner user has no home of its own and gets no HOME,
+# PATH or USER from the console. This script and gpt_researcher_run.py never read
+# $HOME; the program that calls this one sets HOME, HF_HOME and XDG_CACHE_HOME.
 set -euo pipefail
 umask 0007 # what this makes in the run directory is for its owner and group only
 if [ "${AG_SPIFFE_SELF_FETCH:-}" = 1 ]; then AGENT_KEY=${AGENT_KEY:-unused-the-certificate-is-the-credential}; fi
