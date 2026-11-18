@@ -49,6 +49,7 @@ Read more about each part. Each page takes a minute or two:
 | [Testing](docs/testing.md) | How it's tested without spending money |
 | [Registry](docs/registry.md) | Lists the models, tools and agents allowed to exist, with owner and purpose, and shows what runs unlisted |
 | [Infrastructure](docs/infra.md) | The GCP deployment as Terraform, checked by policy in CI |
+| [Identity](docs/identity.md) | When an agent should use a certificate and when an API key, and how to make a key safer |
 
 ## Try it
 
