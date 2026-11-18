@@ -13,6 +13,8 @@ Description=AgentGate research run %i
 # The console writes these before it starts the unit.
 AssertPathExists=/opt/agentgate/console/runs/%i/runner.env
 AssertPathExists=/opt/agentgate/console/runs/%i/runner.out
+# A unit that fails is removed instead of lingering as failed.
+CollectMode=inactive-or-failed
 
 [Service]
 Type=exec
@@ -27,11 +29,10 @@ ExecStart=/opt/agentgate-runner/bin/runner-gpt-researcher
 StandardOutput=append:/opt/agentgate/console/runs/%i/runner.out
 StandardError=append:/opt/agentgate/console/runs/%i/runner.out
 
-# Stopping kills everything the run started, and a unit that fails is removed.
+# Stopping kills everything the run started.
 KillMode=control-group
 TimeoutStopSec=10
 Restart=no
-CollectMode=inactive-or-failed
 # A little above the console's own 20 minute limit.
 RuntimeMaxSec=1260
 
