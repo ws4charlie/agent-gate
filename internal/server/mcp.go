@@ -125,7 +125,8 @@ func (c *call) mcp(name string) {
 	agent, err := s.authenticate(c.ctx, c.r)
 	if err != nil {
 		if errors.Is(err, errUnauthorized) {
-			c.fail(http.StatusUnauthorized, audit.StatusUnauthorized, "unauthorized", "missing or invalid API key", nil)
+			code, msg := authFailure(err)
+			c.fail(http.StatusUnauthorized, audit.StatusUnauthorized, code, msg, nil)
 		} else {
 			s.Log.Error("auth lookup", "err", err)
 			c.fail(http.StatusInternalServerError, audit.StatusInternal, "internal_error", "internal error", nil)
@@ -133,6 +134,7 @@ func (c *call) mcp(name string) {
 		return
 	}
 	c.agent = agent
+	s.noteKeyExpiry(c.w, agent)
 	c.ev.AccountID, c.ev.AgentID = agent.AccountID, agent.ID
 	c.identify()
 	if c.refuseInactive(policy.KindTool) { // rule 1, before the body is read (I12)

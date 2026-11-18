@@ -20,13 +20,15 @@ func (s *Server) handleBalance(w http.ResponseWriter, r *http.Request) {
 	agent, err := s.authenticate(r.Context(), r)
 	if err != nil {
 		if errors.Is(err, errUnauthorized) {
-			writeErr(w, provider.FormatOpenAI, http.StatusUnauthorized, "unauthorized", "missing or invalid API key", nil)
+			code, msg := authFailure(err)
+			writeErr(w, provider.FormatOpenAI, http.StatusUnauthorized, code, msg, nil)
 		} else {
 			s.Log.Error("auth lookup", "err", err)
 			writeErr(w, provider.FormatOpenAI, http.StatusInternalServerError, "internal_error", "internal error", nil)
 		}
 		return
 	}
+	s.noteKeyExpiry(w, agent)
 	bal, err := s.Ledger.Balance(r.Context(), agent.AccountID)
 	if err != nil {
 		s.Log.Error("balance", "err", err)
