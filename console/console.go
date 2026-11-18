@@ -30,7 +30,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -71,10 +70,11 @@ type Config struct {
 	RunnerGatewayURL string
 	FetchCert        CertFetcher
 
-	// RunnerUser starts each run as that unix user through sudo (see
-	// deploy/runner-user.md); "" starts it as the console's own user. The run
-	// directory is shared with RunnerGroup (default: the user's own group).
-	// With RunnerSPIFFEID set too, the runner fetches its own certificate
+	// RunnerUser is the unix user the runners in RunnerUserRunners run as.
+	// The console does not become that user: it asks systemd to start the
+	// unit agentgate-run@<run id> (deploy/systemd), which does. "" starts
+	// every runner as the console's own user. The run directory is shared
+	// with RunnerGroup (default: the user's own group). With RunnerSPIFFEID set too, the runner fetches its own certificate
 	// from SPIFFESocket (checking it is RunnerSPIFFEID) with the spire-agent
 	// program SpireAgentBin, and the console never holds it (FetchCert is
 	// not used).
@@ -100,7 +100,7 @@ type Server struct {
 	live map[string]*task // tasks running in this process, by run id
 
 	runnerGID int                                     // the runner group, with RunnerUser
-	lookPath  func(string) (string, error)            // exec.LookPath, replaceable in tests
+	units     unitRunner                              // starts and stops runner units; systemctl unless a test replaces it
 	kill      func(pid int, sig syscall.Signal) error // syscall.Kill, replaceable in tests
 }
 
@@ -114,7 +114,7 @@ func New(cfg Config, pool *pgxpool.Pool) (*Server, error) {
 	}
 	s := &Server{cfg: cfg, pool: pool, agents: agents.NewStore(pool), runs: runs.New(pool), key: key,
 		client: &http.Client{Timeout: 3 * time.Minute}, live: map[string]*task{},
-		lookPath: exec.LookPath, kill: syscall.Kill}
+		units: systemctl{}, kill: syscall.Kill}
 	if cfg.RunnerUser != "" {
 		if len(cfg.RunnerUserRunners) == 0 {
 			return nil, errors.New("--runner-user needs --runner-user-runners: name the runners that start as that user")

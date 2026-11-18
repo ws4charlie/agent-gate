@@ -1,0 +1,18 @@
+// Lets the console's user (agentgate) start, stop and kill research-run units,
+// and nothing else. Install (as root) to /etc/polkit-1/rules.d/; polkit picks
+// it up without a restart. See deploy/runner-user.md.
+//
+// Only unit names of the exact form the console makes are allowed, so no other
+// unit can be touched and an instance name cannot hold a path.
+polkit.addRule(function(action, subject) {
+    if (action.id !== "org.freedesktop.systemd1.manage-units" || subject.user !== "agentgate") {
+        return polkit.Result.NOT_HANDLED;
+    }
+    var unit = action.lookup("unit");
+    var verb = action.lookup("verb");
+    if (/^agentgate-run@run_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.service$/.test(unit) &&
+        (verb === "start" || verb === "stop" || verb === "kill")) {
+        return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

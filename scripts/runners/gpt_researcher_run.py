@@ -17,6 +17,16 @@ class SelfFetchError(Exception):
     pass
 
 
+def text_setting(env, name):
+    """A setting that may hold any characters: NAME itself, or the contents of
+    the file named by NAME_FILE (how the console hands it to a systemd unit)."""
+    path = env.get(name + "_FILE")
+    if path:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    return env.get(name, "")
+
+
 def uri_sans(pem_file):
     """The URI subject alternative names of the first (leaf) certificate in the file.
 
@@ -208,8 +218,8 @@ def main():
         mcp = os.environ["AG_GATEWAY_URL"] + "/mcp/"
         headers = dict(tags) if ctx is not None else {"Authorization": "Bearer " + os.environ["AGENT_KEY"], **tags}
         servers = os.environ.get("GPTR_MCP", "litescraper firecrawl").split()
-        r = GPTResearcher(query=os.environ["AG_TOPIC"], report_type="research_report",
-                          role=os.environ.get("AG_INSTRUCTIONS") or None,
+        r = GPTResearcher(query=text_setting(os.environ, "AG_TOPIC"), report_type="research_report",
+                          role=text_setting(os.environ, "AG_INSTRUCTIONS") or None,
                           mcp_configs=[{"name": n, "connection_url": mcp + n, "connection_headers": headers} for n in servers])
         # SIGTERM (the console's kill) cancels the work; the certificate is
         # deleted and the process leaves at once.

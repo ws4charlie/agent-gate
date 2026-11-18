@@ -3,7 +3,8 @@
 #
 # The console starts this with a small environment:
 #   AG_RUN_ID, AG_RUN_DIR, AG_TOPIC, AG_INSTRUCTIONS, AG_GATEWAY_URL
-# With --runner-user it also gets AG_SPIFFE_SELF_FETCH, AG_SPIFFE_SOCKET and
+# As a systemd unit (--runner-user) AG_TOPIC and AG_INSTRUCTIONS come as the files
+# AG_TOPIC_FILE and AG_INSTRUCTIONS_FILE, and it also gets AG_SPIFFE_SELF_FETCH, AG_SPIFFE_SOCKET and
 # AG_SPIFFE_EXPECT_ID: the run fetches its own certificate and needs no key.
 # Your wrapper adds:
 #   AGENT_KEY     the gateway key of the agent this runs as (not needed with AG_SPIFFE_SELF_FETCH=1)
@@ -12,18 +13,19 @@
 #
 # Writes report.md to AG_RUN_DIR. Lines starting with "▸ " are progress the
 # console shows as steps; everything else goes to the run's log.
-# Started through sudo, the runner user has no home of its own and gets no HOME,
+# As a systemd unit the runner user has no home of its own and gets no HOME,
 # PATH or USER from the console. This script and gpt_researcher_run.py never read
 # $HOME; the program that calls this one sets HOME, HF_HOME and XDG_CACHE_HOME.
 set -euo pipefail
 umask 0007 # what this makes in the run directory is for its owner and group only
 if [ "${AG_SPIFFE_SELF_FETCH:-}" = 1 ]; then AGENT_KEY=${AGENT_KEY:-unused-the-certificate-is-the-credential}; fi
-: "${AGENT_KEY:?}" "${GPTR_PYTHON:?}" "${AG_RUN_ID:?}" "${AG_RUN_DIR:?}" "${AG_TOPIC:?}" "${AG_GATEWAY_URL:?}"
+: "${AGENT_KEY:?}" "${GPTR_PYTHON:?}" "${AG_RUN_ID:?}" "${AG_RUN_DIR:?}" "${AG_GATEWAY_URL:?}"
 M=${GPTR_MODEL:-openai/gpt-4o-mini}
 export OPENAI_API_KEY="$AGENT_KEY" OPENAI_BASE_URL="$AG_GATEWAY_URL/v1" RETRIEVER=mcp MCP_STRATEGY=fast \
   FAST_LLM="openai:$M" SMART_LLM="openai:$M" STRATEGIC_LLM="openai:$M" \
   EMBEDDING=huggingface:sentence-transformers/all-MiniLM-L6-v2 MAX_ITERATIONS=2 MAX_SUBTOPICS=2 TOTAL_WORDS=900 \
   ANONYMIZED_TELEMETRY=false PYTHONUNBUFFERED=1
+[ -n "${AG_TOPIC:-}" ] || [ -n "${AG_TOPIC_FILE:-}" ] || { echo "AG_TOPIC or AG_TOPIC_FILE is required" >&2; exit 2; }
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # GPT Researcher logs "INFO: [time] message"; those messages become steps.
 # Python runs in the background so a SIGTERM (the console's kill, relayed by

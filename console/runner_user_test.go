@@ -3,11 +3,11 @@ package console
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
 	"os"
 	"os/user"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -31,85 +31,112 @@ func currentUser(t *testing.T) (name, group string) {
 	return u.Username, g.Name
 }
 
-func fakeSudo(path string, err error) func(string) (string, error) {
-	return func(string) (string, error) { return path, err }
+// fakeUnits stands in for systemd: Start runs fn, Stop ends a Start that waits.
+type fakeUnits struct {
+	mu      sync.Mutex
+	started []string
+	stopped []string
+	fn      func(ctx context.Context, unit string) error
+	stop    chan struct{}
 }
 
-// With a runner user the command is sudo with the exact environment names.
-func TestRunnerCmdThroughSudo(t *testing.T) {
-	s := &Server{cfg: Config{RunnerUser: "agentgate-runner", RunnerUserRunners: []string{"gpt-researcher"}}, lookPath: fakeSudo("/usr/bin/sudo", nil)}
-	env := []string{"AG_RUN_ID=run_1", "AG_TOPIC=a=b, c", "PATH=/bin"}
-	cmd, err := s.runnerCmd(true, "/opt/agentgate/bin/runner-gpt-researcher", env)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"/usr/bin/sudo", "-n", "-u", "agentgate-runner", "--preserve-env=AG_RUN_ID,AG_TOPIC,PATH", "/opt/agentgate/bin/runner-gpt-researcher"}
-	if !reflect.DeepEqual(cmd.Args, want) {
-		t.Errorf("args %q, want %q", cmd.Args, want)
-	}
+func newFakeUnits(fn func(ctx context.Context, unit string) error) *fakeUnits {
+	return &fakeUnits{fn: fn, stop: make(chan struct{})}
 }
 
-func TestRunnerCmdWithoutUserIsTheProgram(t *testing.T) {
-	s := &Server{lookPath: fakeSudo("", errors.New("must not be called"))}
-	cmd, err := s.runnerCmd(false, "/x/runner", []string{"A=1"})
-	if err != nil || !reflect.DeepEqual(cmd.Args, []string{"/x/runner"}) {
-		t.Errorf("%q %v", cmd.Args, err)
-	}
+func (f *fakeUnits) Start(ctx context.Context, unit string) error {
+	f.mu.Lock()
+	f.started = append(f.started, unit)
+	f.mu.Unlock()
+	return f.fn(ctx, unit)
 }
 
-func TestRunnerCmdNeedsSudo(t *testing.T) {
-	s := &Server{cfg: Config{RunnerUser: "r"}, lookPath: fakeSudo("", errors.New("not found"))}
-	if _, err := s.runnerCmd(true, "/x", nil); err == nil || !strings.Contains(err.Error(), "needs sudo") {
-		t.Errorf("err %v", err)
+func (f *fakeUnits) Stop(_ context.Context, unit string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped = append(f.stopped, unit)
+	select {
+	case <-f.stop:
+	default:
+		close(f.stop)
 	}
+	return nil
 }
 
-// The runner fetches its own certificate: the console passes where and what to
-// expect, and no certificate material.
-func TestSelfFetchEnv(t *testing.T) {
-	s := &Server{cfg: Config{RunnerUser: "r", RunnerSPIFFEID: "spiffe://x/runner", RunnerGatewayURL: "https://127.0.0.1:1",
-		SPIFFESocket: "unix:///s.sock", SpireAgentBin: "/b/spire-agent"}}
-	if !s.selfFetch() {
-		t.Fatal("self fetch should be on")
-	}
-	want := []string{"AG_SPIFFE_SELF_FETCH=1", "AG_SPIFFE_SOCKET=unix:///s.sock", "AG_SPIFFE_EXPECT_ID=spiffe://x/runner", "AG_SPIRE_AGENT_BIN=/b/spire-agent"}
-	if got := s.selfFetchEnv(); !reflect.DeepEqual(got, want) {
-		t.Errorf("env %q, want %q", got, want)
-	}
-	s.cfg.RunnerUser = ""
-	if s.selfFetch() {
-		t.Error("self fetch needs a runner user")
-	}
+func (f *fakeUnits) calls() (started, stopped []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.started...), append([]string(nil), f.stopped...)
 }
 
-// A run in runner-user mode goes through sudo, preserves exactly the names it
-// sets, never has the console fetch a certificate, and reads files the
-// runner's group wrote.
-func TestRunThroughSudoEndToEnd(t *testing.T) {
+func unitServer(t *testing.T, listed []string, runners map[string]string, units unitRunner) *Server {
+	t.Helper()
 	name, group := currentUser(t)
-	dir := t.TempDir()
-	argsFile := filepath.Join(dir, "sudo-args")
-	// A sudo stand-in: records its arguments, then runs the program like sudo
-	// does after its own options.
-	sudo := filepath.Join(dir, "sudo")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argsFile + "\nshift 4\nexec \"$@\"\n"
-	if err := os.WriteFile(sudo, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	runner := fakeRunner(t, `[ "$AG_SPIFFE_SELF_FETCH" = 1 ] || exit 7
-[ "$AG_SPIFFE_EXPECT_ID" = spiffe://example.org/runner ] || exit 8
-[ -z "$AG_SPIFFE_CERT" ] || exit 9
-[ "$AG_GATEWAY_URL" = https://127.0.0.1:18443 ] || exit 10
-echo "▸ hello"; echo ok > "$AG_RUN_DIR/report.md"`)
-	fetched := false
-	s, err := New(Config{Gateway: "http://127.0.0.1:1", DataDir: t.TempDir(), Runners: map[string]string{"gpt-researcher": runner},
-		RunnerGatewayURL: "https://127.0.0.1:18443", RunnerUser: name, RunnerGroup: group, RunnerUserRunners: []string{"gpt-researcher"},
-		RunnerSPIFFEID: "spiffe://example.org/runner", SPIFFESocket: "unix:///x.sock",
-		FetchCert: func(context.Context) (*runCert, error) { fetched = true; return okCert(nil) }}, dbtest.New(t))
+	s, err := New(Config{Gateway: "http://127.0.0.1:1", DataDir: t.TempDir(), Runners: runners,
+		RunnerGatewayURL: "https://127.0.0.1:18443", FetchCert: okCert, RunnerSPIFFEID: "spiffe://example.org/runner",
+		SPIFFESocket: "unix:///run/spire/agent/sockets/agent.sock", SpireAgentBin: "/opt/spire/bin/spire-agent",
+		RunnerUser: name, RunnerGroup: group, RunnerUserRunners: listed}, dbtest.New(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.lookPath = fakeSudo(sudo, nil)
+	s.units = units
+	return s
+}
+
+// readEnvFile parses the unit's EnvironmentFile.
+func readEnvFile(t *testing.T, path string) map[string]string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, l := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		k, v, ok := strings.Cut(l, "=")
+		if !ok || !strings.HasPrefix(v, `"`) || !strings.HasSuffix(v, `"`) {
+			t.Fatalf("bad env line %q", l)
+		}
+		out[k] = v[1 : len(v)-1]
+	}
+	return out
+}
+
+// A listed runner is started as a unit: the console writes the environment
+// file and the topic and instruction files, follows runner.out for the same
+// steps and log as before, and never fetches the certificate itself.
+func TestUnitRunEndToEnd(t *testing.T) {
+	var s *Server
+	fetched := false
+	units := newFakeUnits(func(_ context.Context, unit string) error {
+		id := strings.TrimSuffix(strings.TrimPrefix(unit, "agentgate-run@"), ".service")
+		dir := filepath.Join(s.cfg.DataDir, "runs", id)
+		env := readEnvFile(t, filepath.Join(dir, "runner.env"))
+		want := map[string]string{"AG_RUN_ID": id, "AG_RUN_DIR": dir, "AG_TOPIC_FILE": filepath.Join(dir, "topic.txt"),
+			"AG_INSTRUCTIONS_FILE": filepath.Join(dir, "instructions.txt"), "AG_GATEWAY_URL": "https://127.0.0.1:18443",
+			"AG_SPIFFE_SELF_FETCH": "1", "AG_SPIFFE_SOCKET": "unix:///run/spire/agent/sockets/agent.sock",
+			"AG_SPIFFE_EXPECT_ID": "spiffe://example.org/runner", "AG_SPIRE_AGENT_BIN": "/opt/spire/bin/spire-agent"}
+		if !reflect.DeepEqual(env, want) {
+			t.Errorf("env file %v, want %v", env, want)
+		}
+		topic, _ := os.ReadFile(env["AG_TOPIC_FILE"])
+		ins, _ := os.ReadFile(env["AG_INSTRUCTIONS_FILE"])
+		if len(topic) == 0 || !strings.Contains(string(ins), "Today is") {
+			t.Errorf("topic %q, instructions %q", topic, ins)
+		}
+		for _, f := range []string{"topic.txt", "instructions.txt", "runner.env", "runner.out"} {
+			if fi, err := os.Stat(filepath.Join(dir, f)); err != nil || fi.Mode().Perm() != 0o660 {
+				t.Errorf("%s: %v %v, want 0660", f, fi, err)
+			}
+		}
+		out, _ := os.OpenFile(filepath.Join(dir, "runner.out"), os.O_APPEND|os.O_WRONLY, 0)
+		defer out.Close()
+		out.WriteString("▸ looking\nplain log line\n")
+		time.Sleep(250 * time.Millisecond) // the console follows the file while the unit runs
+		out.WriteString("▸ writing\n")
+		return os.WriteFile(filepath.Join(dir, "report.md"), []byte("# R\n"), 0o660)
+	})
+	s = unitServer(t, []string{"gpt-researcher"}, map[string]string{"gpt-researcher": "/unused"}, units)
+	s.cfg.FetchCert = func(context.Context) (*runCert, error) { fetched = true; return okCert(nil) }
 	m := startAndWait(t, s, s.Handler(), `{"template_id":"agent-security"}`)
 	if m.Status != stDone {
 		t.Fatalf("status %s (%s): %s", m.Status, m.Error, eventTexts(t, s, m.ID))
@@ -117,47 +144,164 @@ echo "▸ hello"; echo ok > "$AG_RUN_DIR/report.md"`)
 	if fetched {
 		t.Error("the console fetched the runner's certificate")
 	}
-	raw, _ := os.ReadFile(argsFile)
-	args := strings.Fields(string(raw))
-	if len(args) < 5 || args[0] != "-n" || args[1] != "-u" || args[2] != name || args[4] != runner {
-		t.Fatalf("sudo args %q", args)
+	ev := eventTexts(t, s, m.ID)
+	for _, w := range []string{"step: looking", "step: writing", "the runner fetches its own SPIFFE certificate"} {
+		if !strings.Contains(ev, w) {
+			t.Errorf("events lack %q: %s", w, ev)
+		}
 	}
-	keys, ok := strings.CutPrefix(args[3], "--preserve-env=")
-	if !ok || !strings.Contains(","+keys+",", ",AG_SPIFFE_SELF_FETCH,") || strings.Contains(keys, "AG_SPIFFE_CERT") {
-		t.Errorf("preserve-env %q", args[3])
+	log, _ := os.ReadFile(filepath.Join(s.cfg.DataDir, "runs", m.ID, "log.txt"))
+	if !strings.Contains(string(log), "plain log line") {
+		t.Errorf("log: %s", log)
 	}
-}
-
-// Killing a run under sudo: TERM to sudo, KILL only if it is still there after
-// the grace period.
-func TestStopThroughSudo(t *testing.T) {
-	var mu sync.Mutex
-	var got []syscall.Signal
-	send := func(sig syscall.Signal) { mu.Lock(); got = append(got, sig); mu.Unlock() }
-
-	exited := make(chan struct{})
-	close(exited) // leaves right after TERM
-	stopThroughSudo(send, exited, time.Hour)
-	if !reflect.DeepEqual(got, []syscall.Signal{syscall.SIGTERM}) {
-		t.Errorf("runner left: signals %v, want TERM only", got)
-	}
-
-	got = nil
-	stopThroughSudo(send, make(chan struct{}), 20*time.Millisecond) // never leaves
-	if !reflect.DeepEqual(got, []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}) {
-		t.Errorf("runner stayed: signals %v, want TERM then KILL", got)
+	if started, stopped := units.calls(); len(started) != 1 || started[0] != "agentgate-run@"+m.ID+".service" || len(stopped) != 0 {
+		t.Errorf("started %v stopped %v", started, stopped)
 	}
 }
 
-// The run directory is shared with the runner's group, setgid, and the data
-// directory can be passed through but not listed by the group.
+// The runner's exit status decides: non-zero is a failure, and a zero exit
+// with no report is one too.
+func TestUnitExitStatus(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err  error
+		want string
+	}{"failed": {errors.New("exit status 1"), "the runner failed: exit status 1"}, "no report": {nil, "the runner stopped without a report"}} {
+		t.Run(name, func(t *testing.T) {
+			s := unitServer(t, []string{"gpt-researcher"}, map[string]string{"gpt-researcher": "/unused"},
+				newFakeUnits(func(context.Context, string) error { return tc.err }))
+			m := startAndWait(t, s, s.Handler(), `{"template_id":"agent-security"}`)
+			if m.Status != stFailed || m.Error != tc.want {
+				t.Errorf("status %s error %q, want failed %q", m.Status, m.Error, tc.want)
+			}
+		})
+	}
+}
+
+// Killing a run stops the unit: systemd ends everything in it.
+func TestUnitKillStopsTheUnit(t *testing.T) {
+	var units *fakeUnits
+	units = newFakeUnits(func(ctx context.Context, unit string) error {
+		<-units.stop
+		return errors.New("exit status 143")
+	})
+	s := unitServer(t, []string{"gpt-researcher"}, map[string]string{"gpt-researcher": "/unused"}, units)
+	h := s.Handler()
+	m := start(t, s, h, `{"template_id":"agent-security"}`)
+	time.Sleep(200 * time.Millisecond)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, apiReq(s, "POST", "/api/runs/"+m.ID+"/kill", ""))
+	if w.Code != 200 {
+		t.Fatalf("kill: %d %s", w.Code, w.Body)
+	}
+	if got := wait(t, s, m.ID); got.Status != stKilled {
+		t.Fatalf("after kill: %s", got.Status)
+	}
+	if _, stopped := units.calls(); !reflect.DeepEqual(stopped, []string{"agentgate-run@" + m.ID + ".service"}) {
+		t.Errorf("stopped %v", stopped)
+	}
+}
+
+// An unlisted runner starts as before: the program itself, the console's
+// certificate, the whole environment, a private run directory, no unit.
+func TestUnlistedRunnerIsUnchanged(t *testing.T) {
+	direct := fakeRunner(t, `[ -z "$AG_SPIFFE_SELF_FETCH" ] || exit 7
+[ -n "$AG_SPIFFE_CERT" ] || exit 8
+[ -n "$AG_TOPIC" ] || exit 9
+[ -z "$AG_TOPIC_FILE" ] || exit 10
+echo ok > "$AG_RUN_DIR/report.md"`)
+	units := newFakeUnits(func(context.Context, string) error { return errors.New("must not run") })
+	s := unitServer(t, []string{"claude-code"}, map[string]string{"gpt-researcher": direct, "claude-code": "/unused"}, units)
+	if s.viaUnit("gpt-researcher") || !s.viaUnit("claude-code") {
+		t.Fatal("viaUnit wrong")
+	}
+	m := startAndWait(t, s, s.Handler(), `{"template_id":"agent-security"}`)
+	if m.Status != stDone {
+		t.Fatalf("status %s (%s): %s", m.Status, m.Error, eventTexts(t, s, m.ID))
+	}
+	if started, _ := units.calls(); len(started) != 0 {
+		t.Errorf("unit started: %v", started)
+	}
+	if fi, _ := os.Stat(filepath.Join(s.cfg.DataDir, "runs", m.ID)); fi.Mode() != os.ModeDir|0o700 {
+		t.Errorf("run dir mode %v, want 0700", fi.Mode())
+	}
+}
+
+// An id the console did not make never becomes a unit name or a path.
+func TestUnitRefusesBadRunID(t *testing.T) {
+	units := newFakeUnits(func(context.Context, string) error { return nil })
+	s := unitServer(t, []string{"gpt-researcher"}, map[string]string{"gpt-researcher": "/unused"}, units)
+	for _, id := range []string{"run_../../x", "..", "run_x", "run_" + strings.Repeat("a", 36) + "/../x", ""} {
+		tk := &task{s: s, dir: t.TempDir(), cancel: func() {}, meta: runMeta{ID: id, Status: stRunning}}
+		tk.runUnit(context.Background(), "i")
+		if m := tk.snapshot(); m.Status != stFailed {
+			t.Errorf("id %q: status %s", id, m.Status)
+		}
+	}
+	if started, _ := units.calls(); len(started) != 0 {
+		t.Errorf("started %v", started)
+	}
+}
+
+func TestSystemctlArgs(t *testing.T) {
+	u := unitName("run_1")
+	if got, want := systemctlArgs("start", true, u), []string{"--no-ask-password", "--quiet", "start", "--wait", "agentgate-run@run_1.service"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("start: %q", got)
+	}
+	if got, want := systemctlArgs("stop", false, u), []string{"--no-ask-password", "--quiet", "stop", "agentgate-run@run_1.service"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("stop: %q", got)
+	}
+}
+
+func TestEnvFile(t *testing.T) {
+	b, err := envFile([]string{"A=1", "B=https://x/y"})
+	if err != nil || string(b) != "A=\"1\"\nB=\"https://x/y\"\n" {
+		t.Errorf("%q %v", b, err)
+	}
+	for _, bad := range []string{"A=a\"b", "A=a\\b", "A=a\nb"} {
+		if _, err := envFile([]string{bad}); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
+// The tail reader hands over what is written while it waits, and what arrived
+// just before the end.
+func TestTailReader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "out")
+	f, _ := os.Create(path)
+	r, _ := os.Open(path)
+	done := make(chan struct{})
+	got := make(chan string)
+	go func() {
+		var b strings.Builder
+		buf := make([]byte, 64)
+		for {
+			n, err := (&tailReader{f: r, done: done}).Read(buf)
+			b.Write(buf[:n])
+			if err != nil {
+				got <- b.String()
+				return
+			}
+		}
+	}()
+	f.WriteString("one\n")
+	time.Sleep(250 * time.Millisecond)
+	f.WriteString("two\n")
+	close(done)
+	select {
+	case s := <-got:
+		if s != "one\ntwo\n" {
+			t.Errorf("read %q", s)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the reader did not end")
+	}
+}
+
+// The runner's group id is found and the run directory is shared with it,
+// setgid; the data directory can be passed through but not listed.
 func TestRunDirShared(t *testing.T) {
-	name, group := currentUser(t)
-	s, err := New(Config{Gateway: "http://127.0.0.1:1", DataDir: t.TempDir(), RunnerUser: name, RunnerGroup: group,
-		RunnerUserRunners: []string{"gpt-researcher"}, Runners: map[string]string{"gpt-researcher": "/x"}}, dbtest.New(t))
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := unitServer(t, []string{"gpt-researcher"}, map[string]string{"gpt-researcher": "/x"}, nil)
 	for _, d := range []string{s.cfg.DataDir, filepath.Join(s.cfg.DataDir, "runs")} {
 		if fi, err := os.Stat(d); err != nil || fi.Mode().Perm() != 0o710 {
 			t.Errorf("%s: %v %v, want 0710", d, fi, err)
@@ -195,6 +339,17 @@ func TestUnknownRunnerUserFails(t *testing.T) {
 	}
 }
 
+func TestRunnerUserNeedsTheRunnerList(t *testing.T) {
+	_, err := New(Config{DataDir: t.TempDir(), RunnerUser: "x", Runners: map[string]string{"a": "/x"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "--runner-user-runners") {
+		t.Errorf("err %v", err)
+	}
+	_, err = New(Config{DataDir: t.TempDir(), RunnerUser: "x", RunnerUserRunners: []string{"b"}, Runners: map[string]string{"a": "/x"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), `"b"`) {
+		t.Errorf("err %v", err)
+	}
+}
+
 // Certificate directories a crashed console left behind are removed at start.
 func TestStartRemovesLeftoverCertificates(t *testing.T) {
 	data := t.TempDir()
@@ -221,81 +376,5 @@ func TestStartRemovesLeftoverCertificates(t *testing.T) {
 	}
 	if _, err := os.Stat(keep); err != nil {
 		t.Errorf("the report was removed: %v", err)
-	}
-}
-
-// sudo refuses HOME, PATH and USER from the caller: the console never passes
-// them, and passes nothing the sudoers rule does not list.
-func TestSudoEnvIsTheAllowlist(t *testing.T) {
-	t.Setenv("HOME", "/home/agentgate")
-	t.Setenv("USER", "agentgate")
-	t.Setenv("LANG", "C.UTF-8")
-	env := runnerEnv("/d", "run_1", "t", "i", "http://g", "", "")
-	env = append(env, (&Server{cfg: Config{RunnerUser: "r", RunnerSPIFFEID: "spiffe://x/r", SPIFFESocket: "unix:///s", SpireAgentBin: "/b"}}).selfFetchEnv()...)
-	env = sudoEnv(env)
-	for _, kv := range env {
-		k, _, _ := strings.Cut(kv, "=")
-		if k == "HOME" || k == "PATH" || k == "USER" || !slices.Contains(runnerSudoEnv, k) {
-			t.Errorf("%s must not be passed through sudo", k)
-		}
-	}
-	s := &Server{cfg: Config{RunnerUser: "r", RunnerUserRunners: []string{"gpt-researcher"}}, lookPath: fakeSudo("/usr/bin/sudo", nil)}
-	cmd, _ := s.runnerCmd(true, "/p", env)
-	list := strings.Split(strings.TrimPrefix(cmd.Args[4], "--preserve-env="), ",")
-	for _, k := range list {
-		if !slices.Contains(runnerSudoEnv, k) {
-			t.Errorf("--preserve-env names %s, not in the allowlist", k)
-		}
-	}
-	if !slices.Contains(list, "AG_SPIFFE_SELF_FETCH") || !slices.Contains(list, "LANG") {
-		t.Errorf("list %v misses variables that were set", list)
-	}
-}
-
-// Only the listed runners start through sudo; the others run as before, with
-// the console's certificate and none of the self-fetch variables.
-func TestOnlyListedRunnersUseSudo(t *testing.T) {
-	name, group := currentUser(t)
-	dir := t.TempDir()
-	sudo := filepath.Join(dir, "sudo")
-	if err := os.WriteFile(sudo, []byte("#!/bin/sh\necho sudo > "+filepath.Join(dir, "used")+"\nshift 4\nexec \"$@\"\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	direct := fakeRunner(t, `[ -z "$AG_SPIFFE_SELF_FETCH" ] || exit 7
-[ -n "$AG_SPIFFE_CERT" ] || exit 8
-[ -n "$HOME" ] || exit 9
-echo ok > "$AG_RUN_DIR/report.md"`)
-	s, err := New(Config{Gateway: "http://127.0.0.1:1", DataDir: t.TempDir(),
-		Runners:          map[string]string{"gpt-researcher": direct, "claude-code": "/unused"},
-		RunnerGatewayURL: "https://127.0.0.1:18443", FetchCert: okCert, RunnerSPIFFEID: "spiffe://example.org/runner",
-		RunnerUser: name, RunnerGroup: group, RunnerUserRunners: []string{"claude-code"}}, dbtest.New(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.lookPath = fakeSudo(sudo, nil)
-	if !s.viaSudo("claude-code") || s.viaSudo("gpt-researcher") {
-		t.Fatal("viaSudo wrong")
-	}
-	m := startAndWait(t, s, s.Handler(), `{"template_id":"agent-security"}`)
-	if m.Status != stDone {
-		t.Fatalf("status %s (%s): %s", m.Status, m.Error, eventTexts(t, s, m.ID))
-	}
-	if _, err := os.Stat(filepath.Join(dir, "used")); err == nil {
-		t.Error("an unlisted runner went through sudo")
-	}
-	fi, _ := os.Stat(filepath.Join(s.cfg.DataDir, "runs", m.ID))
-	if fi.Mode() != os.ModeDir|0o700 {
-		t.Errorf("unlisted runner's run dir mode %v, want 0700", fi.Mode())
-	}
-}
-
-func TestRunnerUserNeedsTheRunnerList(t *testing.T) {
-	_, err := New(Config{DataDir: t.TempDir(), RunnerUser: "x", Runners: map[string]string{"a": "/x"}}, nil)
-	if err == nil || !strings.Contains(err.Error(), "--runner-user-runners") {
-		t.Errorf("err %v", err)
-	}
-	_, err = New(Config{DataDir: t.TempDir(), RunnerUser: "x", RunnerUserRunners: []string{"b"}, Runners: map[string]string{"a": "/x"}}, nil)
-	if err == nil || !strings.Contains(err.Error(), `"b"`) {
-		t.Errorf("err %v", err)
 	}
 }
