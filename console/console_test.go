@@ -607,6 +607,37 @@ func TestSpendCountsLateSettlements(t *testing.T) {
 	}
 }
 
+// Last seen covers all history: an agent quiet for more than 7 days shows its
+// last call, not "never"; an agent with no calls at all has none.
+func TestLastSeenOlderThanAWeek(t *testing.T) {
+	s := newTestServer(t, nil)
+	quiet := newAgent(t, s, "quiet")
+	newAgent(t, s, "unused")
+	ctx := context.Background()
+	if _, err := s.pool.Exec(ctx, `INSERT INTO audit_events (request_id, agent_id, kind, model, status, cost_nanos, at) VALUES ('old', '`+quiet+`', 'model', 'm', 'ok', 3000, now() - interval '11 days')`); err != nil {
+		t.Fatal(err)
+	}
+	ov, err := s.overview(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range ov.Agents {
+		switch a.Name {
+		case "quiet":
+			if a.LastSeen == nil || time.Since(*a.LastSeen) < 10*24*time.Hour {
+				t.Errorf("quiet: last seen %v; want about 11 days ago", a.LastSeen)
+			}
+			if a.Spend7d.Total.Nanos != 0 {
+				t.Errorf("quiet: 7-day spend %v; the old call is outside the window", a.Spend7d.Total)
+			}
+		case "unused":
+			if a.LastSeen != nil {
+				t.Errorf("unused: last seen %v; want none", a.LastSeen)
+			}
+		}
+	}
+}
+
 // The 7-day total counts money spent by agents revoked since; their cards are
 // gone but the money left.
 func TestTotalSpendIncludesRevokedAgents(t *testing.T) {
