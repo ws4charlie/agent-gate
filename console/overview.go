@@ -320,8 +320,7 @@ func (s *Server) fillAudit(ctx context.Context, byID map[string]*agentView, now 
 	rows, err := s.pool.Query(ctx, `SELECT agent_id,
 		COALESCE(SUM(cost_nanos) FILTER (WHERE kind = 'model'), 0)::bigint,
 		COALESCE(SUM(cost_nanos) FILTER (WHERE kind = 'mcp'), 0)::bigint,
-		COALESCE(SUM(cost_nanos) FILTER (WHERE kind = 'payment'), 0)::bigint,
-		MAX(at)
+		COALESCE(SUM(cost_nanos) FILTER (WHERE kind = 'payment'), 0)::bigint
 		FROM `+owned+` WHERE at > $1 AND agent_id <> '' GROUP BY agent_id`, now.Add(-7*24*time.Hour))
 	if err != nil {
 		return err
@@ -329,15 +328,34 @@ func (s *Server) fillAudit(ctx context.Context, byID map[string]*agentView, now 
 	for rows.Next() {
 		var id string
 		var m, t, p int64
-		var last time.Time
-		if err := rows.Scan(&id, &m, &t, &p, &last); err != nil {
+		if err := rows.Scan(&id, &m, &t, &p); err != nil {
 			rows.Close()
 			return err
 		}
 		if v := byID[id]; v != nil {
 			v.Spend7d = spendKinds{Model: dollars(m), Tool: dollars(t), Payment: dollars(p), Total: dollars(m + t + p)}
-			l := last
-			v.LastSeen = &l
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Last seen over all history, not only the 7-day window: an agent quiet
+	// for a week was still seen, and "never" would be wrong.
+	rows, err = s.pool.Query(ctx, `SELECT agent_id, MAX(at) FROM audit_events WHERE agent_id <> '' GROUP BY agent_id`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id string
+		var last time.Time
+		if err := rows.Scan(&id, &last); err != nil {
+			rows.Close()
+			return err
+		}
+		if v := byID[id]; v != nil {
+			v.LastSeen = &last
 		}
 	}
 	rows.Close()
