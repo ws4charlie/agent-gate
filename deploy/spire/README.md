@@ -137,7 +137,7 @@ A domain that is not in the list is refused even if SPIRE holds its bundle. Remo
 ## Notes
 
 - The files hold no secrets. The server's signing key and the agent's credentials sit under `/opt/spire/data`; keep that directory readable by root only.
-- The agent's own certificate lasts 30 days (`agent_ttl`), workload certificates one hour. A join-token agent cannot attest again, so the long agent lifetime is what lets it come back after the VM was stopped for a while. Past 30 days of downtime it needs a new token. (The GCP instance attestor does not help here: it also allows only one attestation per machine.)
+- The agent's own certificate lasts 30 days (`agent_ttl`), workload certificates one hour. A join-token agent cannot attest again, so the long agent lifetime is what lets it come back after the VM was stopped for a while. No certificate outlives the signing CA, so the CA lives 60 days (`ca_ttl`). Past 30 days of downtime it needs a new token. (The GCP instance attestor does not help here: it also allows only one attestation per machine.)
 - On the live VM both services run as systemd units that restart on failure. The agent reads the one-time join token from a root-only file on its first start; the file is deleted once the agent is healthy.
 - The unix attestor tells workloads apart by user. Two workloads under the same user get the same identity, so give the runner its own user before it gets its own ID.
 - If the SPIRE agent is down, the gateway keeps serving its plain port and the mutual-TLS port waits for it. New research runs fall back to the agent's key.
