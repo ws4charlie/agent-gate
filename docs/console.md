@@ -10,6 +10,8 @@ The overview shows totals across every agent: what was spent today and over seve
 
 The agents page gives each agent a short card: today's spend against its daily budget, and any problems. Open an agent to see its own spend, its activity, an hourly chart, and what it is allowed to use.
 
+The agent's page also shows how it proves who it is (certificate ID, API key on or off, when the key expires), read-only, and a warning chip appears on the card when its key expires within 7 days or has expired.
+
 Every count is a link. Clicking an agent's errors opens the events page already filtered to that agent and to errors, so you go from "something is wrong" to the rows that say what in one click.
 
 ## Change limits without the command line

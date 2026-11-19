@@ -714,3 +714,75 @@ func TestSecretHoldsCountAsBlocked(t *testing.T) {
 		t.Fatalf("mode %+v %v", a.Scope, err)
 	}
 }
+
+// The overview shows how each agent proves who it is, and never the key or its hash.
+func TestOverviewIdentity(t *testing.T) {
+	s := newTestServer(t, nil)
+	ctx := context.Background()
+	for _, n := range []string{"never", "soon", "gone", "off", "cert", "grace"} {
+		newAgent(t, s, n)
+	}
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := s.pool.Exec(ctx, q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`UPDATE agents SET key_expires_at = now() + interval '3 days' WHERE name = 'soon'`)
+	exec(`UPDATE agents SET key_expires_at = now() - interval '1 hour' WHERE name = 'gone'`)
+	exec(`UPDATE agents SET api_key_enabled = false WHERE name = 'off'`)
+	if _, err := s.agents.SetSpiffeID(ctx, "cert", "spiffe://example.org/agent/cert"); err != nil {
+		t.Fatal(err)
+	}
+	secret, _, err := s.agents.RotateKey(ctx, "grace", time.Hour, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ov, err := s.overview(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]*agentView{}
+	for _, a := range ov.Agents {
+		by[a.Name] = a
+	}
+	if a := by["never"]; a.Key != "on" || a.KeyExpiresAt != nil || a.PrevKeyUntil != nil || a.SpiffeID != "" {
+		t.Errorf("never: %+v", a)
+	}
+	if a := by["soon"]; a.Key != "on" || a.KeyExpiresAt == nil || time.Until(*a.KeyExpiresAt) > 4*24*time.Hour {
+		t.Errorf("soon: %+v", a)
+	}
+	if a := by["gone"]; a.KeyExpiresAt == nil || a.KeyExpiresAt.After(time.Now()) {
+		t.Errorf("gone: expiry %v, want past", a.KeyExpiresAt)
+	}
+	if a := by["off"]; a.Key != "off" {
+		t.Errorf("off: key %q", a.Key)
+	}
+	if a := by["cert"]; a.SpiffeID != "spiffe://example.org/agent/cert" {
+		t.Errorf("cert: spiffe %q", a.SpiffeID)
+	}
+	if a := by["grace"]; a.PrevKeyUntil == nil || time.Until(*a.PrevKeyUntil) <= 0 {
+		t.Errorf("grace: prev_key_until %v, want in the future", a.PrevKeyUntil)
+	}
+	// A grace period that has ended is not shown.
+	exec(`UPDATE agents SET prev_key_expires_at = now() - interval '1 minute' WHERE name = 'grace'`)
+	if ov, err = s.overview(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range ov.Agents {
+		if a.Name == "grace" && a.PrevKeyUntil != nil {
+			t.Errorf("grace over, still shown: %v", a.PrevKeyUntil)
+		}
+	}
+	// No key material in the JSON.
+	var hash []byte
+	if err := s.pool.QueryRow(ctx, `SELECT encode(key_hash, 'hex')::bytea FROM agents WHERE name = 'grace'`).Scan(&hash); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(ov)
+	for _, bad := range []string{string(hash), secret, "key_hash", "ag_"} {
+		if bad != "" && strings.Contains(string(raw), bad) {
+			t.Errorf("overview JSON contains %q", bad)
+		}
+	}
+}

@@ -86,6 +86,12 @@ type agentView struct {
 	Available usd       `json:"available"`
 	Scope     scopeView `json:"scope"`
 
+	// How the agent proves who it is. Never the key or its hash.
+	Key          string     `json:"key"`            // "on" or "off"
+	KeyExpiresAt *time.Time `json:"key_expires_at"` // null: the key never expires
+	PrevKeyUntil *time.Time `json:"prev_key_until"` // null unless a rotated-away key is still in its grace period
+	SpiffeID     string     `json:"spiffe_id"`      // "" when the agent has none
+
 	Today     usd        `json:"today"` // counted against the daily budget (held plus settled)
 	Spend7d   spendKinds `json:"spend_7d"`
 	Calls24h  int64      `json:"calls_24h"`
@@ -167,6 +173,7 @@ func (s *Server) overview(ctx context.Context) (*overview, error) {
 		}
 		v := &agentView{ID: a.ID, Name: a.Name, Status: string(a.Status), AccountID: a.AccountID,
 			Console: strings.HasPrefix(a.Name, agentPrefix), Scope: viewScope(a.Scope),
+			Key: onOff(a.APIKeyEnabled), KeyExpiresAt: utcPtr(a.KeyExpiresAt), SpiffeID: a.SpiffeID,
 			Hourly: make([]float64, 24), CallsHour: make([]int64, 24), Models: []lineItem{}, Tools: []lineItem{},
 			Today: dollars(0), Balance: dollars(0), Available: dollars(0),
 			Spend7d: spendKinds{Model: dollars(0), Tool: dollars(0), Payment: dollars(0), Total: dollars(0)}}
@@ -177,6 +184,9 @@ func (s *Server) overview(ctx context.Context) (*overview, error) {
 		}
 	}
 	if err := s.fillAccounts(ctx, byID); err != nil {
+		return nil, err
+	}
+	if err := s.fillPrevKeys(ctx, byID, now); err != nil {
 		return nil, err
 	}
 	if err := s.fillToday(ctx, byID, now); err != nil {
@@ -213,6 +223,44 @@ func (s *Server) overview(ctx context.Context) (*overview, error) {
 	ov.Run = s.runReady()
 	ov.Explorer = s.cfg.Explorer
 	return ov, nil
+}
+
+func onOff(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
+}
+
+func utcPtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	u := t.UTC()
+	return &u
+}
+
+// fillPrevKeys sets how long a key replaced by a rotation still works. Only a
+// key still inside its grace period counts; the hash itself is never read.
+func (s *Server) fillPrevKeys(ctx context.Context, byID map[string]*agentView, now time.Time) error {
+	rows, err := s.pool.Query(ctx, `SELECT id, prev_key_expires_at FROM agents
+		WHERE prev_key_hash IS NOT NULL AND prev_key_expires_at > $1`, now)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var until time.Time
+		if err := rows.Scan(&id, &until); err != nil {
+			return err
+		}
+		if v := byID[id]; v != nil {
+			u := until.UTC()
+			v.PrevKeyUntil = &u
+		}
+	}
+	return rows.Err()
 }
 
 func (s *Server) fillAccounts(ctx context.Context, byID map[string]*agentView) error {

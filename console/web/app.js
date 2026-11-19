@@ -283,11 +283,34 @@ function problemLinks(a) {
   return parts.join(" · ");
 }
 
+// Same 7 days as the gateway's key warning. Nothing for a key that is off.
+const KEY_WARN_MS = 7 * 24 * 3600 * 1000;
+function keyWarning(a) {
+  if (a.key !== "on" || !a.key_expires_at) return "";
+  const left = new Date(a.key_expires_at) - Date.now();
+  if (left <= 0) return `<span class="chip bad">key expired</span>`;
+  if (left > KEY_WARN_MS) return "";
+  const d = Math.ceil(left / 86400000);
+  return `<span class="chip warn">key expires in ${d} day${d === 1 ? "" : "s"}</span>`;
+}
+
+// One line: certificate ID, key on or off, expiry, old key's grace period.
+function identityLine(a) {
+  const parts = [];
+  if (a.spiffe_id) parts.push(`certificate <code>${esc(a.spiffe_id)}</code>`);
+  if (a.key === "on") {
+    const exp = !a.key_expires_at ? "never expires" : new Date(a.key_expires_at) <= Date.now() ? "expired" : "expires " + esc(new Date(a.key_expires_at).toLocaleDateString());
+    parts.push(`key on, ${exp}`);
+  } else parts.push("key off");
+  if (a.prev_key_until) parts.push(`old key valid until ${esc(when(a.prev_key_until))}`);
+  return parts.join(" · ");
+}
+
 function drawAgentCards(agents) {
   const html = agents.length ? `<div class="agents">${agents.map((a) => `
     <div class="agent ${a.status !== "active" ? "killed" : ""}" data-go="${esc(agentHref(a.name))}" tabindex="0">
       <div class="row between"><span class="name">${statusDot(a)}${esc(a.name)}</span>
-        <span class="row">${a.console ? `<span class="chip acc">task</span>` : ""}${a.status !== "active" ? `<span class="chip bad">${esc(a.status)}</span>` : ""}<span class="chev">›</span></span></div>
+        <span class="row">${a.console ? `<span class="chip acc">task</span>` : ""}${keyWarning(a)}${a.status !== "active" ? `<span class="chip bad">${esc(a.status)}</span>` : ""}<span class="chev">›</span></span></div>
       ${budgetLine(a)}
       <div class="sub">7 days ${esc(fmtUSD(a.spend_7d.total))} · ${problemLinks(a)}</div>
     </div>`).join("")}</div>` : `<p class="muted">No agents yet.</p>`;
@@ -331,10 +354,11 @@ function drawAgentDetail(a) {
   const html = `
     <div class="card dhead">
       <div class="row wrap"><span class="name big">${statusDot(a)}${esc(a.name)}</span>
-        ${a.console ? `<span class="chip acc">task</span>` : ""}${a.status !== "active" ? `<span class="chip bad">${esc(a.status)}</span>` : ""}
+        ${a.console ? `<span class="chip acc">task</span>` : ""}${a.status !== "active" ? `<span class="chip bad">${esc(a.status)}</span>` : ""}${keyWarning(a)}
         <button class="ghost small" data-edit="${esc(a.id)}">Edit</button>
         ${a.status === "active" ? `<button class="btn danger small" data-kill="${esc(a.id)}">Kill</button>` : a.status === "killed" ? `<button class="btn go small" data-resume="${esc(a.id)}">Resume</button>` : ""}</div>
       <div class="muted">last seen ${esc(ago(a.last_seen))} · ${balanceText(a)}</div>
+      <div class="muted">Identity: ${identityLine(a)}</div>
     </div>
     <div class="groups">
       <div class="group"><h2>Spend</h2><div class="card">${budgetLine(a)}
