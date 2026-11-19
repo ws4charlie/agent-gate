@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -56,6 +57,9 @@ func newCommon(name string) *common {
 	}
 }
 
+// envBool reads a boolean env var; unset or unparsable is false.
+func envBool(k string) bool { v, _ := strconv.ParseBool(os.Getenv(k)); return v }
+
 func envOr(k, d string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
@@ -88,7 +92,8 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	spiffeListen := c.fs.String("spiffe-listen", "", "address of the mutual-TLS listener for SPIFFE identities, e.g. :18443 (empty: off)")
 	spiffeSocket := c.fs.String("spiffe-socket", envOr("AG_SPIFFE_SOCKET", "unix:///run/spire/agent/sockets/agent.sock"), "SPIFFE Workload API socket (default $AG_SPIFFE_SOCKET)")
 	spiffeDomain := c.fs.String("spiffe-trust-domain", os.Getenv("AG_SPIFFE_TRUST_DOMAIN"), "trust domains whose SVIDs are accepted, comma-separated; the first is ours, the others are federated (required with --spiffe-listen)")
-	cedarDir := c.fs.String("cedar-policies", os.Getenv("AG_CEDAR_POLICIES"), "directory of Cedar policies to run in shadow mode beside the Go engine (default $AG_CEDAR_POLICIES; empty: off)")
+	cedarDir := c.fs.String("cedar-policies", os.Getenv("AG_CEDAR_POLICIES"), "directory of Cedar policies to run beside the Go engine: shadow mode (recorded, Go decides) unless --cedar-enforce (default $AG_CEDAR_POLICIES; empty: off)")
+	cedarEnforce := c.fs.Bool("cedar-enforce", envBool("AG_CEDAR_ENFORCE"), "let Cedar decide, record the Go engine beside it, and deny when Cedar fails; needs --cedar-policies (default $AG_CEDAR_ENFORCE)")
 	spiffeID := c.fs.String("spiffe-id", os.Getenv("AG_SPIFFE_ID"), "the SPIFFE ID of the gateway's own SVID, when the Workload API returns several (default $AG_SPIFFE_ID; empty: the first one)")
 	reconcileEvery := c.fs.Duration("reconcile-every", 30*time.Second, "background reconcile interval")
 	cfg, pool, err := c.open(ctx, args)
@@ -96,6 +101,9 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	defer pool.Close()
+	if *cedarEnforce && *cedarDir == "" {
+		return errors.New("--cedar-enforce needs --cedar-policies (or AG_CEDAR_POLICIES)")
+	}
 	var spiffeTDs []spiffeid.TrustDomain
 	var spiffeSelf spiffeid.ID
 	if *spiffeListen != "" {
@@ -137,8 +145,12 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("--cedar-policies %s: %w", *cedarDir, err)
 		}
-		srv.Cedar = eng
-		log.Info("cedar shadow mode on", "dir", *cedarDir)
+		srv.Cedar, srv.CedarEnforce = eng, *cedarEnforce
+		if *cedarEnforce {
+			log.Info("cedar enforce mode on", "dir", *cedarDir)
+		} else {
+			log.Info("cedar shadow mode on", "dir", *cedarDir)
+		}
 	}
 
 	if *mcpPath != "" {

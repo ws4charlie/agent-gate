@@ -271,7 +271,16 @@ func (c *call) payChallenge(t payTarget) {
 		c.queueApproval(hold, preq, idem, fp, d) // the hold stays; nothing is signed
 		return
 	}
-	allowed, _ := d.Allowed()
+	allowed, proof := d.Allowed()
+	if !proof {
+		// Cedar enforcing allowed what the Go engine did not: no Allowed exists
+		// to sign with (I10), so the payment is refused.
+		nd := policy.Decision{Verdict: policy.Deny, Rule: RuleCedarNoProof, Reason: "no Go approval to sign with"}
+		c.logDecision(preq, nd, approvalID)
+		c.release(hold, "policy: "+nd.Rule)
+		c.denyResponse(nd)
+		return
+	}
 	if !c.charge(hold, preq) {
 		return
 	}

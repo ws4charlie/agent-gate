@@ -1,7 +1,8 @@
 // Package cedarpolicy runs AgentGate's runtime policy as Cedar policies kept
-// in git, beside the Go engine (policy.Evaluate). It is for shadow mode: the
-// caller compares the answer with the Go decision and records both. Nothing
-// here enforces anything.
+// in git, beside the Go engine (policy.Evaluate). The caller runs both and
+// records both. In shadow mode the Go decision counts; with the gateway's
+// --cedar-enforce the Cedar verdict counts and an error here is a deny. The
+// engine itself only answers; the choice is made in internal/server.
 package cedarpolicy
 
 import (
