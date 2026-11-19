@@ -35,7 +35,12 @@ Before a key runs out, the gateway warns the operator. Once a key has less than 
 
 ## The same rules as Cedar policies
 
-The rules also exist as [Cedar](https://www.cedarpolicy.com) policies kept in git, in `policies/cedar/`. In shadow mode, switched on with `--cedar-policies`, both versions run on every decision and each decision records whether they agree. Nothing changes for agents: the built-in rules still decide, and a Cedar failure never affects a request. `agentgate cedar shadow` shows the record. The plan is to let Cedar enforce only after the record shows no disagreement.
+The rules also exist as [Cedar](https://www.cedarpolicy.com) policies kept in git, in `policies/cedar/`. `--cedar-policies` runs them beside the built-in rules on every decision, and each decision records both answers.
+
+- **Shadow mode** (the default): the built-in rules decide and a Cedar failure never affects a request. Use it for a trial. `agentgate cedar shadow` shows how often the two agree.
+- **Enforce mode** (`--cedar-enforce`, or `AG_CEDAR_ENFORCE=true`): Cedar decides, for every decision, including the kill and scope checks and the tool list. The built-in rules still run and their answer is recorded beside Cedar's, so `agentgate cedar shadow` keeps measuring agreement. If Cedar fails, the request is denied with the rule `cedar_error`; the gateway never falls back to the built-in rules. A payment that Cedar allows but the built-in rules do not is refused with `cedar_no_proof`, because only the built-in rules can issue the approval a signature needs.
+
+`--cedar-enforce` without `--cedar-policies` stops the gateway at startup. To go back to shadow mode, remove `AG_CEDAR_ENFORCE` and restart.
 
 ## Where the limits are soft
 

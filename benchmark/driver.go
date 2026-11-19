@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ws4charlie/agent-gate/internal/audit"
+	"github.com/ws4charlie/agent-gate/internal/cedarpolicy"
 	"github.com/ws4charlie/agent-gate/internal/fakeupstream"
 	"github.com/ws4charlie/agent-gate/internal/ledger"
 	"github.com/ws4charlie/agent-gate/internal/mcp"
@@ -62,6 +64,9 @@ func (r *rig) Close() {
 		r.close[i]()
 	}
 }
+
+// cedarEnforce, set by -cedar-enforce, boots the gateway with Cedar deciding.
+var cedarEnforce bool
 
 func newRig(ctx context.Context, pool *pgxpool.Pool, root string) (*rig, error) {
 	r := &rig{pool: pool, led: ledger.New(pool), root: root}
@@ -120,6 +125,13 @@ func newRig(ctx context.Context, pool *pgxpool.Pool, root string) (*rig, error) 
 			return ""
 		},
 		Payments: &server.Payments{Wallet: w, Tools: map[string]string{"echo": tool.URL + "/echo", "premium": tool.URL + "/premium"}},
+	}
+	if cedarEnforce {
+		eng, err := cedarpolicy.Load(filepath.Join(root, "policies", "cedar"))
+		if err != nil {
+			return nil, err
+		}
+		r.srv.Cedar, r.srv.CedarEnforce = eng, true
 	}
 	r.gw = httptest.NewServer(r.srv.Handler())
 	r.close = append(r.close, r.gw.Close)

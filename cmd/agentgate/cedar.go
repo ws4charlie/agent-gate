@@ -50,7 +50,7 @@ func cedarCheck(args []string, stdout io.Writer) error {
 	return nil
 }
 
-// cedarShadow summarises policy_decisions rows recorded with shadow on.
+// cedarShadow summarises policy_decisions rows recorded with Cedar on (shadow or enforce mode).
 func cedarShadow(ctx context.Context, args []string, stdout io.Writer) error {
 	c := newCommon("cedar shadow")
 	since := c.fs.Duration("since", 24*time.Hour, "look back this far")
@@ -61,19 +61,22 @@ func cedarShadow(ctx context.Context, args []string, stdout io.Writer) error {
 	defer pool.Close()
 	cutoff := time.Now().Add(-*since)
 
+	// The Go engine's answer is go_verdict/go_rule when Cedar enforced (then
+	// decision/rule are Cedar's), else decision/rule.
+	const goSide = `SELECT CASE WHEN go_verdict <> '' THEN go_verdict ELSE decision END AS gv,
+		CASE WHEN go_verdict <> '' THEN go_rule ELSE rule END AS gr, cedar_verdict AS cv, cedar_rule AS cr
+		FROM policy_decisions WHERE cedar_verdict <> '' AND at >= $1`
 	var total, agree, errs int64
-	err = pool.QueryRow(ctx, `SELECT count(*),
-		count(*) FILTER (WHERE cedar_verdict = decision AND cedar_rule = rule),
-		count(*) FILTER (WHERE cedar_verdict = 'error')
-		FROM policy_decisions WHERE cedar_verdict <> '' AND at >= $1`, cutoff).Scan(&total, &agree, &errs)
+	err = pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE cv = gv AND cr = gr),
+		count(*) FILTER (WHERE cv = 'error') FROM (`+goSide+`) t`, cutoff).Scan(&total, &agree, &errs)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "since %s: %d decisions with shadow on, %d agree, %d differ, %d cedar errors\n",
+	fmt.Fprintf(stdout, "since %s: %d decisions with Cedar on, %d agree, %d differ, %d cedar errors\n",
 		since.String(), total, agree, total-agree-errs, errs)
-	rows, err := pool.Query(ctx, `SELECT rule, cedar_rule, decision, cedar_verdict, count(*) FROM policy_decisions
-		WHERE cedar_verdict <> '' AND at >= $1 AND NOT (cedar_verdict = decision AND cedar_rule = rule)
-		GROUP BY rule, cedar_rule, decision, cedar_verdict ORDER BY count(*) DESC, rule, cedar_rule LIMIT 10`, cutoff)
+	rows, err := pool.Query(ctx, `SELECT gr, cr, gv, cv, count(*) FROM (`+goSide+`) t
+		WHERE NOT (cv = gv AND cr = gr)
+		GROUP BY gr, cr, gv, cv ORDER BY count(*) DESC, gr, cr LIMIT 10`, cutoff)
 	if err != nil {
 		return err
 	}

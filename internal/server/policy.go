@@ -62,45 +62,137 @@ func (c *call) idemKey() (string, bool) {
 
 func bodyHash(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
 
+// Rule ids the server adds when Cedar enforces. The Go engine never reports them.
+const (
+	// RuleCedarError is the deny when Cedar failed (or returned something that
+	// is not a verdict) in enforce mode: the gateway fails closed.
+	RuleCedarError = "cedar_error"
+	// RuleCedarNoProof is the deny for a payment that Cedar allowed but the Go
+	// engine did not: only policy.Evaluate can make the Allowed that the wallet
+	// needs (I10), so there is nothing to sign with.
+	RuleCedarNoProof = "cedar_no_proof"
+)
+
+// decided is the outcome of one policy question: the decision that counts
+// (d), what the Go engine said (goD), and what Cedar said.
+type decided struct {
+	d, goD           policy.Decision
+	cedarV, cedarR   string // "" when Cedar is off; cedarV "error" when it failed
+	cedarOn, enforce bool
+}
+
+// decide is the one place a policy decision is made. It always runs the Go
+// engine. With Cedar loaded it runs Cedar on the same request and snapshot and
+// records both. Shadow mode (the default): Go decides, Cedar only observes.
+// Enforce mode: Cedar decides, and a Cedar error or panic is a deny
+// (RuleCedarError), never a fall back to Go. A disagreement is one Warn line
+// (ids and rules only, no bodies, I9).
+func (c *call) decide(req policy.Request, snap policy.Snapshot) decided {
+	g := policy.Evaluate(req, snap)
+	x := decided{d: g, goD: g, enforce: c.s.CedarEnforce}
+	if c.s.Cedar == nil {
+		if x.enforce { // misconfigured: enforce without an engine must not run on Go alone
+			c.s.Log.Error("cedar enforce without an engine", "request_id", c.ev.RequestID, "agent_id", c.agent.ID)
+			x.cedarV, x.cedarOn = "error", true
+			x.d = policy.Decision{Verdict: policy.Deny, Rule: RuleCedarError, Reason: "policy engine unavailable"}
+		}
+		return x
+	}
+	x.cedarOn = true
+	verdict, rule, err := c.runCedar(req, snap)
+	if err == nil {
+		switch policy.Verdict(verdict) {
+		case policy.Allow, policy.Deny, policy.RequireApproval:
+		default:
+			err = fmt.Errorf("cedar: unknown verdict %q", verdict)
+		}
+	}
+	if err != nil {
+		x.cedarV = "error"
+		c.s.Log.Error("cedar "+c.mode(), "request_id", c.ev.RequestID, "agent_id", c.agent.ID, "err", err)
+		if x.enforce {
+			x.d = policy.Decision{Verdict: policy.Deny, Rule: RuleCedarError, Reason: "policy engine error"}
+		}
+		return x
+	}
+	x.cedarV, x.cedarR = verdict, rule
+	if verdict != string(g.Verdict) || rule != g.Rule {
+		c.s.Log.Warn("cedar "+c.mode()+" mismatch", "request_id", c.ev.RequestID, "agent_id", c.agent.ID,
+			"go_verdict", string(g.Verdict), "go_rule", g.Rule, "cedar_verdict", verdict, "cedar_rule", rule)
+		if x.enforce {
+			x.d = policy.Decision{Verdict: policy.Verdict(verdict), Rule: rule, Reason: "decided by Cedar rule " + rule}
+		}
+	}
+	return x
+}
+
+func (c *call) mode() string {
+	if c.s.CedarEnforce {
+		return "enforce"
+	}
+	return "shadow"
+}
+
+// runCedar calls the engine and turns a panic into an error.
+func (c *call) runCedar(req policy.Request, snap policy.Snapshot) (verdict, rule string, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("panic: %v", p)
+		}
+	}()
+	return c.s.Cedar.Decide(req, snap)
+}
+
 // refuseInactive is rule 1 applied right after authentication, before the
 // body is even read: a killed or revoked credential is refused on the next
-// request whatever that request looks like (I12).
+// request whatever that request looks like (I12). It goes through decide like
+// every other decision; in enforce mode Cedar's answer is the one used.
 func (c *call) refuseInactive(kind policy.Kind) bool {
 	a := c.agent
 	if a.Status == policy.StatusActive {
 		return false
 	}
-	d := policy.Evaluate(policy.Request{AgentID: a.ID, Kind: kind, Amount: 1},
+	x := c.decide(policy.Request{AgentID: a.ID, Kind: kind, Amount: 1},
 		policy.Snapshot{AgentID: a.ID, Status: a.Status, Scope: a.Scope})
-	c.logDecision(policy.Request{AgentID: a.ID, Kind: kind}, d, "")
-	c.denyResponse(d)
+	c.logDecided(policy.Request{AgentID: a.ID, Kind: kind}, x, "")
+	if x.d.Verdict != policy.Deny {
+		return false // only Cedar in enforce mode can get here; the full evaluation that follows decides
+	}
+	c.denyResponse(x.d)
 	return true
 }
 
 // logDecision writes the decision row (allow included), detached from the
-// client so a disconnect cannot drop it.
+// client so a disconnect cannot drop it. It records no Cedar verdict: it is for
+// decisions that did not come from the engines (a lost budget race).
 func (c *call) logDecision(req policy.Request, d policy.Decision, approvalID string) {
-	c.logDecisionShadow(req, d, approvalID, "", "")
+	c.logDecided(req, decided{d: d, goD: d}, approvalID)
 }
 
-// logDecisionShadow is logDecision with the Cedar shadow result attached.
-func (c *call) logDecisionShadow(req policy.Request, d policy.Decision, approvalID, cedarVerdict, cedarRule string) {
+// logDecided writes the row for x. verdict/rule are the decision that counted,
+// cedar_verdict/cedar_rule are Cedar's. In enforce mode go_verdict/go_rule keep
+// what the Go engine said, so `agentgate cedar shadow` still measures
+// agreement; in shadow mode they stay empty (the Go engine is the decision).
+func (c *call) logDecided(req policy.Request, x decided, approvalID string) {
 	subject := req.Model
 	if req.Kind != policy.KindModel {
 		subject = req.Tool
 	}
+	ad := agents.Decision{RequestID: c.ev.RequestID, AgentID: c.agent.ID, AccountID: c.agent.AccountID,
+		Kind: string(req.Kind), Subject: subject, Payee: req.Payee, TaskID: req.TaskID, Amount: req.Amount,
+		Verdict: x.d.Verdict, Rule: x.d.Rule, Reason: x.d.Reason, ApprovalID: approvalID,
+		CedarVerdict: x.cedarV, CedarRule: x.cedarR}
+	if x.enforce {
+		ad.GoVerdict, ad.GoRule = x.goD.Verdict, x.goD.Rule
+	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.ctx), 5*time.Second)
 	defer cancel()
-	err := c.s.Agents.LogDecision(ctx, agents.Decision{RequestID: c.ev.RequestID, AgentID: c.agent.ID, AccountID: c.agent.AccountID,
-		Kind: string(req.Kind), Subject: subject, Payee: req.Payee, TaskID: req.TaskID, Amount: req.Amount,
-		Verdict: d.Verdict, Rule: d.Rule, Reason: d.Reason, ApprovalID: approvalID,
-		CedarVerdict: cedarVerdict, CedarRule: cedarRule})
-	if err != nil {
+	if err := c.s.Agents.LogDecision(ctx, ad); err != nil {
 		c.s.Log.Error("decision log", "request_id", c.ev.RequestID, "err", err)
 	}
 }
 
-// evaluate loads the snapshot, runs the pure engine, and logs the decision.
+// evaluate loads the snapshot, decides, and logs the decision.
 // ok=false means a response was already written (internal error).
 func (c *call) evaluate(req policy.Request, approvalID string) (policy.Decision, bool) {
 	snap, err := c.s.Agents.Snapshot(c.ctx, c.agent.ID, req.TaskID)
@@ -110,39 +202,9 @@ func (c *call) evaluate(req policy.Request, approvalID string) (policy.Decision,
 		return policy.Decision{}, false
 	}
 	c.snap = snap
-	d := policy.Evaluate(req, snap)
-	cv, cr := c.shadow(req, snap, d)
-	c.logDecisionShadow(req, d, approvalID, cv, cr)
-	return d, true
-}
-
-// shadow runs the Cedar engine on the same request and snapshot and returns
-// what to record. It never changes the decision: an error or panic becomes
-// verdict "error", and a disagreement is one Warn line (ids and rules only, no
-// bodies, I9). refuseInactive and the MCP scope-only check do not shadow: they
-// are rule 1 / scope-only shortcuts, not full evaluations.
-func (c *call) shadow(req policy.Request, snap policy.Snapshot, d policy.Decision) (verdict, rule string) {
-	if c.s.Cedar == nil {
-		return "", ""
-	}
-	var err error
-	func() {
-		defer func() {
-			if p := recover(); p != nil {
-				err = fmt.Errorf("panic: %v", p)
-			}
-		}()
-		verdict, rule, err = c.s.Cedar.Decide(req, snap)
-	}()
-	if err != nil {
-		c.s.Log.Error("cedar shadow", "request_id", c.ev.RequestID, "agent_id", c.agent.ID, "err", err)
-		return "error", ""
-	}
-	if verdict != string(d.Verdict) || rule != d.Rule {
-		c.s.Log.Warn("cedar shadow mismatch", "request_id", c.ev.RequestID, "agent_id", c.agent.ID,
-			"go_verdict", string(d.Verdict), "go_rule", d.Rule, "cedar_verdict", verdict, "cedar_rule", rule)
-	}
-	return verdict, rule
+	x := c.decide(req, snap)
+	c.logDecided(req, x, approvalID)
+	return x.d, true
 }
 
 // denyResponse refuses the request with the rule id. Budget and velocity are

@@ -75,9 +75,13 @@ type Server struct {
 	Registry    *agents.Registry // in-flight calls by agent, for the kill switch (I12)
 	ApprovalTTL time.Duration    // how long a queued request waits for a human (default 15m)
 
-	// Cedar, when set, shadows every policy evaluation: its verdict is recorded
-	// beside the Go decision and never used. nil = shadow off.
+	// Cedar, when set, runs beside every policy evaluation and its verdict is
+	// recorded beside the Go decision. nil = Cedar off.
 	Cedar ShadowEngine
+	// CedarEnforce makes Cedar's verdict the decision (the Go decision is
+	// recorded beside it) and an engine error a deny. false = shadow mode: the
+	// Go decision counts and Cedar only observes.
+	CedarEnforce bool
 
 	// T5. MCP nil disables /mcp/{server}. Screen nil means tool output is not
 	// screened (an explicit choice; `serve` always sets one). Runs and
@@ -89,8 +93,8 @@ type Server struct {
 	Getenv      func(string) string // upstream MCP credentials come from here (I9); default os.Getenv
 }
 
-// ShadowEngine is a second policy engine run beside policy.Evaluate. It only
-// observes: the Go decision is always the one that counts.
+// ShadowEngine is a second policy engine run beside policy.Evaluate. In shadow
+// mode it only observes; with Server.CedarEnforce its answer is the decision.
 // *cedarpolicy.Engine implements it.
 type ShadowEngine interface {
 	Decide(policy.Request, policy.Snapshot) (verdict, rule string, err error)

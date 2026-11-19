@@ -272,8 +272,8 @@ func scopeOnly(s policy.Snapshot) policy.Snapshot {
 	return s
 }
 
-func (c *call) inScope(snap policy.Snapshot, tool string) policy.Decision {
-	return policy.Evaluate(policy.Request{AgentID: c.agent.ID, Kind: policy.KindTool, Tool: tool, Amount: 1}, scopeOnly(snap))
+func (c *call) inScope(snap policy.Snapshot, tool string) decided {
+	return c.decide(policy.Request{AgentID: c.agent.ID, Kind: policy.KindTool, Tool: tool, Amount: 1}, scopeOnly(snap))
 }
 
 func (c *call) toolsList(server string, srv mcp.Server, req mcp.Request, body []byte) {
@@ -299,7 +299,7 @@ func (c *call) toolsList(server string, srv mcp.Server, req mcp.Request, body []
 		c.fail(http.StatusBadGateway, audit.StatusUpstreamFailed, "upstream_unavailable", "upstream reply could not be read", nil)
 		return
 	}
-	out, kept, total := filterTools(msg, func(tool string) bool { return c.inScope(snap, server+"/"+tool).Verdict == policy.Allow })
+	out, kept, total := filterTools(msg, func(tool string) bool { return c.inScope(snap, server+"/"+tool).d.Verdict == policy.Allow })
 	c.ev.Err = ""
 	c.span.SetAttributes(attribute.Int("agentgate.tools.total", total), attribute.Int("agentgate.tools.listed", kept))
 	c.w.Header().Set("Content-Type", "application/json")
@@ -430,9 +430,10 @@ func (c *call) toolCall(server string, srv mcp.Server, req mcp.Request, body []b
 			c.fail(http.StatusInternalServerError, audit.StatusInternal, "internal_error", "internal error", nil)
 			return
 		}
-		d := c.inScope(snap, tool)
+		x := c.inScope(snap, tool)
+		d := x.d
 		c.noteDecision(d)
-		c.logDecision(policy.Request{AgentID: c.agent.ID, Kind: policy.KindTool, Tool: tool, TaskID: task}, d, "")
+		c.logDecided(policy.Request{AgentID: c.agent.ID, Kind: policy.KindTool, Tool: tool, TaskID: task}, x, "")
 		if d.Verdict != policy.Allow {
 			c.denyResponse(d)
 			return

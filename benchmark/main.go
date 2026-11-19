@@ -25,6 +25,7 @@ func main() {
 	root := flag.String("root", ".", "repository root (scenarios, screen corpus)")
 	out := flag.String("out", "benchmark/results.md", "where to write the results ('' to skip)")
 	readme := flag.String("readme", "", "rewrite the benchmark table between the markers in this README")
+	flag.BoolVar(&cedarEnforce, "cedar-enforce", false, "load policies/cedar under -root and let Cedar decide (the scenarios must pass unchanged)")
 	flag.Parse()
 	failed, err := run(*root, *out, *readme)
 	if err != nil {

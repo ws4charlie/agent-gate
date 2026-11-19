@@ -35,7 +35,12 @@ API 密钥可以设置过期时间，创建 Agent 时设，之后也能改；默
 
 ## 同样的规则，写成 Cedar 策略
 
-这些规则也以 [Cedar](https://www.cedarpolicy.com) 策略的形式存在 git 里（`policies/cedar/`）。用 `--cedar-policies` 打开影子模式后，每次决策两套都会跑，并记录两者是否一致。对 Agent 没有任何影响：做决定的仍是内置规则，Cedar 出错也不会影响请求。`agentgate cedar shadow` 可以查看记录。计划是：记录显示没有分歧之后，才让 Cedar 来执行。
+这些规则也以 [Cedar](https://www.cedarpolicy.com) 策略的形式存在 git 里（`policies/cedar/`）。`--cedar-policies` 会让它们在每次决策时和内置规则一起运行，并记录两边的结论。
+
+- **影子模式**（默认）：由内置规则决定，Cedar 出错也不会影响请求。适合试用。`agentgate cedar shadow` 显示两者多常一致。
+- **执行模式**（`--cedar-enforce`，或 `AG_CEDAR_ENFORCE=true`）：由 Cedar 决定，每一次决策都是，包括停用和范围检查以及工具列表。内置规则仍会运行，它的结论记录在 Cedar 旁边，所以 `agentgate cedar shadow` 还能继续统计一致率。Cedar 出错时请求会被拒绝，规则为 `cedar_error`，不会退回到内置规则。Cedar 放行、但内置规则不放行的付款，会以 `cedar_no_proof` 拒绝，因为签名所需的批准凭证只有内置规则能签发。
+
+只有 `--cedar-enforce` 而没有 `--cedar-policies`，网关启动时就会报错退出。要退回影子模式，删掉 `AG_CEDAR_ENFORCE` 并重启。
 
 ## 哪些限制没那么硬
 
