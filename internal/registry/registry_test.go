@@ -33,7 +33,7 @@ func TestRegistryCRUD(t *testing.T) {
 		t.Fatalf("%+v %v", e, err)
 	}
 	// Updating without a status keeps the status; with one, changes it.
-	if _, err := s.SetStatus(ctx, "model", "gpt-4o", "approved"); err != nil {
+	if _, err := s.SetStatus(ctx, "model", "gpt-4o", "approved", "t"); err != nil {
 		t.Fatal(err)
 	}
 	e, err = s.Upsert(ctx, Entry{Kind: "model", Name: "gpt-4o", Owner: "platform", Purpose: "chat v2", Notes: "n"})
@@ -52,16 +52,16 @@ func TestRegistryCRUD(t *testing.T) {
 	if len(all) != 2 || len(models) != 1 {
 		t.Fatalf("%d %d", len(all), len(models))
 	}
-	if err := s.Delete(ctx, "tool", "fs/read"); err != nil {
+	if err := s.Delete(ctx, "tool", "fs/read", "t"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Get(ctx, "tool", "fs/read"); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
 	}
-	if err := s.Delete(ctx, "tool", "fs/read"); !errors.Is(err, ErrNotFound) {
+	if err := s.Delete(ctx, "tool", "fs/read", "t"); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
 	}
-	if _, err := s.SetStatus(ctx, "tool", "nope", "approved"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.SetStatus(ctx, "tool", "nope", "approved", "t"); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
 	}
 }
@@ -159,5 +159,65 @@ func TestInUseButNotApproved(t *testing.T) {
 	}
 	if seen["old-model"] != "deprecated" || seen["evil/tool"] != "blocked" {
 		t.Fatalf("%+v", seen)
+	}
+}
+
+func TestHistoryRiskTierAndVersion(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	e, err := s.Upsert(ctx, Entry{Kind: "model", Name: "m1", Owner: "o", Purpose: "p", RiskTier: "high", Version: "2026-01", Actor: "alice"})
+	if err != nil || e.RiskTier != "high" || e.Version != "2026-01" || e.Status != "proposed" {
+		t.Fatalf("%+v %v", e, err)
+	}
+	// An update without tier/version/status keeps them and writes no history row.
+	e, _ = s.Upsert(ctx, Entry{Kind: "model", Name: "m1", Owner: "o2", Purpose: "p"})
+	if e.RiskTier != "high" || e.Version != "2026-01" || e.Status != "proposed" {
+		t.Fatalf("%+v", e)
+	}
+	if _, err := s.Upsert(ctx, Entry{Kind: "model", Name: "m1", Owner: "o", Purpose: "p", RiskTier: "extreme"}); !errors.Is(err, ErrBadTier) {
+		t.Fatal(err)
+	}
+	s.SetStatus(ctx, "model", "m1", "approved", "bob")
+	s.SetStatus(ctx, "model", "m1", "approved", "bob") // no change, no row
+	if err := s.Delete(ctx, "model", "m1", "carol"); err != nil {
+		t.Fatal(err)
+	}
+	h, err := s.History(ctx, "model", "m1", 0)
+	if err != nil || len(h) != 3 {
+		t.Fatalf("%+v %v", h, err)
+	}
+	if h[0].Actor != "carol" || h[0].From != "approved" || h[0].To != "" ||
+		h[1].Actor != "bob" || h[1].From != "proposed" || h[1].To != "approved" ||
+		h[2].Actor != "alice" || h[2].From != "" || h[2].To != "proposed" {
+		t.Fatalf("%+v", h)
+	}
+}
+
+func TestSeedAndToolStatuses(t *testing.T) {
+	s, _ := newStore(t)
+	ctx := context.Background()
+	s.Upsert(ctx, Entry{Kind: "model", Name: "kept", Owner: "o", Purpose: "p", Status: "blocked"})
+	items := []SeedItem{{"model", "kept"}, {"model", "new"}, {"tool", "fs/read"}, {"tool", "fs/write"}, {"tool", "other/x"}}
+	dry, err := s.Seed(ctx, items, "t", true)
+	if err != nil || len(dry) != 4 {
+		t.Fatalf("%v %v", dry, err)
+	}
+	if st, _ := s.Status(ctx, "model", "new"); st != "" {
+		t.Fatal("dry run wrote")
+	}
+	added, _ := s.Seed(ctx, items, "t", false)
+	again, _ := s.Seed(ctx, items, "t", false)
+	if len(added) != 4 || len(again) != 0 {
+		t.Fatalf("%v %v", added, again)
+	}
+	if st, _ := s.Status(ctx, "model", "kept"); st != "blocked" {
+		t.Fatalf("existing entry changed: %s", st)
+	}
+	m, _ := s.ToolStatuses(ctx, "fs")
+	if len(m) != 2 || m["read"] != "approved" || m["write"] != "approved" {
+		t.Fatalf("%v", m)
+	}
+	if h, _ := s.History(ctx, "", "", 0); len(h) != 5 { // 1 create + 4 seeded
+		t.Fatalf("%d rows", len(h))
 	}
 }

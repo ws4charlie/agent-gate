@@ -299,7 +299,23 @@ func (c *call) toolsList(server string, srv mcp.Server, req mcp.Request, body []
 		c.fail(http.StatusBadGateway, audit.StatusUpstreamFailed, "upstream_unavailable", "upstream reply could not be read", nil)
 		return
 	}
-	out, kept, total := filterTools(msg, func(tool string) bool { return c.inScope(snap, server+"/"+tool).d.Verdict == policy.Allow })
+	// With the registry check on, one query gives the status of every
+	// registered tool of this server; each tool is then judged without a lookup.
+	var statuses map[string]string
+	regOn := c.s.RegistryEnforce && c.s.AIRegistry != nil
+	if regOn {
+		if statuses, err = c.s.AIRegistry.ToolStatuses(c.ctx, server); err != nil {
+			c.s.Log.Error("registry lookup", "request_id", c.ev.RequestID, "agent_id", c.agent.ID, "err", err)
+			statuses = nil // every tool is then "no entry": hidden, fail closed
+		}
+	}
+	out, kept, total := filterTools(msg, func(tool string) bool {
+		sn := snap
+		if regOn {
+			sn.Registry = policy.RegistryCheck{On: true, Status: statuses[tool]}
+		}
+		return c.inScope(sn, server+"/"+tool).d.Verdict == policy.Allow
+	})
 	c.ev.Err = ""
 	c.span.SetAttributes(attribute.Int("agentgate.tools.total", total), attribute.Int("agentgate.tools.listed", kept))
 	c.w.Header().Set("Content-Type", "application/json")

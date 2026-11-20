@@ -12,9 +12,10 @@
 //
 //  1. kill / revoke   agent_killed, agent_revoked
 //  2. scope allowlist scope_model, scope_tool, scope_payee
-//  3. budget          budget_daily, budget_task
-//  4. velocity        velocity
-//  5. approval        approval_threshold (RequireApproval, not Deny)
+//  3. registry        registry_unapproved (only when the gateway's registry check is on)
+//  4. budget          budget_daily, budget_task
+//  5. velocity        velocity
+//  6. approval        approval_threshold (RequireApproval, not Deny)
 //
 // Why this order: a dead credential must never learn anything else about the
 // policy; "you may not do that at all" (scope) outranks "not right now"
@@ -126,7 +127,25 @@ type Snapshot struct {
 	DailySpent    money.Nanos // today (UTC), held plus settled
 	TaskSpent     money.Nanos // for Request.TaskID
 	VelocitySpent money.Nanos // last 60 seconds
+
+	// Registry is the AI Registry state of the model or tool the request names.
+	// The caller fills it; Evaluate does no lookup.
+	Registry RegistryCheck
 }
+
+// RegistryCheck is the registry state of the item a request names. With On
+// false the registry rule is skipped (the gateway's check is off). Status is
+// the item's registry status; "" means there is no entry. Only "approved" passes.
+type RegistryCheck struct {
+	On     bool
+	Status string
+}
+
+// RegistryApproved is the one status that passes the registry rule.
+const RegistryApproved = "approved"
+
+// Passes reports whether the registry rule lets the request through.
+func (r RegistryCheck) Passes() bool { return !r.On || r.Status == RegistryApproved }
 
 // Verdict is the outcome class.
 type Verdict string
@@ -139,18 +158,19 @@ const (
 
 // Rule ids. They are stable: they appear in audit rows and API errors.
 const (
-	RuleInvalid           = "invalid_request"
-	RuleUnknownAgent      = "unknown_agent"
-	RuleKilled            = "agent_killed"
-	RuleRevoked           = "agent_revoked"
-	RuleScopeModel        = "scope_model"
-	RuleScopeTool         = "scope_tool"
-	RuleScopePayee        = "scope_payee"
-	RuleBudgetDaily       = "budget_daily"
-	RuleBudgetTask        = "budget_task"
-	RuleVelocity          = "velocity"
-	RuleApprovalThreshold = "approval_threshold"
-	RuleAllow             = "allow"
+	RuleInvalid            = "invalid_request"
+	RuleUnknownAgent       = "unknown_agent"
+	RuleKilled             = "agent_killed"
+	RuleRevoked            = "agent_revoked"
+	RuleScopeModel         = "scope_model"
+	RuleScopeTool          = "scope_tool"
+	RuleScopePayee         = "scope_payee"
+	RuleRegistryUnapproved = "registry_unapproved"
+	RuleBudgetDaily        = "budget_daily"
+	RuleBudgetTask         = "budget_task"
+	RuleVelocity           = "velocity"
+	RuleApprovalThreshold  = "approval_threshold"
+	RuleAllow              = "allow"
 )
 
 // Decision is the result of Evaluate.
@@ -203,7 +223,19 @@ func Evaluate(r Request, s Snapshot) Decision {
 		return deny(RuleScopePayee, "payee %s is not on this agent's allowlist", r.Payee)
 	}
 
-	// 3. budget: daily, then per task
+	// 3. registry: on the allowlist, but is it approved in the AI Registry?
+	if !s.Registry.Passes() {
+		name, what := r.Tool, "tool"
+		if r.Kind == KindModel {
+			name, what = r.Model, "model"
+		}
+		if s.Registry.Status == "" {
+			return deny(RuleRegistryUnapproved, "%s %q has no entry in the AI Registry", what, name)
+		}
+		return deny(RuleRegistryUnapproved, "%s %q is %s in the AI Registry, not approved", what, name, s.Registry.Status)
+	}
+
+	// 4. budget: daily, then per task
 	if l := s.Scope.DailyBudget; l > 0 && s.DailySpent+r.Amount > l {
 		return deny(RuleBudgetDaily, "%d + %d nanos exceeds the daily budget %d", s.DailySpent, r.Amount, l)
 	}
@@ -211,12 +243,12 @@ func Evaluate(r Request, s Snapshot) Decision {
 		return deny(RuleBudgetTask, "%d + %d nanos exceeds the task budget %d", s.TaskSpent, r.Amount, l)
 	}
 
-	// 4. velocity
+	// 5. velocity
 	if l := s.Scope.VelocityPerMinute; l > 0 && s.VelocitySpent+r.Amount > l {
 		return deny(RuleVelocity, "%d + %d nanos in the last minute exceeds %d per minute", s.VelocitySpent, r.Amount, l)
 	}
 
-	// 5. approval threshold
+	// 6. approval threshold
 	if t := s.Scope.ApprovalThreshold; t > 0 && r.Amount > t && !r.Approved {
 		return Decision{Verdict: RequireApproval, Rule: RuleApprovalThreshold,
 			Reason: fmt.Sprintf("%d nanos is above the approval threshold %d", r.Amount, t)}

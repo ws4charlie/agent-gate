@@ -29,6 +29,7 @@ const VerdictError = "error"
 var order = []string{
 	policy.RuleKilled, policy.RuleRevoked, policy.RuleInvalid,
 	policy.RuleScopeModel, policy.RuleScopeTool, policy.RuleScopePayee,
+	policy.RuleRegistryUnapproved,
 	policy.RuleBudgetDaily, policy.RuleBudgetTask, policy.RuleVelocity,
 	policy.RuleApprovalThreshold,
 }
@@ -128,6 +129,8 @@ func long(n int64) types.Long { return types.Long(n) }
 //
 //   - model_in_scope, tool_in_scope, payee_in_scope: wildcard allowlists
 //     ("claude-*") are not set membership, so policy.MatchAny answers them.
+//   - registry_on, registry_approved: the AI Registry lookup is done by the
+//     caller (Snapshot.Registry); Cedar only reads the result.
 //   - daily_total, task_total, velocity_total: spent + amount, summed with
 //     the same int64 arithmetic as policy.Evaluate. Cedar arithmetic fails on
 //     overflow, and a failing policy would be skipped silently.
@@ -173,6 +176,9 @@ func (e *Engine) Decide(r policy.Request, s policy.Snapshot) (verdict, rule stri
 			"model_in_scope": cedar.Boolean(policy.MatchAny(sc.Models, r.Model, false)),
 			"tool_in_scope":  cedar.Boolean(policy.MatchAny(sc.Tools, r.Tool, false)),
 			"payee_in_scope": cedar.Boolean(policy.MatchAny(sc.Payees, r.Payee, true)),
+			// The registry state of the model or tool, looked up by the caller.
+			"registry_on":       cedar.Boolean(s.Registry.On),
+			"registry_approved": cedar.Boolean(s.Registry.Passes()),
 		}),
 	}
 	dec, diag := cedar.Authorize(e.ps, entities, req)

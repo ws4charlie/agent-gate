@@ -41,7 +41,7 @@ func TestEquivalenceTable(t *testing.T) {
 
 // 5,000+ generated cases from a fixed seed: zero differences.
 func TestEquivalenceProperty(t *testing.T) {
-	cases := cedarpolicy.GeneratedCases(20261117, 6000)
+	cases := cedarpolicy.GeneratedCases(20261117, 8000)
 	report(t, cedarpolicy.Check(load(t), cases))
 
 	// The generator must really reach every outcome and rule.
@@ -56,7 +56,7 @@ func TestEquivalenceProperty(t *testing.T) {
 	}
 	for _, r := range []string{policy.RuleAllow, policy.RuleKilled, policy.RuleRevoked, policy.RuleInvalid,
 		policy.RuleScopeModel, policy.RuleScopeTool, policy.RuleScopePayee, policy.RuleBudgetDaily,
-		policy.RuleBudgetTask, policy.RuleVelocity, policy.RuleApprovalThreshold} {
+		policy.RuleRegistryUnapproved, policy.RuleBudgetTask, policy.RuleVelocity, policy.RuleApprovalThreshold} {
 		if seen[r] < 5 {
 			t.Errorf("generator reached rule %s only %d times", r, seen[r])
 		}

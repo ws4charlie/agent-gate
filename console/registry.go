@@ -19,6 +19,8 @@ type registryEntryView struct {
 	Purpose   string    `json:"purpose"`
 	Status    string    `json:"status"`
 	Notes     string    `json:"notes"`
+	RiskTier  string    `json:"risk_tier"`
+	Version   string    `json:"version"`
 	UpdatedAt time.Time `json:"updated_at"`
 	// InUse is set when a deprecated or blocked entry was seen in use in the window.
 	InUse *inUseView `json:"in_use,omitempty"`
@@ -78,7 +80,7 @@ func (s *Server) handleRegistry(w http.ResponseWriter, r *http.Request) {
 	}{Since: since, Entries: []registryEntryView{}, Unregistered: []inUseView{}}
 	for _, e := range entries {
 		v := registryEntryView{Kind: e.Kind, Name: e.Name, AgentName: agentName(e.Kind, e.Name), Owner: e.Owner,
-			Purpose: e.Purpose, Status: e.Status, Notes: e.Notes, UpdatedAt: e.UpdatedAt}
+			Purpose: e.Purpose, Status: e.Status, Notes: e.Notes, RiskTier: e.RiskTier, Version: e.Version, UpdatedAt: e.UpdatedAt}
 		if u, ok := used[e.Kind+"\x00"+e.Name]; ok {
 			v.InUse = &inUseView{Kind: u.Kind, Name: u.Name, Status: u.Status, Calls: u.Calls, LastSeen: u.LastSeen}
 		}
