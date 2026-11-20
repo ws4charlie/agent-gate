@@ -33,7 +33,7 @@ func TestRegistryCRUD(t *testing.T) {
 		t.Fatalf("%+v %v", e, err)
 	}
 	// Updating without a status keeps the status; with one, changes it.
-	if _, err := s.SetStatus(ctx, "model", "gpt-4o", "approved", "t"); err != nil {
+	if _, err := s.SetStatus(ctx, "model", "gpt-4o", "approved", "t", ""); err != nil {
 		t.Fatal(err)
 	}
 	e, err = s.Upsert(ctx, Entry{Kind: "model", Name: "gpt-4o", Owner: "platform", Purpose: "chat v2", Notes: "n"})
@@ -52,16 +52,16 @@ func TestRegistryCRUD(t *testing.T) {
 	if len(all) != 2 || len(models) != 1 {
 		t.Fatalf("%d %d", len(all), len(models))
 	}
-	if err := s.Delete(ctx, "tool", "fs/read", "t"); err != nil {
+	if err := s.Delete(ctx, "tool", "fs/read", "t", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Get(ctx, "tool", "fs/read"); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
 	}
-	if err := s.Delete(ctx, "tool", "fs/read", "t"); !errors.Is(err, ErrNotFound) {
+	if err := s.Delete(ctx, "tool", "fs/read", "t", ""); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
 	}
-	if _, err := s.SetStatus(ctx, "tool", "nope", "approved", "t"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.SetStatus(ctx, "tool", "nope", "approved", "t", ""); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
 	}
 }
@@ -177,9 +177,9 @@ func TestHistoryRiskTierAndVersion(t *testing.T) {
 	if _, err := s.Upsert(ctx, Entry{Kind: "model", Name: "m1", Owner: "o", Purpose: "p", RiskTier: "extreme"}); !errors.Is(err, ErrBadTier) {
 		t.Fatal(err)
 	}
-	s.SetStatus(ctx, "model", "m1", "approved", "bob")
-	s.SetStatus(ctx, "model", "m1", "approved", "bob") // no change, no row
-	if err := s.Delete(ctx, "model", "m1", "carol"); err != nil {
+	s.SetStatus(ctx, "model", "m1", "approved", "bob", "reviewed")
+	s.SetStatus(ctx, "model", "m1", "approved", "bob", "") // no change, no row
+	if err := s.Delete(ctx, "model", "m1", "carol", ""); err != nil {
 		t.Fatal(err)
 	}
 	h, err := s.History(ctx, "model", "m1", 0)
@@ -190,6 +190,9 @@ func TestHistoryRiskTierAndVersion(t *testing.T) {
 		h[1].Actor != "bob" || h[1].From != "proposed" || h[1].To != "approved" ||
 		h[2].Actor != "alice" || h[2].From != "" || h[2].To != "proposed" {
 		t.Fatalf("%+v", h)
+	}
+	if h[1].Note != "reviewed" || h[0].Note != "removed" {
+		t.Fatalf("notes: %q %q; want the reason, and \"removed\" by default", h[1].Note, h[0].Note)
 	}
 }
 

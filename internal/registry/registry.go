@@ -169,9 +169,10 @@ func (s *Store) List(ctx context.Context, kind string) ([]Entry, error) {
 	return out, rows.Err()
 }
 
-// SetStatus changes the status of an entry and records who did it. Setting the
-// status it already has changes nothing and writes no history row.
-func (s *Store) SetStatus(ctx context.Context, kind, name, status, actor string) (Entry, error) {
+// SetStatus changes the status of an entry and records who did it and why
+// (note may be empty). Setting the status it already has changes nothing and
+// writes no history row.
+func (s *Store) SetStatus(ctx context.Context, kind, name, status, actor, note string) (Entry, error) {
 	if !kinds[kind] {
 		return Entry{}, ErrBadKind
 	}
@@ -198,13 +199,17 @@ func (s *Store) SetStatus(ctx context.Context, kind, name, status, actor string)
 		if err != nil {
 			return err
 		}
-		return logChange(ctx, tx, kind, name, from, status, actor, "")
+		return logChange(ctx, tx, kind, name, from, status, actor, note)
 	})
 	return out, err
 }
 
-// Delete removes an entry and records the removal.
-func (s *Store) Delete(ctx context.Context, kind, name, actor string) error {
+// Delete removes an entry and records the removal, with note as the reason
+// ("removed" when empty).
+func (s *Store) Delete(ctx context.Context, kind, name, actor, note string) error {
+	if note == "" {
+		note = "removed"
+	}
 	return s.tx(ctx, func(tx pgx.Tx) error {
 		var from string
 		err := tx.QueryRow(ctx, `DELETE FROM registry_entries WHERE kind = $1 AND name = $2 RETURNING status`, kind, name).Scan(&from)
@@ -214,7 +219,7 @@ func (s *Store) Delete(ctx context.Context, kind, name, actor string) error {
 		if err != nil {
 			return err
 		}
-		return logChange(ctx, tx, kind, name, from, "", actor, "removed")
+		return logChange(ctx, tx, kind, name, from, "", actor, note)
 	})
 }
 

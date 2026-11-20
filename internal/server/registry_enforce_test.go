@@ -70,7 +70,7 @@ func TestRegistryEnforceModel(t *testing.T) {
 	}
 	check(policy.RuleRegistryUnapproved, "blocked")
 	// Approved: the same request passes.
-	if _, err := registry.NewStore(e.pool).SetStatus(context.Background(), "model", "oa/m", "approved", "test"); err != nil {
+	if _, err := registry.NewStore(e.pool).SetStatus(context.Background(), "model", "oa/m", "approved", "test", ""); err != nil {
 		t.Fatal(err)
 	}
 	if code, _, b := ask(); code != 200 {
@@ -137,7 +137,7 @@ func TestRegistryEnforceTool(t *testing.T) {
 		t.Fatal("an unapproved tool reached upstream")
 	}
 
-	if _, err := registry.NewStore(m.pool).SetStatus(context.Background(), "tool", "fake/echo", "approved", "test"); err != nil {
+	if _, err := registry.NewStore(m.pool).SetStatus(context.Background(), "tool", "fake/echo", "approved", "test", ""); err != nil {
 		t.Fatal(err)
 	}
 	resp, b = m.call("echo", map[string]any{"text": "hi"}, nil)
