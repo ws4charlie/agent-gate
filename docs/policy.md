@@ -19,6 +19,8 @@ Anything you don't list is refused. An agent can't approve its own requests or s
 
 The first rule that fails gives the answer. The agent is told which rule stopped it, so it can change course instead of retrying blindly. Yes and no decisions are both recorded.
 
+Right after the scope check comes an optional one: with `--registry-enforce`, a model or tool must also be approved in the [AI Registry](registry.md), or the request stops with the rule `registry_unapproved`.
+
 ## When a person must approve
 
 The money stays held and the request waits for a decision. After a yes, the agent sends the same request again and it runs once. An approval covers only that request, can't be swapped for something else, and expires if nobody uses it.

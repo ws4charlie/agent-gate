@@ -31,6 +31,7 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/policy"
 	"github.com/ws4charlie/agent-gate/internal/pricing"
 	"github.com/ws4charlie/agent-gate/internal/provider"
+	"github.com/ws4charlie/agent-gate/internal/registry"
 	"github.com/ws4charlie/agent-gate/internal/run"
 	"github.com/ws4charlie/agent-gate/internal/screen"
 )
@@ -83,6 +84,13 @@ type Server struct {
 	// Go decision counts and Cedar only observes.
 	CedarEnforce bool
 
+	// AIRegistry, with RegistryEnforce, makes the AI Registry govern: a model
+	// or tool that is not approved there is denied (rule registry_unapproved).
+	// Both Cedar and the Go engine see the same lookup. RegistryEnforce false =
+	// no lookups, behaviour unchanged.
+	AIRegistry      *registry.Store
+	RegistryEnforce bool
+
 	// T5. MCP nil disables /mcp/{server}. Screen nil means tool output is not
 	// screened (an explicit choice; `serve` always sets one). Runs and
 	// RunRegistry default to working instances.
@@ -129,6 +137,9 @@ func (s *Server) initDefaults() {
 	}
 	if s.Agents == nil {
 		s.Agents = agents.NewStore(s.Pool)
+	}
+	if s.AIRegistry == nil && s.RegistryEnforce {
+		s.AIRegistry = registry.NewStore(s.Pool)
 	}
 	if s.Approvals == nil {
 		s.Approvals = &approval.Queue{Store: approval.NewStore(s.Pool), Ledger: s.Ledger}

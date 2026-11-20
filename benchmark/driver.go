@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -31,6 +32,7 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/policy"
 	"github.com/ws4charlie/agent-gate/internal/pricing"
 	"github.com/ws4charlie/agent-gate/internal/provider"
+	"github.com/ws4charlie/agent-gate/internal/registry"
 	"github.com/ws4charlie/agent-gate/internal/screen"
 	"github.com/ws4charlie/agent-gate/internal/server"
 	"github.com/ws4charlie/agent-gate/internal/wallet"
@@ -133,9 +135,42 @@ func newRig(ctx context.Context, pool *pgxpool.Pool, root string) (*rig, error) 
 		}
 		r.srv.Cedar, r.srv.CedarEnforce = eng, true
 	}
+	// The AI Registry check is on for every scenario. Everything the rig
+	// offers is approved up front; scenarios override single entries.
+	r.srv.RegistryEnforce = true
+	r.srv.AIRegistry = registry.NewStore(pool)
+	items := []registry.SeedItem{{Kind: "model", Name: "fake/chat"}, {Kind: "model", Name: "fake/chat-big"},
+		{Kind: "tool", Name: "echo"}, {Kind: "tool", Name: "premium"}}
+	for _, n := range mcp.ToolNames {
+		items = append(items, registry.SeedItem{Kind: "tool", Name: "up/" + n})
+	}
+	if _, err := r.srv.AIRegistry.Seed(ctx, items, "benchmark", false); err != nil {
+		return nil, err
+	}
 	r.gw = httptest.NewServer(r.srv.Handler())
 	r.close = append(r.close, r.gw.Close)
 	return r, nil
+}
+
+// setRegistry applies a scenario's registry overrides; restore undoes them.
+func (r *rig) setRegistry(ctx context.Context, states []RegistryState, restore bool) error {
+	for _, st := range states {
+		status := st.Status
+		if restore {
+			status = "approved"
+		}
+		var err error
+		if status == "none" {
+			err = r.srv.AIRegistry.Delete(ctx, st.Kind, st.Name, "benchmark")
+		} else {
+			_, err = r.srv.AIRegistry.Upsert(ctx, registry.Entry{Kind: st.Kind, Name: st.Name, Owner: "benchmark", Purpose: "scenario",
+				Status: status, Actor: "benchmark"})
+		}
+		if err != nil && !errors.Is(err, registry.ErrNotFound) {
+			return err
+		}
+	}
+	return nil
 }
 
 // agent is one scenario's agent with its own funded account.

@@ -1,0 +1,26 @@
+[
+ {
+  "id": "registry-model-proposed",
+  "category": "registry-unapproved",
+  "description": "A model on the allowlist whose registry entry is only proposed.",
+  "setup": {
+   "models": ["fake/chat"],
+   "registry": [{"kind": "model", "name": "fake/chat", "status": "proposed"}]
+  },
+  "steps": [{"op": "chat", "model": "fake/chat"}],
+  "expected": "deny",
+  "rule": "registry_unapproved"
+ },
+ {
+  "id": "registry-tool-blocked",
+  "category": "registry-unapproved",
+  "description": "A free tool on the allowlist whose registry entry is blocked.",
+  "setup": {
+   "tools": ["up/echo"],
+   "registry": [{"kind": "tool", "name": "up/echo", "status": "blocked"}]
+  },
+  "steps": [{"op": "tool", "tool": "echo"}],
+  "expected": "deny",
+  "rule": "registry_unapproved"
+ }
+]

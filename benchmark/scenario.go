@@ -28,6 +28,19 @@ type Setup struct {
 	Task         float64  `json:"task"`
 	Velocity     float64  `json:"velocity"`
 	ApprovalOver float64  `json:"approval_over"`
+	// Registry overrides the AI Registry for this scenario. Every model and
+	// tool the rig offers starts out approved (the registry check is always on
+	// in the benchmark); an entry here sets one to the given status, or removes
+	// it when the status is "none". The rig restores it after the scenario.
+	Registry []RegistryState `json:"registry,omitempty"`
+}
+
+// RegistryState is one registry override: kind model or tool, the exact name
+// ("fake/chat", "up/echo", or a payment tool such as "echo").
+type RegistryState struct {
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
 }
 
 // Step ops: chat, tool, pay, screen (a corpus file through the output screen),

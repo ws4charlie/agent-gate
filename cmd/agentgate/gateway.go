@@ -93,6 +93,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	spiffeSocket := c.fs.String("spiffe-socket", envOr("AG_SPIFFE_SOCKET", "unix:///run/spire/agent/sockets/agent.sock"), "SPIFFE Workload API socket (default $AG_SPIFFE_SOCKET)")
 	spiffeDomain := c.fs.String("spiffe-trust-domain", os.Getenv("AG_SPIFFE_TRUST_DOMAIN"), "trust domains whose SVIDs are accepted, comma-separated; the first is ours, the others are federated (required with --spiffe-listen)")
 	cedarDir := c.fs.String("cedar-policies", os.Getenv("AG_CEDAR_POLICIES"), "directory of Cedar policies to run beside the Go engine: shadow mode (recorded, Go decides) unless --cedar-enforce (default $AG_CEDAR_POLICIES; empty: off)")
+	registryEnforce := c.fs.Bool("registry-enforce", envBool("AG_REGISTRY_ENFORCE"), "deny models and tools that are not approved in the AI Registry (rule registry_unapproved; default $AG_REGISTRY_ENFORCE, off)")
 	cedarEnforce := c.fs.Bool("cedar-enforce", envBool("AG_CEDAR_ENFORCE"), "let Cedar decide, record the Go engine beside it, and deny when Cedar fails; needs --cedar-policies (default $AG_CEDAR_ENFORCE)")
 	spiffeID := c.fs.String("spiffe-id", os.Getenv("AG_SPIFFE_ID"), "the SPIFFE ID of the gateway's own SVID, when the Workload API returns several (default $AG_SPIFFE_ID; empty: the first one)")
 	reconcileEvery := c.fs.Duration("reconcile-every", 30*time.Second, "background reconcile interval")
@@ -140,6 +141,10 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		DefaultMaxTokens: cfg.DefaultMaxTokens, StoreBodies: *storeBodies,
 		Agents: agents.NewStore(pool), Approvals: &approval.Queue{Store: approval.NewStore(pool), Ledger: led}}
 
+	if *registryEnforce {
+		srv.RegistryEnforce = true
+		log.Info("registry check on")
+	}
 	if *cedarDir != "" {
 		eng, err := cedarpolicy.Load(*cedarDir)
 		if err != nil {

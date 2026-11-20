@@ -54,6 +54,9 @@ func run(root, out, readme string) (failed int, err error) {
 		if err != nil {
 			return 0, fmt.Errorf("%s: %w", s.ID, err)
 		}
+		if err := r.setRegistry(ctx, s.Setup.Registry, false); err != nil {
+			return 0, fmt.Errorf("%s: registry: %w", s.ID, err)
+		}
 		for i, st := range s.Steps {
 			o, err := r.play(ctx, a, st)
 			if err != nil {
@@ -61,6 +64,9 @@ func run(root, out, readme string) (failed int, err error) {
 				break
 			}
 			res.Got = o
+		}
+		if err := r.setRegistry(ctx, s.Setup.Registry, true); err != nil {
+			return 0, fmt.Errorf("%s: registry restore: %w", s.ID, err)
 		}
 		res.Match = res.Err == nil && res.Got.Verdict == s.Expected && res.Got.Rule == s.Rule
 		if !res.Match {

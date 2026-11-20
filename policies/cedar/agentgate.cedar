@@ -33,6 +33,11 @@ unless { context.tool_in_scope };
 forbid (principal, action == Action::"pay", resource)
 unless { context.payee_in_scope };
 
+@rule("registry_unapproved")
+forbid (principal, action, resource)
+when { context.registry_on }
+unless { context.registry_approved };
+
 @rule("budget_daily")
 forbid (principal, action, resource)
 when { principal.daily_budget > 0 && context.daily_total > principal.daily_budget };

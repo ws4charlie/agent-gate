@@ -122,6 +122,28 @@ func TableCases() []Case {
 	add("approved does not lift scope", func() policy.Request { r := withModel("gpt-5"); r.Amount = 201; r.Approved = true; return r }(), nil)
 	add("approved does not lift daily", func() policy.Request { r := modelReq(210); r.Approved = true; return r }(), func(s *policy.Snapshot) { s.DailySpent = 900 })
 
+	// The registry rule: on the allowlist, but is the item approved?
+	reg := func(on bool, status string) func(*policy.Snapshot) {
+		return func(s *policy.Snapshot) { s.Registry = policy.RegistryCheck{On: on, Status: status} }
+	}
+	for _, st := range []string{"approved", "proposed", "deprecated", "blocked", "", "weird"} {
+		add("registry model "+st, modelReq(100), reg(true, st))
+		add("registry tool "+st, withPay(func(r *policy.Request) {}), reg(true, st))
+		add("registry off "+st, modelReq(100), reg(false, st))
+	}
+	toolReq := func(amt money.Nanos) policy.Request {
+		return policy.Request{AgentID: "a", Kind: policy.KindTool, Tool: "echo", Amount: amt}
+	}
+	add("registry tool call proposed", toolReq(100), reg(true, "proposed"))
+	add("registry tool call approved", toolReq(100), reg(true, "approved"))
+	add("scope beats registry", withModel("gpt-5"), reg(true, ""))
+	add("registry beats budget", modelReq(100), func(s *policy.Snapshot) { reg(true, "blocked")(s); s.DailySpent = 950 })
+	add("registry beats approval", modelReq(201), reg(true, "proposed"))
+	add("registry beats velocity", modelReq(100), func(s *policy.Snapshot) { reg(true, "")(s); s.VelocitySpent = 250 })
+	add("killed beats registry", modelReq(100), func(s *policy.Snapshot) { reg(true, "")(s); s.Status = policy.StatusKilled })
+	add("invalid beats registry", modelReq(0), reg(true, ""))
+	add("approved registry still needs approval", modelReq(201), reg(true, "approved"))
+
 	// Every pair of rules that both fire: the earlier one must win.
 	chain := []mut{
 		func(_ *policy.Request, s *policy.Snapshot) { s.Status = policy.StatusKilled },
@@ -198,6 +220,8 @@ func GeneratedCases(seed int64, n int) []Case {
 			}
 			return max(0, near(l)-r.Amount)
 		}
+		s.Registry = policy.RegistryCheck{On: rng.Intn(6) == 0,
+			Status: pick("approved", "approved", "proposed", "deprecated", "blocked", "", "weird")}
 		s.DailySpent, s.TaskSpent, s.VelocitySpent = fit(sc.DailyBudget), fit(sc.TaskBudget), fit(sc.VelocityPerMinute)
 		out = append(out, Case{Name: fmt.Sprintf("gen-%d", i), Req: r, Snap: s})
 	}

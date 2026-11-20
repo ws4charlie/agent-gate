@@ -40,6 +40,15 @@ func TestEvaluateEachRule(t *testing.T) {
 		rule string
 	}{
 		{"allow model", model(100), nil, policy.Allow, policy.RuleAllow},
+		{"registry off ignores status", model(100), func(s *policy.Snapshot) { s.Registry = policy.RegistryCheck{Status: "blocked"} }, policy.Allow, policy.RuleAllow},
+		{"registry approved passes", model(100), func(s *policy.Snapshot) { s.Registry = policy.RegistryCheck{On: true, Status: "approved"} }, policy.Allow, policy.RuleAllow},
+		{"registry proposed", model(100), func(s *policy.Snapshot) { s.Registry = policy.RegistryCheck{On: true, Status: "proposed"} }, policy.Deny, policy.RuleRegistryUnapproved},
+		{"registry no entry", model(100), func(s *policy.Snapshot) { s.Registry = policy.RegistryCheck{On: true} }, policy.Deny, policy.RuleRegistryUnapproved},
+		{"registry beats budget", model(100), func(s *policy.Snapshot) {
+			s.Registry = policy.RegistryCheck{On: true, Status: "blocked"}
+			s.DailySpent = 950
+		}, policy.Deny, policy.RuleRegistryUnapproved},
+		{"scope beats registry", model(100), func(s *policy.Snapshot) { s.Registry = policy.RegistryCheck{On: true}; s.Scope.Models = nil }, policy.Deny, policy.RuleScopeModel},
 		{"allow payment", pay(100), nil, policy.Allow, policy.RuleAllow},
 		{"killed", model(100), func(s *policy.Snapshot) { s.Status = policy.StatusKilled }, policy.Deny, policy.RuleKilled},
 		{"revoked", model(100), func(s *policy.Snapshot) { s.Status = policy.StatusRevoked }, policy.Deny, policy.RuleRevoked},

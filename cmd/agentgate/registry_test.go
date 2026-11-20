@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -65,5 +66,54 @@ func TestRegistryCLI(t *testing.T) {
 	}
 	if _, err := c.run("registry", "gaps", "--since", "soon"); err == nil {
 		t.Fatal("bad since accepted")
+	}
+}
+
+func TestRegistryHistorySeedAndFields(t *testing.T) {
+	c := newCLI(t)
+	if _, err := c.run("registry", "add", "model", "m1", "--owner", "o", "--purpose", "p", "--risk", "high", "--version", "v1", "--actor", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.run("registry", "add", "model", "m1", "--owner", "o", "--purpose", "p", "--risk", "extreme"); err == nil {
+		t.Fatal("bad risk accepted")
+	}
+	out, _ := c.run("registry", "list")
+	if !strings.Contains(out, "high") || !strings.Contains(out, "v1") {
+		t.Fatalf("%q", out)
+	}
+	if _, err := c.run("registry", "status", "model", "m1", "approved", "--actor", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := c.run("registry", "history", "model", "m1")
+	if err != nil || !strings.Contains(out, "alice") || !strings.Contains(out, "bob") || !strings.Contains(out, "(new)") {
+		t.Fatalf("%q %v", out, err)
+	}
+	if out, _ = c.run("registry", "history"); !strings.Contains(out, "m1") {
+		t.Fatalf("%q", out)
+	}
+	// seed: an active agent with an exact model, a wildcard and a tool; a price table with one model.
+	if _, err := c.run("agent", "create", "--account", c.acct, "--name", "bot", "--models", "seed-model,claude-*", "--tools", "srv/t1,srv/*"); err != nil {
+		t.Fatal(err)
+	}
+	prices := filepath.Join(t.TempDir(), "prices.json")
+	if err := os.WriteFile(prices, []byte(`{"models":{"priced-model":{"input":1,"output":1}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err = c.run("registry", "seed", "--prices", prices, "--dry-run")
+	if err != nil || !strings.Contains(out, "would add 3") || !strings.Contains(out, "priced-model") || !strings.Contains(out, "seed-model") ||
+		!strings.Contains(out, "srv/t1") || !strings.Contains(out, "not seeded: wildcard model claude-*") || !strings.Contains(out, "not seeded: wildcard tool srv/*") {
+		t.Fatalf("%q %v", out, err)
+	}
+	if out, _ = c.run("registry", "list"); strings.Contains(out, "seed-model") {
+		t.Fatal("dry run wrote")
+	}
+	if out, err = c.run("registry", "seed", "--prices", prices); err != nil || !strings.Contains(out, "added 3") {
+		t.Fatalf("%q %v", out, err)
+	}
+	if out, _ = c.run("registry", "seed", "--prices", prices); !strings.Contains(out, "added 0") {
+		t.Fatalf("not idempotent: %q", out)
+	}
+	if out, _ = c.run("registry", "list"); !strings.Contains(out, "seeded from live config") || !strings.Contains(out, "m1") {
+		t.Fatalf("%q", out)
 	}
 }

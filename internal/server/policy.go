@@ -88,6 +88,7 @@ type decided struct {
 // (RuleCedarError), never a fall back to Go. A disagreement is one Warn line
 // (ids and rules only, no bodies, I9).
 func (c *call) decide(req policy.Request, snap policy.Snapshot) decided {
+	snap = c.withRegistry(req, snap)
 	g := policy.Evaluate(req, snap)
 	x := decided{d: g, goD: g, enforce: c.s.CedarEnforce}
 	if c.s.Cedar == nil {
@@ -141,6 +142,37 @@ func (c *call) runCedar(req policy.Request, snap policy.Snapshot) (verdict, rule
 		}
 	}()
 	return c.s.Cedar.Decide(req, snap)
+}
+
+// withRegistry fills snap.Registry with the AI Registry state of the model or
+// tool the request names, so both engines judge the same lookup. With the check
+// off it does nothing (no query). A caller that already looked (tools/list asks
+// once per server) sets Registry.On itself and is left alone. A failed lookup
+// fails closed: the status "unavailable" is not approved.
+//
+// Payments are checked on req.Tool, the same name the tool scope matches: for
+// a paid MCP tool that is "server/tool", the tool's registry name. A direct
+// POST /v1/payments names its tool freely; with the check on that name must be
+// an approved tool entry too, which keeps "no approved entry, no spend" simple.
+func (c *call) withRegistry(req policy.Request, snap policy.Snapshot) policy.Snapshot {
+	if !c.s.RegistryEnforce || snap.Registry.On {
+		return snap
+	}
+	kind, name := "tool", req.Tool
+	if req.Kind == policy.KindModel {
+		kind, name = "model", req.Model
+	}
+	snap.Registry.On = true
+	if name == "" || c.s.AIRegistry == nil {
+		return snap // no name: the engines refuse it as out of scope or invalid before this matters
+	}
+	st, err := c.s.AIRegistry.Status(c.ctx, kind, name)
+	if err != nil {
+		c.s.Log.Error("registry lookup", "request_id", c.ev.RequestID, "agent_id", c.agent.ID, "err", err)
+		st = "unavailable"
+	}
+	snap.Registry.Status = st
+	return snap
 }
 
 // refuseInactive is rule 1 applied right after authentication, before the
