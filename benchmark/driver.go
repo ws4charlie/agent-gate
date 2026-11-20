@@ -161,7 +161,7 @@ func (r *rig) setRegistry(ctx context.Context, states []RegistryState, restore b
 		}
 		var err error
 		if status == "none" {
-			err = r.srv.AIRegistry.Delete(ctx, st.Kind, st.Name, "benchmark")
+			err = r.srv.AIRegistry.Delete(ctx, st.Kind, st.Name, "benchmark", "")
 		} else {
 			_, err = r.srv.AIRegistry.Upsert(ctx, registry.Entry{Kind: st.Kind, Name: st.Name, Owner: "benchmark", Purpose: "scenario",
 				Status: status, Actor: "benchmark"})

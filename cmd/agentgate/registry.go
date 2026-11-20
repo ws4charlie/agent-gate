@@ -49,7 +49,7 @@ func registryCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	owner := c.fs.String("owner", "", "who is responsible: a person or team (add)")
 	purpose := c.fs.String("purpose", "", "what it is for (add)")
 	status := c.fs.String("status", "", "approved | proposed | deprecated | blocked (add; default proposed, or unchanged on update)")
-	notes := c.fs.String("notes", "", "free-text notes (add)")
+	notes := c.fs.String("notes", "", "add: free-text notes on the entry; status, remove: the reason, kept in the history")
 	kind := c.fs.String("kind", "", "only this kind: model | tool | agent (list)")
 	tier := c.fs.String("risk", "", "low | medium | high (add; default medium, or unchanged on update)")
 	version := c.fs.String("version", "", "model snapshot or tool release (add; default empty, or unchanged on update)")
@@ -88,13 +88,13 @@ func registryCmd(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		return tw.Flush()
 	case "status":
-		e, err := st.SetStatus(ctx, pos[0], pos[1], pos[2], *actor)
+		e, err := st.SetStatus(ctx, pos[0], pos[1], pos[2], *actor, *notes)
 		if err != nil {
 			return err
 		}
 		fmt.Fprintf(stdout, "%s %s is now %s\n", e.Kind, e.Name, e.Status)
 	case "remove":
-		if err := st.Delete(ctx, pos[0], pos[1], *actor); err != nil {
+		if err := st.Delete(ctx, pos[0], pos[1], *actor, *notes); err != nil {
 			return err
 		}
 		fmt.Fprintf(stdout, "removed %s %s\n", pos[0], pos[1])
