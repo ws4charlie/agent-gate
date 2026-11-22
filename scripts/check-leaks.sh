@@ -18,7 +18,7 @@ if [ -n "$tokens" ]; then
   echo "check-leaks: Mercury API token:"; echo "$tokens" | cut -c1-80; fail=1
 fi
 
-keys=$(git grep -nIE 'sk-ant-api[0-9]{2}-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{40,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}' \
+keys=$(git grep -nIE 'sk-ant-api[0-9]{2}-[A-Za-z0-9_-]{20,}|sk-(proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{40,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}' \
   -- . ':!*_test.go' ':!scripts/check-leaks.sh' || true)
 if [ -n "$keys" ]; then
   echo "check-leaks: secret-looking value outside tests:"; echo "$keys" | cut -c1-80; fail=1
