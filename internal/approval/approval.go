@@ -63,6 +63,7 @@ type Approval struct {
 	Status                                     Status
 	DecidedBy                                  string
 	DecidedAt                                  *time.Time
+	ConsumedAt                                 *time.Time // when a retry spent the approval
 	CreatedAt, ExpiresAt                       time.Time
 }
 
@@ -88,13 +89,13 @@ func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool, now: time.N
 func (s *Store) SetClock(f func() time.Time) { s.now = f }
 
 const cols = `id, agent_id, account_id, idem_key, request_id, kind, subject, payee, amount_nanos, task_id,
-	fingerprint, hold_id, status, decided_by, decided_at, created_at, expires_at`
+	fingerprint, hold_id, status, decided_by, decided_at, created_at, expires_at, consumed_at`
 
 func scan(row pgx.Row) (Approval, error) {
 	var a Approval
 	var st string
 	err := row.Scan(&a.ID, &a.AgentID, &a.AccountID, &a.IdemKey, &a.RequestID, &a.Kind, &a.Subject, &a.Payee, &a.Amount,
-		&a.TaskID, &a.Fingerprint, &a.HoldID, &st, &a.DecidedBy, &a.DecidedAt, &a.CreatedAt, &a.ExpiresAt)
+		&a.TaskID, &a.Fingerprint, &a.HoldID, &st, &a.DecidedBy, &a.DecidedAt, &a.CreatedAt, &a.ExpiresAt, &a.ConsumedAt)
 	a.Status = Status(st)
 	return a, err
 }
@@ -184,7 +185,7 @@ func (s *Store) decide(ctx context.Context, id, by string, to Status) (Approval,
 // not approved (anymore): never approved, denied, expired, or already used.
 // This is what makes a replay one execution.
 func (s *Store) Consume(ctx context.Context, id string) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE approvals SET status='consumed'
+	tag, err := s.pool.Exec(ctx, `UPDATE approvals SET status='consumed', consumed_at=$2
 		WHERE id=$1 AND status='approved' AND expires_at > $2`, id, s.now().UTC().Truncate(time.Microsecond))
 	return tag.RowsAffected() == 1, err
 }

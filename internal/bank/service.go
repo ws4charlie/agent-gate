@@ -388,6 +388,15 @@ func (s *Service) stepReceived(ctx context.Context, p Payment) (Payment, error) 
 	return s.Move(ctx, p, Failed, "gate", map[string]any{"reason": "the request ended before a decision"}, Change{Rule: "abandoned"})
 }
 
+// consumedAt is when the approval was spent (the payment's last change for an
+// approval spent before that time was recorded).
+func consumedAt(a approval.Approval, p Payment) time.Time {
+	if a.ConsumedAt != nil {
+		return *a.ConsumedAt
+	}
+	return p.UpdatedAt
+}
+
 // stepGate watches a payment that waits for a Gate human: when the approval
 // was denied or expired the payment is refused (the queue already released the hold).
 func (s *Service) stepGate(ctx context.Context, p Payment) (Payment, error) {
@@ -403,11 +412,11 @@ func (s *Service) stepGate(ctx context.Context, p Payment) (Payment, error) {
 		return s.Move(ctx, p, Refused, "gate-approver:"+a.DecidedBy, map[string]any{"approval_id": a.ID}, Change{Rule: "approval_denied"})
 	case found && a.Status == approval.Expired:
 		return s.Move(ctx, p, Refused, "gate", map[string]any{"approval_id": a.ID}, Change{Rule: "approval_expired"})
-	case found && a.Status == approval.Consumed && s.Store.at().Sub(p.UpdatedAt) > stalledReceived:
-		// The approval was spent by a retry that died before the payment moved (the
-		// retry noted itself on the payment first, so UpdatedAt is its time). Nothing
-		// else will finish it: refuse it and free the hold. The agent may ask again
-		// with a new key.
+	case found && a.Status == approval.Consumed && s.Store.at().Sub(consumedAt(a, p)) > stalledReceived:
+		// The approval was spent by a retry that died before the payment moved. The
+		// deadline runs from the moment it was spent: retries cannot extend it (a
+		// retry that finds the approval consumed is turned away). Nothing else will
+		// finish it: refuse it and free the hold. The agent may ask again with a new key.
 		return s.Move(ctx, p, Refused, "gate", map[string]any{"approval_id": a.ID, "reason": "the approved request was interrupted"}, Change{Rule: "approval_interrupted"})
 	case !found && s.Store.at().Sub(p.CreatedAt) > 24*time.Hour:
 		return s.Move(ctx, p, Refused, "gate", map[string]any{"reason": "no approval was queued"}, Change{Rule: "approval_missing"})

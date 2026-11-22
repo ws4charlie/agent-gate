@@ -251,11 +251,10 @@ func TestBankOverThresholdWaitsForGateHumanThenSubmitsOnce(t *testing.T) {
 	if b.fake.Sent != 1 || b.fake.Calls != 1 {
 		t.Fatalf("submitted %d times (%d calls)", b.fake.Sent, b.fake.Calls)
 	}
-	wantChain(t, b.chain(id), ">awaiting_gate_approval", "awaiting_gate_approval>awaiting_gate_approval", "awaiting_gate_approval>awaiting_gate_approval", // the two retries note themselves
-		"awaiting_gate_approval>awaiting_bank_approval", "awaiting_bank_approval>awaiting_bank_approval")
+	wantChain(t, b.chain(id), ">awaiting_gate_approval", "awaiting_gate_approval>awaiting_bank_approval", "awaiting_bank_approval>awaiting_bank_approval")
 	evs, _ := b.svc.Store.Events(context.Background(), id)
-	if evs[5].Actor != "gate-approver:alice" || evs[0].Actor != "agent:"+b.payment(id).AgentID {
-		t.Fatalf("actors %q %q", evs[0].Actor, evs[5].Actor)
+	if evs[3].Actor != "gate-approver:alice" || evs[0].Actor != "agent:"+b.payment(id).AgentID {
+		t.Fatalf("actors %q %q", evs[0].Actor, evs[3].Actor)
 	}
 	if len(b.auditStatuses(id)) != len(evs) {
 		t.Fatalf("audit rows %v for %d events", b.auditStatuses(id), len(evs))
@@ -889,4 +888,41 @@ func TestBankEveryNonFinalStateHasAnOwner(t *testing.T) {
 		})
 	}
 	// sent and settled hold nothing: their money is already taken (see the debit tests).
+}
+
+// An agent that keeps retrying cannot keep an interrupted approval alive: the
+// deadline runs from the moment the approval was spent, not from the last retry.
+func TestBankRetriesDoNotExtendAnInterruptedApproval(t *testing.T) {
+	b := newBankEnv(t)
+	_, m := b.pay(rcpt, "60", "big")
+	id := b.mustOnlyPayment()
+	aid := m["approval_id"].(string)
+	if _, err := b.srv.Approvals.Allow(context.Background(), aid, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := b.srv.Approvals.Consume(context.Background(), aid); err != nil || !ok { // the crash
+		t.Fatal(ok, err)
+	}
+	start := time.Now()
+	freed := -1
+	for min := 1; min <= 30; min++ {
+		now := start.Add(time.Duration(min) * time.Minute)
+		b.svc.Store.SetClock(func() time.Time { return now })
+		b.pay(rcpt, "60", "big") // the agent retries every minute
+		b.poll()
+		if b.payment(id).State.Final() {
+			freed = min
+			break
+		}
+	}
+	if freed < 0 || freed > 12 {
+		t.Fatalf("still waiting after 30 minutes of retries (freed at %d)", freed)
+	}
+	if p := b.payment(id); p.State != bank.Refused || p.Rule != "approval_interrupted" {
+		t.Fatalf("%+v", p)
+	}
+	b.noActiveHolds()
+	if b.fake.Calls != 0 {
+		t.Fatal("the bank was called")
+	}
 }

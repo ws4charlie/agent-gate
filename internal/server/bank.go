@@ -187,14 +187,6 @@ func (c *call) bankPay() {
 		}
 	}
 
-	if !created && row.State == bank.AwaitingGateApproval {
-		// A retry of a payment that waits for a Gate human. Record it first: if the
-		// process dies after the approval is consumed and before the payment moves,
-		// the poller sees how recent the attempt was and frees the hold if it is old.
-		if np, err := b.Store.Note(dctx, row.ID, actor, map[string]any{"retry": true, "request_id": c.ev.RequestID}, bank.Change{}); err == nil {
-			row = np
-		}
-	}
 	approved, approvalID, stop := c.checkApproval(idem, fp)
 	if stop {
 		if created { // cannot happen for a fresh key; never leave a claim behind

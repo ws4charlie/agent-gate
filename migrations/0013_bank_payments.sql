@@ -1,3 +1,7 @@
+-- The bank rail needs to know when an approval was spent: a payment whose approval was
+-- consumed but which never moved on is freed a fixed time after that, whatever the agent does.
+ALTER TABLE approvals ADD COLUMN consumed_at timestamptz;
+
 -- Bank rail (Mercury ACH): one row per payment, plus an append-only chain of
 -- state changes. The row says where the payment is now; the events say how it
 -- got there. A trigger rejects UPDATE and DELETE on the events.
