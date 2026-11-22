@@ -187,6 +187,14 @@ func (c *call) bankPay() {
 		}
 	}
 
+	if !created && row.State == bank.AwaitingGateApproval {
+		// A retry of a payment that waits for a Gate human. Record it first: if the
+		// process dies after the approval is consumed and before the payment moves,
+		// the poller sees how recent the attempt was and frees the hold if it is old.
+		if np, err := b.Store.Note(dctx, row.ID, actor, map[string]any{"retry": true, "request_id": c.ev.RequestID}, bank.Change{}); err == nil {
+			row = np
+		}
+	}
 	approved, approvalID, stop := c.checkApproval(idem, fp)
 	if stop {
 		if created { // cannot happen for a fresh key; never leave a claim behind
@@ -199,8 +207,12 @@ func (c *call) bankPay() {
 	// waited for a Gate human already has its hold; reuse it, never reserve twice.
 	var hold ledger.Hold
 	if row.HoldID == "" {
-		var herr error
-		hold, row, herr = b.Hold(dctx, row)
+		// Never assign the payment from a failed Hold: the claimed row must
+		// stay the one the refusal below is stored on.
+		h, held, herr := b.Hold(dctx, row)
+		if herr == nil {
+			hold, row = h, held
+		}
 		switch {
 		case errors.Is(herr, ledger.ErrInsufficientFunds):
 			end(bank.Refused, "insufficient_funds", nil)

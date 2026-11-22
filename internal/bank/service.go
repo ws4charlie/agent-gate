@@ -403,6 +403,12 @@ func (s *Service) stepGate(ctx context.Context, p Payment) (Payment, error) {
 		return s.Move(ctx, p, Refused, "gate-approver:"+a.DecidedBy, map[string]any{"approval_id": a.ID}, Change{Rule: "approval_denied"})
 	case found && a.Status == approval.Expired:
 		return s.Move(ctx, p, Refused, "gate", map[string]any{"approval_id": a.ID}, Change{Rule: "approval_expired"})
+	case found && a.Status == approval.Consumed && s.Store.at().Sub(p.UpdatedAt) > stalledReceived:
+		// The approval was spent by a retry that died before the payment moved (the
+		// retry noted itself on the payment first, so UpdatedAt is its time). Nothing
+		// else will finish it: refuse it and free the hold. The agent may ask again
+		// with a new key.
+		return s.Move(ctx, p, Refused, "gate", map[string]any{"approval_id": a.ID, "reason": "the approved request was interrupted"}, Change{Rule: "approval_interrupted"})
 	case !found && s.Store.at().Sub(p.CreatedAt) > 24*time.Hour:
 		return s.Move(ctx, p, Refused, "gate", map[string]any{"reason": "no approval was queued"}, Change{Rule: "approval_missing"})
 	}

@@ -251,10 +251,11 @@ func TestBankOverThresholdWaitsForGateHumanThenSubmitsOnce(t *testing.T) {
 	if b.fake.Sent != 1 || b.fake.Calls != 1 {
 		t.Fatalf("submitted %d times (%d calls)", b.fake.Sent, b.fake.Calls)
 	}
-	wantChain(t, b.chain(id), ">awaiting_gate_approval", "awaiting_gate_approval>awaiting_bank_approval", "awaiting_bank_approval>awaiting_bank_approval")
+	wantChain(t, b.chain(id), ">awaiting_gate_approval", "awaiting_gate_approval>awaiting_gate_approval", "awaiting_gate_approval>awaiting_gate_approval", // the two retries note themselves
+		"awaiting_gate_approval>awaiting_bank_approval", "awaiting_bank_approval>awaiting_bank_approval")
 	evs, _ := b.svc.Store.Events(context.Background(), id)
-	if evs[3].Actor != "gate-approver:alice" || evs[0].Actor != "agent:"+b.payment(id).AgentID {
-		t.Fatalf("actors %q %q", evs[0].Actor, evs[3].Actor)
+	if evs[5].Actor != "gate-approver:alice" || evs[0].Actor != "agent:"+b.payment(id).AgentID {
+		t.Fatalf("actors %q %q", evs[0].Actor, evs[5].Actor)
 	}
 	if len(b.auditStatuses(id)) != len(evs) {
 		t.Fatalf("audit rows %v for %d events", b.auditStatuses(id), len(evs))
@@ -768,4 +769,124 @@ func TestBankReconcilerSkipsBankHolds(t *testing.T) {
 	if st, _ := b.svc.Store.HoldStatus(context.Background(), hold); st != "released" {
 		t.Fatalf("cancelled payment kept its hold: %q", st)
 	}
+}
+
+// ---- fix4 ----
+
+// A failed reservation keeps its refusal on the claimed row; a same-key retry
+// replays it at once (no 409 in flight) and there is one chain.
+func TestBankFailedReservationStoresRefusal(t *testing.T) {
+	b := newBankEnv(t)
+	b.setScope(func(sc *policy.Scope) { sc.Tools, sc.Payees = []string{server.BankTool}, []string{rcpt} })
+	code, m := b.pay(rcpt, "2000", "k") // the account has $1000
+	if code != http.StatusPaymentRequired {
+		t.Fatalf("%d %v", code, m)
+	}
+	ps, _ := b.svc.Store.List(context.Background(), 10)
+	if len(ps) != 1 || ps[0].State != bank.Refused || ps[0].Rule != "insufficient_funds" {
+		t.Fatalf("%+v", ps)
+	}
+	if got := b.chain(ps[0].ID); strings.Join(got, " ") != ">received received>refused" {
+		t.Fatalf("chain %v", got)
+	}
+	if code, _ = b.pay(rcpt, "2000", "k"); code != http.StatusPaymentRequired {
+		t.Fatalf("the retry should replay the refusal, got %d", code)
+	}
+	if ps, _ = b.svc.Store.List(context.Background(), 10); len(ps) != 1 || len(b.chain(ps[0].ID)) != 2 {
+		t.Fatal("a retry added to the chain or made a second payment")
+	}
+	b.noActiveHolds()
+	if b.fake.Calls != 0 {
+		t.Fatal("the bank was called")
+	}
+}
+
+// An approved retry that dies after the approval was consumed and before the
+// payment moved: the poller refuses the payment and frees the hold. Never an
+// active orphan.
+func TestBankInterruptedApprovalIsFreed(t *testing.T) {
+	b := newBankEnv(t)
+	_, m := b.pay(rcpt, "60", "big") // over the threshold: waits for a Gate human
+	id := b.mustOnlyPayment()
+	if _, err := b.srv.Approvals.Allow(context.Background(), m["approval_id"].(string), "alice"); err != nil {
+		t.Fatal(err)
+	}
+	// The crash: the retry consumed the approval and never moved the payment.
+	if ok, err := b.srv.Approvals.Consume(context.Background(), m["approval_id"].(string)); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	b.poll()
+	if b.payment(id).State != bank.AwaitingGateApproval {
+		t.Fatal("freed too early: the retry may still be running")
+	}
+	b.svc.Store.SetClock(func() time.Time { return time.Now().Add(11 * time.Minute) })
+	b.poll()
+	if p := b.payment(id); p.State != bank.Refused || p.Rule != "approval_interrupted" {
+		t.Fatalf("%+v", p)
+	}
+	b.noActiveHolds()
+	if b.fake.Calls != 0 {
+		t.Fatal("the bank was called")
+	}
+}
+
+func (b *bankEnv) mustOnlyPayment() string {
+	b.t.Helper()
+	ps, _ := b.svc.Store.List(context.Background(), 10)
+	if len(ps) != 1 {
+		b.t.Fatalf("want 1 payment, got %d", len(ps))
+	}
+	return ps[0].ID
+}
+
+// Every non-final state has an owner that moves the payment on or frees its
+// hold when the request that made it is gone. Each case orphans a payment in
+// one state and runs the owner.
+func TestBankEveryNonFinalStateHasAnOwner(t *testing.T) {
+	later := func(b *bankEnv) { b.svc.Store.SetClock(func() time.Time { return time.Now().Add(11 * time.Minute) }) }
+	cases := []struct {
+		state bank.State
+		owner string
+		setup func(b *bankEnv) string // returns the payment id, orphaned
+	}{
+		{bank.Received, "poller (stepReceived)", func(b *bankEnv) string {
+			h, _ := b.led.Reserve(context.Background(), ledger.ReserveReq{AccountID: b.acct, Amount: 5 * usd, IdemKey: "bank:o1", Kind: ledger.KindPayment, TTL: time.Hour})
+			p, _, _ := b.svc.Store.Create(context.Background(), bank.Payment{AccountID: b.acct, AgentID: "a", IdemKey: "o1", Fingerprint: "f",
+				RecipientID: rcpt, Amount: 5 * usd, State: bank.Received, HoldID: h.ID, Env: "sandbox"}, "agent:a", nil)
+			later(b)
+			return p.ID
+		}},
+		{bank.AwaitingGateApproval, "approval queue + poller (stepGate)", func(b *bankEnv) string {
+			_, m := b.pay(rcpt, "60", "o2")
+			if _, err := b.srv.Approvals.Deny(context.Background(), m["approval_id"].(string), "alice"); err != nil {
+				t.Fatal(err)
+			}
+			return b.mustOnlyPayment()
+		}},
+		{bank.AwaitingBankApproval, "poller (bank status)", func(b *bankEnv) string {
+			_, m := b.pay(rcpt, "5", "o3")
+			b.fake.SetRequest("req-1", bank.ReqCancelled)
+			return m["payment_id"].(string)
+		}},
+		{bank.BankApproved, "poller (bank status)", func(b *bankEnv) string {
+			_, m := b.pay(rcpt, "5", "o4")
+			b.fake.SetRequest("req-1", bank.ReqApproved)
+			b.fake.SetTxn("req-1", bank.TxnPending, false)
+			b.poll()
+			b.fake.SetTxn("req-1", bank.TxnCancelled, false)
+			return m["payment_id"].(string)
+		}},
+	}
+	for _, c := range cases {
+		t.Run(string(c.state)+" owned by "+c.owner, func(t *testing.T) {
+			b := newBankEnv(t)
+			id := c.setup(b)
+			b.poll()
+			if p := b.payment(id); !p.State.Final() {
+				t.Fatalf("nobody moved the %s payment on: %s", c.state, p.State)
+			}
+			b.noActiveHolds()
+		})
+	}
+	// sent and settled hold nothing: their money is already taken (see the debit tests).
 }
