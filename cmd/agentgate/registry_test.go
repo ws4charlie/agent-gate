@@ -117,3 +117,28 @@ func TestRegistryHistorySeedAndFields(t *testing.T) {
 		t.Fatalf("%q", out)
 	}
 }
+
+// Flags may come before, between or after the positional words, and a word a
+// command does not take is an error instead of being dropped.
+func TestRegistryArgsAnyOrder(t *testing.T) {
+	c := newCLI(t)
+	if _, err := c.run("registry", "add", "--owner", "o", "--purpose", "p", "model", "m1"); err != nil {
+		t.Fatalf("flags first: %v", err)
+	}
+	if _, err := c.run("registry", "add", "model", "--owner", "o", "m2", "--purpose", "p"); err != nil {
+		t.Fatalf("flags between: %v", err)
+	}
+	if _, err := c.run("registry", "status", "--notes", "why", "model", "m1", "approved", "--actor", "t"); err != nil {
+		t.Fatalf("status flags around: %v", err)
+	}
+	out, err := c.run("registry", "history", "model", "m1")
+	if err != nil || !strings.Contains(out, "why") || !strings.Contains(out, "approved") {
+		t.Fatalf("history: %q %v", out, err)
+	}
+	if _, err := c.run("registry", "list", "--kind", "model", "extra"); err == nil {
+		t.Fatal("list took a stray word")
+	}
+	if _, err := c.run("registry", "status", "model", "m1", "approved", "oops"); err == nil {
+		t.Fatal("status took a fourth word")
+	}
+}

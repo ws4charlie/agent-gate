@@ -28,22 +28,10 @@ func registryCmd(ctx context.Context, args []string, stdout io.Writer) error {
 		return errors.New("registry: need " + subs)
 	}
 	sub, rest := args[0], args[1:]
-	// Positional words come first, flags after, as with the agent commands.
-	var pos []string
-	for len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
-		pos, rest = append(pos, rest[0]), rest[1:]
-	}
 	want := map[string]int{"add": 2, "status": 3, "remove": 2, "list": 0, "gaps": 0, "history": -1, "seed": 0}
 	n, ok := want[sub]
 	if !ok {
 		return fmt.Errorf("registry: unknown subcommand %q (want %s)", sub, subs)
-	}
-	if sub == "history" && len(pos) != 0 && len(pos) != 2 {
-		return errors.New("registry history: give <kind> <name>, or nothing for everything")
-	}
-	if n >= 0 && len(pos) != n {
-		return fmt.Errorf("registry %s: %s", sub, map[string]string{"add": "need <kind> <name>", "status": "need <kind> <name> <status>",
-			"remove": "need <kind> <name>", "list": "takes only flags", "gaps": "takes only flags", "seed": "takes only flags"}[sub])
 	}
 	c := newCommon("registry " + sub)
 	owner := c.fs.String("owner", "", "who is responsible: a person or team (add)")
@@ -56,7 +44,19 @@ func registryCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	actor := c.fs.String("actor", "", "who is making the change, for the history (default: your OS user)")
 	dry := c.fs.Bool("dry-run", false, "show what would be added, change nothing (seed)")
 	since := c.fs.String("since", "30d", "look back this far, e.g. 24h or 30d (gaps)")
-	_, pool, err := c.open(ctx, rest)
+	// Flags may come before, between or after the positional words.
+	pos, err := c.parseAll(rest)
+	if err != nil {
+		return err
+	}
+	if sub == "history" && len(pos) != 0 && len(pos) != 2 {
+		return errors.New("registry history: give <kind> <name>, or nothing for everything")
+	}
+	if n >= 0 && len(pos) != n {
+		return fmt.Errorf("registry %s: %s", sub, map[string]string{"add": "need <kind> <name>", "status": "need <kind> <name> <status>",
+			"remove": "need <kind> <name>", "list": "takes only flags", "gaps": "takes only flags", "seed": "takes only flags"}[sub])
+	}
+	_, pool, err := c.open(ctx, nil)
 	if err != nil {
 		return err
 	}
