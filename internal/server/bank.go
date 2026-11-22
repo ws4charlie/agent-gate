@@ -135,35 +135,63 @@ func (c *call) bankPay() {
 	in.RecipientID = strings.TrimSpace(in.RecipientID)
 	fp := approval.Fingerprint("bank", BankNetwork, strings.ToLower(in.RecipientID), itoa(int64(amount)), task, in.Memo)
 
-	// A key that was used before: the same request gets the stored answer, a
-	// different one is refused. Nothing is sent to the bank twice.
-	prior, found := bank.Payment{}, false
-	switch p, err := b.Store.ByIdem(c.ctx, acct, idem); {
-	case err == nil:
-		prior, found = p, true
-	case !errors.Is(err, pgx.ErrNoRows):
+	// Claim the key first. The payment row is the claim: it exists before any
+	// money is held, so a second request with the same key finds it and never
+	// reserves, charges or releases anything. Only the request that created the
+	// row (the owner) touches the hold.
+	actor := "agent:" + agent.ID
+	row, created := bank.Payment{}, false
+	base := bank.Payment{AccountID: acct, AgentID: agent.ID, IdemKey: idem, Fingerprint: fp, RecipientID: in.RecipientID,
+		Amount: amount, Memo: in.Memo, TaskID: task, State: bank.Received, Env: b.Env}
+	if p, err := b.Store.ByIdem(c.ctx, acct, idem); err == nil {
+		row = p
+	} else if errors.Is(err, pgx.ErrNoRows) {
+		row, created, err = b.Store.Create(c.ctx, base, actor, map[string]any{"request_id": c.ev.RequestID,
+			"amount_usd": amount.String(), "recipient_id": in.RecipientID})
+		if err != nil {
+			s.Log.Error("bank claim", "err", err)
+			c.fail(http.StatusInternalServerError, audit.StatusInternal, "internal_error", "internal error", nil)
+			return
+		}
+	} else {
 		s.Log.Error("bank lookup", "err", err)
 		c.fail(http.StatusInternalServerError, audit.StatusInternal, "internal_error", "internal error", nil)
 		return
 	}
-	if found {
+	if !created { // a key that was used before: the stored answer, never a second payment
 		switch {
-		case prior.Fingerprint != fp:
+		case row.Fingerprint != fp:
 			c.fail(http.StatusUnprocessableEntity, audit.StatusIdempotencyConflict, "idempotency_conflict", "idempotency_key was used for a different payment",
-				map[string]any{"payment_id": prior.ID})
+				map[string]any{"payment_id": row.ID})
 			return
-		case prior.State == bank.Refused:
-			c.fail(http.StatusForbidden, StatusPolicyDenied, prior.Rule, "this payment was refused",
-				map[string]any{"type": "policy_denied", "rule": prior.Rule, "payment_id": prior.ID, "request_id": c.ev.RequestID})
+		case row.State == bank.Refused:
+			c.fail(refusedStatus(row.Rule), StatusPolicyDenied, row.Rule, "this payment was refused",
+				map[string]any{"type": "policy_denied", "rule": row.Rule, "payment_id": row.ID, "request_id": c.ev.RequestID})
 			return
-		case prior.State != bank.AwaitingGateApproval:
-			c.writeJSON(http.StatusOK, bankView(prior, true))
+		case row.State == bank.Received:
+			c.fail(http.StatusConflict, audit.StatusDuplicate, "request_in_flight", "a request with this idempotency_key is being decided; retry shortly",
+				map[string]any{"payment_id": row.ID})
+			return
+		case row.State != bank.AwaitingGateApproval:
+			c.writeJSON(http.StatusOK, bankView(row, true))
 			c.finish(audit.StatusDuplicate)
 			return
 		}
 	}
+	dctx := context.WithoutCancel(c.ctx)
+	end := func(to bank.State, rule string, facts map[string]any) {
+		if np, err := b.Move(dctx, row, to, actor, facts, bank.Change{Rule: rule}); err != nil {
+			s.Log.Error("bank end", "request_id", c.ev.RequestID, "payment", row.ID, "to", string(to), "err", err)
+		} else {
+			row = np
+		}
+	}
+
 	approved, approvalID, stop := c.checkApproval(idem, fp)
 	if stop {
+		if created { // cannot happen for a fresh key; never leave a claim behind
+			end(bank.Failed, "approval_lookup", nil)
+		}
 		return
 	}
 
@@ -171,20 +199,35 @@ func (c *call) bankPay() {
 		Kind: ledger.KindPayment, TTL: b.HoldLease(), Memo: "bank payment " + in.RecipientID})
 	switch {
 	case errors.Is(err, ledger.ErrInsufficientFunds):
+		end(bank.Refused, "insufficient_funds", nil)
 		c.fail(http.StatusPaymentRequired, audit.StatusInsufficientFunds, "insufficient_funds", "insufficient funds", nil)
 		return
 	case errors.Is(err, ledger.ErrAccountInactive):
+		end(bank.Refused, "account_inactive", nil)
 		c.fail(http.StatusForbidden, audit.StatusAccountInactive, "account_inactive", "account inactive", nil)
 		return
 	case err != nil:
 		s.Log.Error("reserve", "err", err)
+		end(bank.Failed, "internal_error", nil)
 		c.fail(http.StatusInternalServerError, audit.StatusInternal, "internal_error", "internal error", nil)
 		return
 	case hold.Status != "active":
+		end(bank.Failed, "hold_not_active", nil)
 		c.fail(http.StatusConflict, audit.StatusDuplicate, "duplicate_request", "this idempotency_key was already used", nil)
 		return
 	}
 	c.ext.HoldID = hold.ID
+	if row.HoldID == "" { // remember whose hold this is before anything else can fail
+		if np, err := b.Store.Note(dctx, row.ID, "gate", map[string]any{"held": true}, bank.Change{HoldID: hold.ID}); err == nil {
+			row = np
+		} else {
+			s.Log.Error("bank hold record", "payment", row.ID, "err", err)
+			c.release(hold, "bank payment not recorded")
+			end(bank.Failed, "internal_error", nil)
+			c.fail(http.StatusInternalServerError, audit.StatusInternal, "internal_error", "internal error", nil)
+			return
+		}
+	}
 
 	preq := policy.Request{AgentID: agent.ID, Kind: policy.KindPayment, Tool: BankTool, Payee: in.RecipientID, Network: BankNetwork,
 		Amount: amount, TaskID: task, HoldID: hold.ID, Approved: approved}
@@ -195,26 +238,25 @@ func (c *call) bankPay() {
 	}
 	if !ok {
 		c.release(hold, "policy unavailable")
+		end(bank.Failed, "policy_unavailable", nil)
 		return
 	}
-	base := bank.Payment{AccountID: acct, AgentID: agent.ID, IdemKey: idem, Fingerprint: fp, RecipientID: in.RecipientID,
-		Amount: amount, Memo: in.Memo, TaskID: task, HoldID: hold.ID}
 	facts := map[string]any{"request_id": c.ev.RequestID, "amount_usd": amount.String(), "recipient_id": in.RecipientID,
 		"verdict": string(d.Verdict), "rule": d.Rule, "approval_id": approvalID}
-	actor := "agent:" + agent.ID
 	switch d.Verdict {
 	case policy.Deny:
 		c.release(hold, "policy: "+d.Rule)
-		c.bankRefuse(base, prior, found, d.Rule, actor, facts)
+		end(bank.Refused, d.Rule, facts)
 		c.denyResponse(d)
 		return
 	case policy.RequireApproval:
-		if !found {
-			p := base
-			p.State, p.Rule = bank.AwaitingGateApproval, d.Rule
-			if _, _, err := b.Store.Create(c.ctx, p, actor, facts); err != nil {
-				s.Log.Error("bank create", "err", err)
+		if row.State == bank.Received {
+			if np, err := b.Move(dctx, row, bank.AwaitingGateApproval, actor, facts, bank.Change{Rule: d.Rule}); err == nil {
+				row = np
+			} else {
+				s.Log.Error("bank queue", "err", err)
 				c.release(hold, "bank payment not recorded")
+				end(bank.Failed, "internal_error", nil)
 				c.fail(http.StatusInternalServerError, audit.StatusInternal, "internal_error", "internal error", nil)
 				return
 			}
@@ -226,44 +268,34 @@ func (c *call) bankPay() {
 		nd := policy.Decision{Verdict: policy.Deny, Rule: RuleCedarNoProof, Reason: "no Go approval to sign with"}
 		c.logDecision(preq, nd, approvalID)
 		c.release(hold, "policy: "+nd.Rule)
-		c.bankRefuse(base, prior, found, nd.Rule, actor, facts)
+		end(bank.Refused, nd.Rule, facts)
 		c.denyResponse(nd)
 		return
 	}
 	if !c.charge(hold, preq) { // a lost budget race: the response is written, the payment is refused
-		c.bankRefuse(base, prior, found, c.ev.Err, actor, facts)
+		end(bank.Refused, c.ev.Err, facts)
 		return
 	}
 
-	// Allowed. From here the payment is real: the row exists before anything
+	// Allowed. From here the payment is real: the row is moved before anything
 	// goes to the bank, so a crash leaves a payment the poller will submit.
-	dctx := context.WithoutCancel(c.ctx)
-	var p bank.Payment
-	if found { // it waited for a Gate human: record who
+	who := actor
+	if row.State == bank.AwaitingGateApproval { // it waited for a Gate human: record who
 		by := ""
 		if a, err := s.Approvals.Store.Get(dctx, approvalID); err == nil {
 			by = a.DecidedBy
 		}
 		facts["approved_by"] = by
-		p, err = b.Move(dctx, prior, bank.AwaitingBankApproval, "gate-approver:"+by, facts, bank.Change{})
-	} else {
-		p = base
-		p.State, p.Rule = bank.AwaitingBankApproval, d.Rule
-		var created bool
-		if p, created, err = b.Store.Create(dctx, p, actor, facts); err == nil && !created {
-			c.release(hold, "duplicate payment") // lost a race with the same key: the other request owns it
-			c.writeJSON(http.StatusOK, bankView(p, true))
-			c.finish(audit.StatusDuplicate)
-			return
-		}
+		who = "gate-approver:" + by
 	}
+	p, err := b.Move(dctx, row, bank.AwaitingBankApproval, who, facts, bank.Change{Rule: d.Rule})
 	if err != nil {
 		s.Log.Error("bank record", "request_id", c.ev.RequestID, "err", err)
 		c.release(hold, "bank payment not recorded")
+		end(bank.Failed, "internal_error", nil)
 		c.fail(http.StatusInternalServerError, audit.StatusInternal, "internal_error", "internal error", nil)
 		return
 	}
-	c.ext.HoldID = hold.ID
 	sp, serr := b.Submit(dctx, p)
 	switch {
 	case errors.Is(serr, bank.ErrRejected):
@@ -282,20 +314,14 @@ func (c *call) bankPay() {
 	c.finish(StatusBankSubmitted)
 }
 
-// bankRefuse records a refused payment: a new row in refused, or the row that
-// was waiting for a Gate human moved to refused.
-func (c *call) bankRefuse(base, prior bank.Payment, found bool, rule, actor string, facts map[string]any) {
-	dctx, cancel := context.WithTimeout(context.WithoutCancel(c.ctx), 5*time.Second)
-	defer cancel()
-	b := c.s.Bank
-	var err error
-	if found {
-		_, err = b.Move(dctx, prior, bank.Refused, actor, facts, bank.Change{Rule: rule})
-	} else {
-		base.State, base.Rule = bank.Refused, rule
-		_, _, err = b.Store.Create(dctx, base, actor, facts)
+// refusedStatus is the HTTP status a refused payment answers with, as the
+// policy gate does it: budget and velocity are "not now", the rest is "no".
+func refusedStatus(rule string) int {
+	switch rule {
+	case policy.RuleBudgetDaily, policy.RuleBudgetTask, policy.RuleVelocity:
+		return http.StatusTooManyRequests
+	case "insufficient_funds":
+		return http.StatusPaymentRequired
 	}
-	if err != nil {
-		c.s.Log.Error("bank refuse record", "request_id", c.ev.RequestID, "err", err)
-	}
+	return http.StatusForbidden
 }

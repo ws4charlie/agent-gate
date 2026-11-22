@@ -19,11 +19,11 @@ agent asks -> Gate policy -> Gate human (above the threshold) -> request at Merc
    - Allowed: the money is held, the request is filed at Mercury, and the answer is `202 {payment_id, state: "awaiting_bank_approval", mercury_request_id}`.
 3. A Mercury user approves or cancels the request in the Mercury dashboard. Gate polls (every 30 seconds by default) and moves the state.
 
-The same `idempotency_key` is one payment: a repeat gets the stored answer and the bank is not asked twice.
+The same `idempotency_key` is one payment. The payment row is created first, before any money is held, so two requests with the same key at once cannot both act: the second gets the stored answer (or `409 request_in_flight` while the first is still deciding), and the bank is not asked twice.
 
 ## States
 
-`refused`, `awaiting_gate_approval`, `awaiting_bank_approval`, `bank_approved`, `sent`, `settled`, `cancelled`, `failed`, `returned`.
+`received` (the claim on the idempotency key, before the decision), `refused`, `awaiting_gate_approval`, `awaiting_bank_approval`, `bank_approved`, `sent`, `settled`, `cancelled`, `failed`, `returned`.
 
 | Mercury says | Gate state | Ledger |
 |---|---|---|
@@ -71,7 +71,7 @@ Mercury does not let the user who created an API token approve that token's requ
 
 A real ACH return is found by the poller: Mercury reports the transaction as reversed or failed after it was sent, and Gate moves the payment to `returned`, credits the money back and frees the budget.
 
-**The sandbox cannot produce a return, so this step is simulated.** `agentgate bank simulate-return <payment_id> [--code R01]` runs the same code the poller uses, with the actor `simulated-return`. It works only on a sent or settled payment, and it refuses to run unless the Mercury base URL is the sandbox.
+**The sandbox cannot produce a return, so this step is simulated.** `agentgate bank simulate-return <payment_id> [--code R01]` runs the same code the poller uses, with the actor `simulated-return`. It works only on a sent or settled payment, and only on a payment whose own record says it was made on the sandbox. Each payment stores the bank it was made on, so a payment from a production gateway can never be simulated back.
 
 ## Production notes
 

@@ -11,7 +11,11 @@ CREATE TABLE bank_payments (
     amount_nanos        bigint NOT NULL CHECK (amount_nanos > 0),
     memo                text NOT NULL DEFAULT '',
     task_id             text NOT NULL DEFAULT '',
-    state               text NOT NULL CHECK (state IN ('refused','awaiting_gate_approval','awaiting_bank_approval',
+    -- bank_env is where the payment was made. A simulated return is allowed only on 'sandbox'.
+    bank_env            text NOT NULL DEFAULT 'production' CHECK (bank_env IN ('sandbox','production')),
+    -- received is the claim: the row exists before any money is held, so a
+    -- second request with the same key finds it and never touches the hold.
+    state               text NOT NULL CHECK (state IN ('received','refused','awaiting_gate_approval','awaiting_bank_approval',
                                                        'bank_approved','sent','settled','cancelled','failed','returned')),
     rule                text NOT NULL DEFAULT '',
     hold_id             text NOT NULL DEFAULT '',

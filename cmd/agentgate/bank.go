@@ -58,7 +58,11 @@ func newBankService(f mercuryFlags, pool *pgxpool.Pool, led ledger.Ledger, ag *a
 	if err != nil {
 		return nil, fmt.Errorf("--mercury: %w (set AG_MERCURY_TOKEN or MERCURY_API_TOKEN, and --mercury-account)", err)
 	}
-	return &bank.Service{Store: bank.NewStore(pool), Rail: rail, Ledger: led, Charges: ag, Approvals: q.Store, Log: log}, nil
+	env := "production"
+	if bank.IsSandbox(*f.baseURL) {
+		env = "sandbox"
+	}
+	return &bank.Service{Env: env, Store: bank.NewStore(pool), Rail: rail, Ledger: led, Charges: ag, Approvals: q.Store, Log: log}, nil
 }
 
 // bankCmd: bank list | show <payment_id> | simulate-return <payment_id> [--code R01].

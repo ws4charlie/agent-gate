@@ -36,6 +36,9 @@ type Service struct {
 	// HoldTTL is how long a bank payment's hold lives; the poller extends it
 	// on every pass while the payment waits.
 	HoldTTL time.Duration
+	// Env is where this gateway's bank is: "sandbox" or "production". Every
+	// payment records it, and a simulated return is allowed only on a sandbox payment.
+	Env string
 }
 
 func (s *Service) log() *slog.Logger {
@@ -94,14 +97,12 @@ func Target(cur State, req Request, txn *Txn) (to State, ok bool) {
 
 // effect does the ledger side of entering state `to`. Every call is
 // idempotent (fixed keys), so a crash between the ledger and the state row is
-// repaired by the next pass.
-func (s *Service) effect(ctx context.Context, p Payment, to State, code string) error {
+// repaired by the next pass. It may change p.HoldID (a re-debit); the caller
+// stores the new id with the state change.
+func (s *Service) effect(ctx context.Context, p *Payment, to State, code string) error {
 	switch to {
 	case Sent:
-		_, err := s.Ledger.Settle(ctx, ledger.SettleReq{HoldID: p.HoldID, Actual: p.Amount, IdemKey: "settle:" + p.HoldID, Memo: "bank payment " + p.ID})
-		if err != nil && !errors.Is(err, ledger.ErrHoldNotActive) {
-			return err
-		}
+		return s.debit(ctx, p)
 	case Cancelled, Failed, Refused:
 		if p.HoldID == "" {
 			return nil
@@ -110,8 +111,12 @@ func (s *Service) effect(ctx context.Context, p Payment, to State, code string) 
 		if err != nil && !errors.Is(err, ledger.ErrHoldNotActive) {
 			return err
 		}
-		return s.closeCharge(ctx, p)
+		return s.closeCharge(ctx, *p)
 	case Returned:
+		// Never create money: only a payment whose debit exists can be refunded.
+		if st, err := s.Store.HoldStatus(ctx, p.HoldID); err != nil || st != "settled" {
+			return fmt.Errorf("no debit to reverse for payment %s (hold is %q): %v", p.ID, st, err)
+		}
 		memo := "ACH return of bank payment " + p.ID
 		if code != "" {
 			memo += " (" + code + ")"
@@ -119,8 +124,48 @@ func (s *Service) effect(ctx context.Context, p Payment, to State, code string) 
 		if err := s.Ledger.Deposit(ctx, p.AccountID, p.Amount, "bank-return:"+p.ID, memo); err != nil {
 			return err
 		}
-		return s.closeCharge(ctx, p)
+		return s.closeCharge(ctx, *p)
 	}
+	return nil
+}
+
+// debit takes the money for a payment that was sent. A hold that is already
+// settled is our own earlier debit (a repeat after a crash). A hold that was
+// released is not: the lease ran out and the reconciler freed it while the
+// bank went on. Then the debit is taken again from a new hold, so a sent
+// payment is never left unpaid (and a later return never refunds money that
+// was not taken). If the money is not there, the payment does not advance.
+func (s *Service) debit(ctx context.Context, p *Payment) error {
+	st, err := s.Store.HoldStatus(ctx, p.HoldID)
+	if err != nil {
+		return err
+	}
+	if st == "active" {
+		_, err := s.Ledger.Settle(ctx, ledger.SettleReq{HoldID: p.HoldID, Actual: p.Amount, IdemKey: "settle:" + p.HoldID, Memo: "bank payment " + p.ID})
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, ledger.ErrHoldNotActive) {
+			return err
+		}
+		if st, err = s.Store.HoldStatus(ctx, p.HoldID); err != nil {
+			return err
+		}
+	}
+	if st == "settled" {
+		return nil
+	}
+	h, err := s.Ledger.Reserve(ctx, ledger.ReserveReq{AccountID: p.AccountID, Amount: p.Amount, IdemKey: "bank-redebit:" + p.ID,
+		Kind: ledger.KindPayment, TTL: time.Hour, Memo: "re-debit of sent bank payment " + p.ID})
+	if err != nil {
+		return fmt.Errorf("re-debit of sent payment %s: %w", p.ID, err)
+	}
+	if h.Status == "active" {
+		if _, err := s.Ledger.Settle(ctx, ledger.SettleReq{HoldID: h.ID, Actual: p.Amount, IdemKey: "settle:" + h.ID, Memo: "bank payment " + p.ID}); err != nil && !errors.Is(err, ledger.ErrHoldNotActive) {
+			return err
+		}
+	}
+	p.HoldID = h.ID
 	return nil
 }
 
@@ -144,8 +189,12 @@ func (s *Service) Move(ctx context.Context, p Payment, to State, actor string, d
 		if i == len(steps)-1 {
 			d, c = detail, ch
 		}
-		if err := s.effect(ctx, p, st, code); err != nil {
+		held := p.HoldID
+		if err := s.effect(ctx, &p, st, code); err != nil {
 			return p, err
+		}
+		if p.HoldID != held {
+			c.HoldID = p.HoldID
 		}
 		np, _, err := s.Store.Transition(ctx, p.ID, st, actor, d, c)
 		if err != nil {
@@ -210,8 +259,26 @@ func (s *Service) Poll(ctx context.Context) (int, error) {
 }
 
 func (s *Service) step(ctx context.Context, p Payment) (Payment, error) {
+	if p.State == Received {
+		return s.stepReceived(ctx, p)
+	}
 	if p.State == AwaitingGateApproval {
 		return s.stepGate(ctx, p)
+	}
+	// The debit is taken when a payment enters sent, and the state is written
+	// right after. A crash between the two leaves the money taken with the
+	// state behind. The stored debit is the fact: finish the step first, so a
+	// later reversal is a return and is refunded.
+	if p.State == AwaitingBankApproval || p.State == BankApproved {
+		if st, err := s.Store.HoldStatus(ctx, p.HoldID); err != nil {
+			return p, err
+		} else if st == "settled" {
+			np, err := s.Move(ctx, p, Sent, "gate", map[string]any{"recovered": "the debit was committed before the state"}, Change{})
+			if err != nil {
+				return p, err
+			}
+			p = np
+		}
 	}
 	if p.State == AwaitingBankApproval || p.State == BankApproved {
 		if p.HoldID != "" { // the wait can be long: keep the hold alive
@@ -266,6 +333,19 @@ func txnStatus(t *Txn) string {
 	return t.Status
 }
 
+// stalledReceived is how long a payment may stay in received before the poller
+// gives up on it: its request died between the claim and the decision.
+const stalledReceived = 10 * time.Minute
+
+// stepReceived frees a claim whose request died before it decided: the hold, if
+// it got one, is released and the payment ends failed.
+func (s *Service) stepReceived(ctx context.Context, p Payment) (Payment, error) {
+	if s.Store.at().Sub(p.UpdatedAt) < stalledReceived {
+		return p, nil
+	}
+	return s.Move(ctx, p, Failed, "gate", map[string]any{"reason": "the request ended before a decision"}, Change{Rule: "abandoned"})
+}
+
 // stepGate watches a payment that waits for a Gate human: when the approval
 // was denied or expired the payment is refused (the queue already released the hold).
 func (s *Service) stepGate(ctx context.Context, p Payment) (Payment, error) {
@@ -295,6 +375,9 @@ func (s *Service) Return(ctx context.Context, id, code, actor string) (Payment, 
 	p, err := s.Store.Get(ctx, id)
 	if err != nil {
 		return Payment{}, err
+	}
+	if p.Env != "sandbox" {
+		return p, fmt.Errorf("payment %s was made on %s, not the sandbox: a return of it must come from the bank", p.ID, p.Env)
 	}
 	if p.State != Sent && p.State != Settled {
 		return p, fmt.Errorf("payment is %s: only a sent or settled payment can be returned", p.State)

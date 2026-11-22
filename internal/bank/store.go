@@ -21,7 +21,7 @@ type Payment struct {
 	RecipientID, Memo, TaskID                    string
 	Amount                                       money.Nanos
 	State                                        State
-	Rule, HoldID, RequestID, TxnID               string
+	Rule, HoldID, RequestID, TxnID, Env          string
 	CreatedAt, UpdatedAt                         time.Time
 	SentAt                                       *time.Time
 }
@@ -56,14 +56,14 @@ func (s *Store) SetClock(f func() time.Time) { s.now = f }
 func (s *Store) at() time.Time { return s.now().UTC().Truncate(time.Microsecond) }
 
 const cols = `id, account_id, agent_id, idem_key, fingerprint, recipient_id, amount_nanos, memo, task_id, state, rule,
-	hold_id, mercury_request_id, mercury_txn_id, created_at, updated_at, sent_at`
+	hold_id, mercury_request_id, mercury_txn_id, created_at, updated_at, sent_at, bank_env`
 
 func scan(row pgx.Row) (Payment, error) {
 	var p Payment
 	var amt int64
 	var st string
 	err := row.Scan(&p.ID, &p.AccountID, &p.AgentID, &p.IdemKey, &p.Fingerprint, &p.RecipientID, &amt, &p.Memo, &p.TaskID, &st,
-		&p.Rule, &p.HoldID, &p.RequestID, &p.TxnID, &p.CreatedAt, &p.UpdatedAt, &p.SentAt)
+		&p.Rule, &p.HoldID, &p.RequestID, &p.TxnID, &p.CreatedAt, &p.UpdatedAt, &p.SentAt, &p.Env)
 	p.Amount, p.State = money.Nanos(amt), State(st)
 	return p, err
 }
@@ -110,15 +110,18 @@ func writeEvent(ctx context.Context, tx pgx.Tx, p Payment, from, to State, actor
 // the stored row with created=false.
 func (s *Store) Create(ctx context.Context, p Payment, actor string, detail map[string]any) (Payment, bool, error) {
 	p.ID, p.CreatedAt, p.UpdatedAt = "bp_"+uuid.NewString(), s.at(), s.at()
+	if p.Env != "sandbox" { // anything else is production: the safe reading
+		p.Env = "production"
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Payment{}, false, err
 	}
 	defer tx.Rollback(ctx)
-	tag, err := tx.Exec(ctx, `INSERT INTO bank_payments (`+cols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+	tag, err := tx.Exec(ctx, `INSERT INTO bank_payments (`+cols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 		ON CONFLICT (account_id, idem_key) DO NOTHING`,
 		p.ID, p.AccountID, p.AgentID, p.IdemKey, p.Fingerprint, p.RecipientID, int64(p.Amount), p.Memo, p.TaskID, string(p.State), p.Rule,
-		p.HoldID, p.RequestID, p.TxnID, p.CreatedAt, p.UpdatedAt, p.SentAt)
+		p.HoldID, p.RequestID, p.TxnID, p.CreatedAt, p.UpdatedAt, p.SentAt, p.Env)
 	if err != nil {
 		return Payment{}, false, err
 	}
@@ -162,7 +165,7 @@ func (s *Store) List(ctx context.Context, limit int) ([]Payment, error) {
 // settled one only while an ACH return is still possible.
 func (s *Store) Open(ctx context.Context) ([]Payment, error) {
 	rows, err := s.pool.Query(ctx, `SELECT `+cols+` FROM bank_payments
-		WHERE state IN ('awaiting_gate_approval','awaiting_bank_approval','bank_approved','sent')
+		WHERE state IN ('received','awaiting_gate_approval','awaiting_bank_approval','bank_approved','sent')
 		   OR (state='settled' AND sent_at > $1)
 		ORDER BY created_at, id`, s.at().Add(-ReturnWindow))
 	if err != nil {
@@ -205,6 +208,7 @@ type Change struct {
 	Rule      string
 	RequestID string
 	TxnID     string
+	HoldID    string
 }
 
 // Transition moves a payment to `to` and appends the event and the audit row
@@ -250,15 +254,32 @@ func (s *Store) apply(ctx context.Context, id string, to State, actor string, de
 	if ch.TxnID != "" {
 		p.TxnID = ch.TxnID
 	}
+	if ch.HoldID != "" {
+		p.HoldID = ch.HoldID
+	}
 	if to == Sent && p.SentAt == nil {
 		p.SentAt = &now
 	}
-	if _, err := tx.Exec(ctx, `UPDATE bank_payments SET state=$2, rule=$3, mercury_request_id=$4, mercury_txn_id=$5, updated_at=$6, sent_at=$7 WHERE id=$1`,
-		id, string(p.State), p.Rule, p.RequestID, p.TxnID, p.UpdatedAt, p.SentAt); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE bank_payments SET state=$2, rule=$3, mercury_request_id=$4, mercury_txn_id=$5, updated_at=$6, sent_at=$7, hold_id=$8 WHERE id=$1`,
+		id, string(p.State), p.Rule, p.RequestID, p.TxnID, p.UpdatedAt, p.SentAt, p.HoldID); err != nil {
 		return Payment{}, false, err
 	}
 	if err := writeEvent(ctx, tx, p, from, to, actor, js(detail), now); err != nil {
 		return Payment{}, false, err
 	}
 	return p, true, tx.Commit(ctx)
+}
+
+// HoldStatus returns the ledger status of a hold ("active", "settled",
+// "released"), or "" when there is no such hold.
+func (s *Store) HoldStatus(ctx context.Context, holdID string) (string, error) {
+	if holdID == "" {
+		return "", nil
+	}
+	var st string
+	err := s.pool.QueryRow(ctx, `SELECT status FROM holds WHERE id=$1`, holdID).Scan(&st)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return st, err
 }

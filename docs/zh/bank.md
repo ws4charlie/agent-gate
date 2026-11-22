@@ -15,11 +15,11 @@
    - 允许：先冻结资金，再向 Mercury 提交请求，返回 `202 {payment_id, state: "awaiting_bank_approval", mercury_request_id}`。
 3. Mercury 的用户在 Mercury 后台批准或取消这个请求。Gate 轮询（默认每 30 秒）并更新状态。
 
-同一个 `idempotency_key` 代表同一笔付款：重复请求得到之前保存的答复，不会再问一次银行。
+同一个 `idempotency_key` 代表同一笔付款。付款记录在冻结任何资金之前先创建，所以同一个键的两个并发请求不会都去执行：后到的得到已保存的答复（第一个还在决定时返回 `409 request_in_flight`），银行也不会被问两次。
 
 ## 状态
 
-`refused`、`awaiting_gate_approval`、`awaiting_bank_approval`、`bank_approved`、`sent`、`settled`、`cancelled`、`failed`、`returned`。
+`received`（幂等键的占位，决定之前）、`refused`、`awaiting_gate_approval`、`awaiting_bank_approval`、`bank_approved`、`sent`、`settled`、`cancelled`、`failed`、`returned`。
 
 | Mercury 的状态 | Gate 状态 | 账本 |
 |---|---|---|
@@ -67,7 +67,7 @@ Mercury 不允许创建 API token 的用户批准该 token 发起的请求，必
 
 真实的 ACH 退回由轮询发现：Mercury 报告交易在发出后被冲回或失败，Gate 把付款改为 `returned`，把钱退回账户并归还预算。
 
-**沙盒无法产生退回，所以这一步是模拟的。** `agentgate bank simulate-return <payment_id> [--code R01]` 运行与轮询相同的代码，操作者记为 `simulated-return`。它只对已发出或已入账的付款有效，并且除非 Mercury 的 base URL 是沙盒，否则拒绝运行。
+**沙盒无法产生退回，所以这一步是模拟的。** `agentgate bank simulate-return <payment_id> [--code R01]` 运行与轮询相同的代码，操作者记为 `simulated-return`。它只对已发出或已入账、并且自己的记录显示在沙盒上创建的付款有效。每笔付款都记录它所在的银行环境，所以生产网关的付款永远不会被模拟退回。
 
 ## 生产环境须知
 

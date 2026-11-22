@@ -80,6 +80,10 @@ type Rail interface {
 type State string
 
 const (
+	// Received is the claim on an idempotency key: the payment exists, nothing
+	// is held yet or the decision is not made. Only the request that created
+	// the row may reserve, charge or release.
+	Received             State = "received"
 	Refused              State = "refused"
 	AwaitingGateApproval State = "awaiting_gate_approval"
 	AwaitingBankApproval State = "awaiting_bank_approval"
@@ -119,6 +123,8 @@ func rank(s State) int {
 // allowed reports whether from -> to is a legal single step.
 func allowed(from, to State) bool {
 	switch from {
+	case Received:
+		return to == AwaitingGateApproval || to == AwaitingBankApproval || to == Refused || to == Failed
 	case AwaitingGateApproval:
 		return to == AwaitingBankApproval || to == Refused
 	case AwaitingBankApproval:

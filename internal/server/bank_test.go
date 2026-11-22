@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ws4charlie/agent-gate/internal/agents"
 	"github.com/ws4charlie/agent-gate/internal/approval"
 	"github.com/ws4charlie/agent-gate/internal/bank"
+	"github.com/ws4charlie/agent-gate/internal/ledger"
 	"github.com/ws4charlie/agent-gate/internal/policy"
 	"github.com/ws4charlie/agent-gate/internal/server"
 )
@@ -27,6 +29,10 @@ type bankEnv struct {
 // newBankEnv starts a gateway with the bank rail on, backed by the fake rail.
 // The agent may pay rcpt through tool mercury/ach, up to $100 a day, and a
 // payment above $50 needs a Gate human.
+func ledgerSettle(p bank.Payment) ledger.SettleReq {
+	return ledger.SettleReq{HoldID: p.HoldID, Actual: p.Amount, IdemKey: "settle:" + p.HoldID, Memo: "bank payment " + p.ID}
+}
+
 func newBankEnv(t *testing.T) *bankEnv { return newBankEnvWith(t, nil) }
 
 func newBankEnvWith(t *testing.T, extra func(*server.Server)) *bankEnv {
@@ -38,7 +44,7 @@ func newBankEnvWith(t *testing.T, extra func(*server.Server)) *bankEnv {
 		}
 		s.Agents = agents.NewStore(s.Pool)
 		s.Approvals = &approval.Queue{Store: approval.NewStore(s.Pool), Ledger: s.Ledger}
-		b.svc = &bank.Service{Store: bank.NewStore(s.Pool), Rail: b.fake, Ledger: s.Ledger, Charges: s.Agents, Approvals: s.Approvals.Store}
+		b.svc = &bank.Service{Env: "sandbox", Store: bank.NewStore(s.Pool), Rail: b.fake, Ledger: s.Ledger, Charges: s.Agents, Approvals: s.Approvals.Store}
 		s.Bank = b.svc
 	})
 	b.setScope(func(sc *policy.Scope) {
@@ -108,6 +114,9 @@ func (b *bankEnv) auditStatuses(id string) []string {
 
 func wantChain(t *testing.T, got []string, want ...string) {
 	t.Helper()
+	// Every payment starts with the claim (received) and the note that its hold exists.
+	// The first want entry is the state the payment left received for.
+	want = append([]string{">received", "received>received", "received" + want[0]}, want[1:]...)
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("chain\n got  %v\n want %v", got, want)
 	}
@@ -149,7 +158,7 @@ func TestBankRefusedNeverCallsRail(t *testing.T) {
 			t.Fatalf("payment %+v", p)
 		}
 		wantChain(t, b.chain(p.ID), ">refused")
-		if got := b.auditStatuses(p.ID); len(got) != 1 || got[0] != "bank_refused" {
+		if got := b.auditStatuses(p.ID); len(got) != 3 || got[2] != "bank_refused" {
 			t.Fatalf("audit %v", got)
 		}
 	}
@@ -231,8 +240,8 @@ func TestBankOverThresholdWaitsForGateHumanThenSubmitsOnce(t *testing.T) {
 	}
 	wantChain(t, b.chain(id), ">awaiting_gate_approval", "awaiting_gate_approval>awaiting_bank_approval", "awaiting_bank_approval>awaiting_bank_approval")
 	evs, _ := b.svc.Store.Events(context.Background(), id)
-	if evs[1].Actor != "gate-approver:alice" || evs[0].Actor != "agent:"+b.payment(id).AgentID {
-		t.Fatalf("actors %q %q", evs[0].Actor, evs[1].Actor)
+	if evs[3].Actor != "gate-approver:alice" || evs[0].Actor != "agent:"+b.payment(id).AgentID {
+		t.Fatalf("actors %q %q", evs[0].Actor, evs[3].Actor)
 	}
 	if len(b.auditStatuses(id)) != len(evs) {
 		t.Fatalf("audit rows %v for %d events", b.auditStatuses(id), len(evs))
@@ -282,8 +291,8 @@ func TestBankPollerSendsAndSettles(t *testing.T) {
 	wantChain(t, b.chain(id), ">awaiting_bank_approval", "awaiting_bank_approval>awaiting_bank_approval",
 		"awaiting_bank_approval>bank_approved", "bank_approved>sent", "sent>settled")
 	evs, _ := b.svc.Store.Events(context.Background(), id)
-	if !strings.Contains(evs[2].Detail, "user-2") { // the Mercury approver is in the chain
-		t.Fatalf("no Mercury reviewer in %s", evs[2].Detail)
+	if !strings.Contains(evs[4].Detail, "user-2") { // the Mercury approver is in the chain
+		t.Fatalf("no Mercury reviewer in %s", evs[4].Detail)
 	}
 	if len(b.auditStatuses(id)) != len(evs) {
 		t.Fatalf("audit %v", b.auditStatuses(id))
@@ -408,7 +417,7 @@ func TestBankReturnReversesLedgerAndBudget(t *testing.T) {
 	}
 	wantChain(t, b.chain(id), ">awaiting_bank_approval", "awaiting_bank_approval>awaiting_bank_approval",
 		"awaiting_bank_approval>bank_approved", "bank_approved>sent", "sent>settled", "settled>returned")
-	if got := b.auditStatuses(id); got[len(got)-1] != "bank_returned" || len(got) != 6 {
+	if got := b.auditStatuses(id); got[len(got)-1] != "bank_returned" || len(got) != 8 {
 		t.Fatalf("audit %v", got)
 	}
 	evs, _ := b.svc.Store.Events(context.Background(), id)
@@ -509,4 +518,129 @@ func TestBankCedarEnforceAndRegistry(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("want 2 decision rows, got %d", n)
 	}
+}
+
+// ---- fix1: guards from the PR review ----
+
+// Two requests with the same key at once: one payment, one hold, one charge,
+// one submit, and the hold is still active. The loser never touches the hold.
+func TestBankConcurrentSameKeyOneHoldOneSubmit(t *testing.T) {
+	b := newBankEnv(t)
+	const n = 8
+	codes := make(chan int, n)
+	for i := 0; i < n; i++ {
+		go func() { c, _ := b.pay(rcpt, "10", "same"); codes <- c }()
+	}
+	for i := 0; i < n; i++ {
+		switch c := <-codes; c {
+		case http.StatusAccepted, http.StatusOK, http.StatusConflict:
+		default:
+			t.Fatalf("unexpected status %d", c)
+		}
+	}
+	ps, _ := b.svc.Store.List(context.Background(), 10)
+	if len(ps) != 1 || b.fake.Sent != 1 {
+		t.Fatalf("%d payments, %d submits", len(ps), b.fake.Sent)
+	}
+	var holds, active, charges int
+	_ = b.pool.QueryRow(context.Background(), `SELECT count(*), count(*) FILTER (WHERE status='active') FROM holds WHERE kind='payment'`).Scan(&holds, &active)
+	_ = b.pool.QueryRow(context.Background(), `SELECT count(*) FROM budget_charges`).Scan(&charges)
+	if holds != 1 || active != 1 || charges != 1 || b.balance().Held != 10*usd {
+		t.Fatalf("holds %d active %d charges %d held %v", holds, active, charges, b.balance().Held)
+	}
+}
+
+// Sent while the hold was released behind our back (the lease ran out and the
+// reconciler freed it): the debit is taken again, and a later return refunds
+// exactly what was debited, never more.
+func TestBankSentAfterHoldReleasedStillDebits(t *testing.T) {
+	b := newBankEnv(t)
+	_, m := b.pay(rcpt, "40", "k")
+	id := m["payment_id"].(string)
+	p := b.payment(id)
+	if _, err := b.led.Release(context.Background(), p.HoldID, "test-release", "lease ran out"); err != nil {
+		t.Fatal(err)
+	}
+	b.fake.SetRequest("req-1", bank.ReqApproved)
+	b.fake.SetTxn("req-1", bank.TxnSent, false)
+	b.poll()
+	if got := b.payment(id).State; got != bank.Sent || b.balance().Balance != 960*usd {
+		t.Fatalf("state %s balance %+v: a sent payment must be debited", got, b.balance())
+	}
+	b.fake.SetTxn("req-1", bank.TxnReversed, true)
+	b.poll()
+	if got := b.payment(id).State; got != bank.Returned || b.balance().Balance != 1000*usd {
+		t.Fatalf("state %s balance %+v", got, b.balance())
+	}
+	if err := b.led.Audit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A crash after the debit but before the state write leaves bank_approved with
+// the money taken. A reversal after that must still refund.
+func TestBankReturnAfterCrashBetweenDebitAndState(t *testing.T) {
+	b := newBankEnv(t)
+	_, m := b.pay(rcpt, "40", "k")
+	id := m["payment_id"].(string)
+	p := b.payment(id)
+	b.fake.SetRequest("req-1", bank.ReqApproved)
+	b.fake.SetTxn("req-1", bank.TxnPending, false)
+	b.poll() // bank_approved
+	// The debit committed, the process died before the state was written:
+	if _, err := b.led.Settle(context.Background(), ledgerSettle(p)); err != nil {
+		t.Fatal(err)
+	}
+	if b.payment(id).State != bank.BankApproved || b.balance().Balance != 960*usd {
+		t.Fatal("setup wrong")
+	}
+	b.fake.SetTxn("req-1", bank.TxnReversed, true)
+	b.poll()
+	if got := b.payment(id).State; got != bank.Returned || b.balance().Balance != 1000*usd {
+		t.Fatalf("state %s balance %+v: the debit was lost", got, b.balance())
+	}
+}
+
+// A payment made on production Mercury cannot be returned by the simulation,
+// whatever base URL the command is given: the row says where it was made.
+func TestBankSimulatedReturnRefusedForProductionPayment(t *testing.T) {
+	b := newBankEnv(t)
+	b.svc.Env = "production"
+	_, m := b.pay(rcpt, "10", "k")
+	id := m["payment_id"].(string)
+	b.fake.SetRequest("req-1", bank.ReqApproved)
+	b.fake.SetTxn("req-1", bank.TxnSent, false)
+	b.poll()
+	before := b.balance()
+	if _, err := b.svc.Return(context.Background(), id, "R01", "simulated-return"); err == nil {
+		t.Fatal("a production payment was returned by the simulation")
+	}
+	if b.balance() != before || b.payment(id).State != bank.Sent {
+		t.Fatalf("something changed: %+v %s", b.balance(), b.payment(id).State)
+	}
+}
+
+// A request that dies after the claim leaves a received payment. The poller
+// ends it and frees its hold.
+func TestBankStalledClaimIsFreed(t *testing.T) {
+	b := newBankEnv(t)
+	hold, err := b.led.Reserve(context.Background(), ledger.ReserveReq{AccountID: b.acct, Amount: 5 * usd, IdemKey: "bank:dead", Kind: ledger.KindPayment, TTL: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _, err := b.svc.Store.Create(context.Background(), bank.Payment{AccountID: b.acct, AgentID: "a", IdemKey: "dead", Fingerprint: "f",
+		RecipientID: rcpt, Amount: 5 * usd, State: bank.Received, HoldID: hold.ID, Env: "sandbox"}, "agent:a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.poll()
+	if b.payment(p.ID).State != bank.Received {
+		t.Fatal("a fresh claim was taken away")
+	}
+	b.svc.Store.SetClock(func() time.Time { return time.Now().Add(11 * time.Minute) })
+	b.poll()
+	if got := b.payment(p.ID); got.State != bank.Failed || got.Rule != "abandoned" {
+		t.Fatalf("%+v", got)
+	}
+	b.noActiveHolds()
 }
