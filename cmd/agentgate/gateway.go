@@ -26,6 +26,7 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/agents"
 	"github.com/ws4charlie/agent-gate/internal/approval"
 	"github.com/ws4charlie/agent-gate/internal/audit"
+	"github.com/ws4charlie/agent-gate/internal/bank"
 	"github.com/ws4charlie/agent-gate/internal/cedarpolicy"
 	"github.com/ws4charlie/agent-gate/internal/config"
 	"github.com/ws4charlie/agent-gate/internal/db"
@@ -96,6 +97,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	registryEnforce := c.fs.Bool("registry-enforce", envBool("AG_REGISTRY_ENFORCE"), "deny models and tools that are not approved in the AI Registry (rule registry_unapproved; default $AG_REGISTRY_ENFORCE, off)")
 	cedarEnforce := c.fs.Bool("cedar-enforce", envBool("AG_CEDAR_ENFORCE"), "let Cedar decide, record the Go engine beside it, and deny when Cedar fails; needs --cedar-policies (default $AG_CEDAR_ENFORCE)")
 	spiffeID := c.fs.String("spiffe-id", os.Getenv("AG_SPIFFE_ID"), "the SPIFFE ID of the gateway's own SVID, when the Workload API returns several (default $AG_SPIFFE_ID; empty: the first one)")
+	mf := addMercuryFlags(c)
 	reconcileEvery := c.fs.Duration("reconcile-every", 30*time.Second, "background reconcile interval")
 	cfg, pool, err := c.open(ctx, args)
 	if err != nil {
@@ -144,6 +146,18 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	if *registryEnforce {
 		srv.RegistryEnforce = true
 		log.Info("registry check on")
+	}
+	if *mf.on {
+		bs, err := newBankService(mf, pool, led, srv.Agents, srv.Approvals, log)
+		if err != nil {
+			return err
+		}
+		srv.Bank = bs
+		if bank.IsSandbox(*mf.baseURL) {
+			log.Info("mercury bank rail on (sandbox)", "poll", *mf.poll)
+		} else {
+			log.Warn("mercury bank rail on (NOT the sandbox)", "poll", *mf.poll)
+		}
 	}
 	if *cedarDir != "" {
 		eng, err := cedarpolicy.Load(*cedarDir)
@@ -196,6 +210,9 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if srv.Bank != nil {
+		go srv.Bank.Run(ctx, *mf.poll) // restart-safe: everything it needs is in the database
+	}
 	go srv.WatchKills(ctx) // I12: cancel in-flight calls of killed or revoked agents
 	go func() {            // I6: close holds whose process died
 		t := time.NewTicker(*reconcileEvery)
