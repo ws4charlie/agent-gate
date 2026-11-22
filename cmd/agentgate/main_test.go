@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -43,5 +44,12 @@ func TestWalletNewPrintsAddressOnly(t *testing.T) {
 	// A second run must not overwrite the key.
 	if code := run(context.Background(), []string{"wallet", "new", "--file", file}, &out, &errb); code == 0 {
 		t.Fatal("overwrote an existing key")
+	}
+}
+
+func TestBankSimulateReturnRefusedOutsideSandbox(t *testing.T) {
+	err := bankCmd(context.Background(), []string{"simulate-return", "bp_x", "--mercury-base-url", "https://api.mercury.com/api/v1/"}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "not the sandbox") {
+		t.Fatalf("want a refusal, got %v", err)
 	}
 }

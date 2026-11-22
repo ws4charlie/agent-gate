@@ -144,6 +144,34 @@ func TableCases() []Case {
 	add("invalid beats registry", modelReq(0), reg(true, ""))
 	add("approved registry still needs approval", modelReq(201), reg(true, "approved"))
 
+	// The bank rail (Mercury ACH): the payee is a bank recipient id, not a 0x
+	// address, and the tool is "mercury/ach". Both engines must treat it the same.
+	const achPayee, achTool = "rcpt-ach-0001", "mercury/ach"
+	ach := func(amt money.Nanos) policy.Request {
+		return policy.Request{AgentID: "a", Kind: policy.KindPayment, Tool: achTool, Payee: achPayee, Network: "ach", Amount: amt, HoldID: "h1"}
+	}
+	achScope := func(s *policy.Snapshot) {
+		s.Scope.Tools, s.Scope.Payees = []string{achTool}, []string{achPayee}
+	}
+	both := func(fs ...func(*policy.Snapshot)) func(*policy.Snapshot) {
+		return func(s *policy.Snapshot) {
+			for _, f := range fs {
+				f(s)
+			}
+		}
+	}
+	add("ach in scope", ach(100), achScope)
+	add("ach payee out of scope", func() policy.Request { r := ach(100); r.Payee = "rcpt-ach-9999"; return r }(), achScope)
+	add("ach payee case-insensitive", func() policy.Request { r := ach(100); r.Payee = "RCPT-ACH-0001"; return r }(), achScope)
+	add("ach tool out of scope", ach(100), func(s *policy.Snapshot) { s.Scope.Payees = []string{achPayee} })
+	add("ach over threshold", ach(201), achScope)
+	add("ach over threshold approved", func() policy.Request { r := ach(201); r.Approved = true; return r }(), achScope)
+	add("ach over daily budget", ach(100), both(achScope, func(s *policy.Snapshot) { s.DailySpent = 901 }))
+	add("ach over task budget", ach(100), both(achScope, func(s *policy.Snapshot) { s.TaskSpent = 401 }))
+	add("ach registry approved", ach(100), both(achScope, reg(true, "approved")))
+	add("ach registry unapproved", ach(100), both(achScope, reg(true, "proposed")))
+	add("ach registry missing", ach(100), both(achScope, reg(true, "")))
+
 	// Every pair of rules that both fire: the earlier one must win.
 	chain := []mut{
 		func(_ *policy.Request, s *policy.Snapshot) { s.Status = policy.StatusKilled },

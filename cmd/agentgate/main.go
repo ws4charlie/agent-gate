@@ -58,6 +58,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = cedarCmd(ctx, args[1:], stdout)
 	case "registry":
 		err = registryCmd(ctx, args[1:], stdout)
+	case "bank":
+		err = bankCmd(ctx, args[1:], stdout)
 	case "console":
 		err = consoleCmd(ctx, args[1:], stdout)
 	case "help", "-h", "--help":
@@ -93,6 +95,7 @@ commands:
   wallet      new | address: the agent wallet key (testnet only)
   paidtool    run the paid x402 endpoint (--network sim | anvil | base-sepolia)
   cedar       check DIR | shadow [--since 24h]: Cedar policies in shadow mode
+  bank        list | show | simulate-return: Mercury ACH payments and their audit chain
   registry    add | list | status | remove | gaps: the catalogue of allowed models, tools and agents
   console     the local web console: overview, controls, research tasks`)
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/agents"
 	"github.com/ws4charlie/agent-gate/internal/approval"
 	"github.com/ws4charlie/agent-gate/internal/audit"
+	"github.com/ws4charlie/agent-gate/internal/bank"
 	"github.com/ws4charlie/agent-gate/internal/ledger"
 	"github.com/ws4charlie/agent-gate/internal/mcp"
 	"github.com/ws4charlie/agent-gate/internal/money"
@@ -67,8 +68,9 @@ type Server struct {
 	DefaultMaxTokens int64
 	HoldTTL          time.Duration
 	ExtendEvery      time.Duration
-	StoreBodies      bool      // opt-in; bodies are redacted before storage (I9)
-	Payments         *Payments // nil disables POST /v1/payments and paying MCP 402s
+	StoreBodies      bool          // opt-in; bodies are redacted before storage (I9)
+	Payments         *Payments     // nil disables POST /v1/payments and paying MCP 402s
+	Bank             *bank.Service // nil disables POST /v1/bank/payments (the Mercury ACH rail); behaviour is then exactly as without it
 
 	// T4 policy. All three default to working instances over Pool.
 	Agents      *agents.Store
@@ -169,6 +171,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/balance", s.handleBalance)
 	if s.Payments != nil {
 		mux.HandleFunc("POST /v1/payments", s.handlePayment)
+	}
+	if s.Bank != nil {
+		mux.HandleFunc("POST /v1/bank/payments", s.handleBankPayment)
+		mux.HandleFunc("GET /v1/bank/payments/{id}", s.handleBankGet)
 	}
 	// Every method, so GET and DELETE get the 405 the 2026-07-28 spec asks for.
 	// With MCP nil the route answers 404: the gateway has no MCP servers.

@@ -114,72 +114,92 @@ func (p *Postgres) Deposit(ctx context.Context, accountID string, amount money.N
 }
 
 func (p *Postgres) Reserve(ctx context.Context, r ReserveReq) (Hold, error) {
-	switch {
-	case r.AccountID == "" || r.IdemKey == "" || r.Amount <= 0 || r.TTL <= 0:
-		return Hold{}, fmt.Errorf("%w: reserve needs account, key, positive amount and ttl", ErrInvalidRequest)
-	case r.Kind != KindModel && r.Kind != KindTool && r.Kind != KindPayment:
-		return Hold{}, fmt.Errorf("%w: unknown kind %q", ErrInvalidRequest, r.Kind)
+	if err := validReserve(r); err != nil {
+		return Hold{}, err
 	}
 	var h Hold
-	err := p.inTx(ctx, func(tx pgx.Tx) error {
-		// Insert first, ON CONFLICT DO NOTHING: a concurrent duplicate waits
-		// here for the winner to commit, then falls into the replay branch (I4).
-		// timestamptz keeps microseconds; truncate so the first response equals a replay (I4).
-		expires := p.now().Add(r.TTL).UTC().Truncate(time.Microsecond)
-		var id string
-		err := tx.QueryRow(ctx, `INSERT INTO holds (account_id, idem_key, kind, amount_nanos, expires_at)
-			VALUES ($1,$2,$3,$4,$5)
-			ON CONFLICT (account_id, idem_key) DO NOTHING RETURNING id`,
-			r.AccountID, r.IdemKey, string(r.Kind), int64(r.Amount), expires).Scan(&id)
-		if errors.Is(err, pgx.ErrNoRows) {
-			prev, err := scanHold(tx.QueryRow(ctx, holdSelect+` WHERE account_id=$1 AND idem_key=$2`, r.AccountID, r.IdemKey))
-			if err != nil {
-				return err
-			}
-			if prev.Amount != r.Amount || prev.Kind != r.Kind {
-				return ErrIdempotencyConflict
-			}
-			h = prev.toHold()
-			return nil
-		}
-		var pe *pgconn.PgError
-		if errors.As(err, &pe) && pe.Code == "23503" { // foreign_key_violation
-			return ErrAccountNotFound
-		}
-		if err != nil {
-			return err
-		}
-
-		// I1/I5: the budget check IS the update. No read-then-write, so two
-		// reserves cannot both see the same free balance.
-		var bal, held money.Nanos
-		err = tx.QueryRow(ctx, `UPDATE accounts SET held_nanos = held_nanos + $2
-			WHERE id = $1 AND status = 'active' AND balance_nanos - held_nanos >= $2
-			RETURNING balance_nanos, held_nanos`, r.AccountID, int64(r.Amount)).Scan(&bal, &held)
-		if errors.Is(err, pgx.ErrNoRows) {
-			var status string
-			if qerr := tx.QueryRow(ctx, `SELECT status FROM accounts WHERE id=$1`, r.AccountID).Scan(&status); qerr != nil {
-				return qerr
-			}
-			if status != "active" {
-				return ErrAccountInactive
-			}
-			return ErrInsufficientFunds // rollback also discards the hold insert
-		}
-		if err != nil {
-			return err
-		}
-		if err := insertEntry(ctx, tx, r.AccountID, &id, "hold", r.Amount, bal, held, r.IdemKey, r.Memo); err != nil {
-			return err
-		}
-		h = Hold{ID: id, AccountID: r.AccountID, IdemKey: r.IdemKey, Kind: r.Kind, Amount: r.Amount,
-			Status: "active", ExpiresAt: expires}
-		return nil
+	err := p.inTx(ctx, func(tx pgx.Tx) (err error) {
+		h, err = reserveTx(ctx, tx, r, p.now)
+		return err
 	})
 	if err != nil {
 		return Hold{}, err
 	}
 	return h, nil
+}
+
+// ReserveTx is Reserve inside the caller's transaction: the same checks and
+// the same idempotency-key behaviour. On any error the caller must roll the
+// transaction back (a refusal may leave the hold insert pending in it).
+func (p *Postgres) ReserveTx(ctx context.Context, tx pgx.Tx, r ReserveReq) (Hold, error) {
+	if err := validReserve(r); err != nil {
+		return Hold{}, err
+	}
+	return reserveTx(ctx, tx, r, p.now)
+}
+
+func validReserve(r ReserveReq) error {
+	switch {
+	case r.AccountID == "" || r.IdemKey == "" || r.Amount <= 0 || r.TTL <= 0:
+		return fmt.Errorf("%w: reserve needs account, key, positive amount and ttl", ErrInvalidRequest)
+	case r.Kind != KindModel && r.Kind != KindTool && r.Kind != KindPayment:
+		return fmt.Errorf("%w: unknown kind %q", ErrInvalidRequest, r.Kind)
+	}
+	return nil
+}
+
+func reserveTx(ctx context.Context, tx pgx.Tx, r ReserveReq, now func() time.Time) (Hold, error) {
+	// Insert first, ON CONFLICT DO NOTHING: a concurrent duplicate waits
+	// here for the winner to commit, then falls into the replay branch (I4).
+	// timestamptz keeps microseconds; truncate so the first response equals a replay (I4).
+	expires := now().Add(r.TTL).UTC().Truncate(time.Microsecond)
+	var id string
+	err := tx.QueryRow(ctx, `INSERT INTO holds (account_id, idem_key, kind, amount_nanos, expires_at)
+		VALUES ($1,$2,$3,$4,$5)
+		ON CONFLICT (account_id, idem_key) DO NOTHING RETURNING id`,
+		r.AccountID, r.IdemKey, string(r.Kind), int64(r.Amount), expires).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		prev, err := scanHold(tx.QueryRow(ctx, holdSelect+` WHERE account_id=$1 AND idem_key=$2`, r.AccountID, r.IdemKey))
+		if err != nil {
+			return Hold{}, err
+		}
+		if prev.Amount != r.Amount || prev.Kind != r.Kind {
+			return Hold{}, ErrIdempotencyConflict
+		}
+		return prev.toHold(), nil
+	}
+	var pe *pgconn.PgError
+	if errors.As(err, &pe) && pe.Code == "23503" { // foreign_key_violation
+		return Hold{}, ErrAccountNotFound
+	}
+	if err != nil {
+		return Hold{}, err
+	}
+
+	// I1/I5: the budget check IS the update. No read-then-write, so two
+	// reserves cannot both see the same free balance.
+	var bal, held money.Nanos
+	err = tx.QueryRow(ctx, `UPDATE accounts SET held_nanos = held_nanos + $2
+		WHERE id = $1 AND status = 'active' AND balance_nanos - held_nanos >= $2
+		RETURNING balance_nanos, held_nanos`, r.AccountID, int64(r.Amount)).Scan(&bal, &held)
+	if errors.Is(err, pgx.ErrNoRows) {
+		var status string
+		if qerr := tx.QueryRow(ctx, `SELECT status FROM accounts WHERE id=$1`, r.AccountID).Scan(&status); qerr != nil {
+			return Hold{}, qerr
+		}
+		if status != "active" {
+			return Hold{}, ErrAccountInactive
+		}
+		return Hold{}, ErrInsufficientFunds // the caller's rollback also discards the hold insert
+	}
+	if err != nil {
+		return Hold{}, err
+	}
+	if err := insertEntry(ctx, tx, r.AccountID, &id, "hold", r.Amount, bal, held, r.IdemKey, r.Memo); err != nil {
+		return Hold{}, err
+	}
+	return Hold{ID: id, AccountID: r.AccountID, IdemKey: r.IdemKey, Kind: r.Kind, Amount: r.Amount,
+		Status: "active", ExpiresAt: expires}, nil
 }
 
 // holdRow is a holds row as read under lock.
@@ -333,41 +353,61 @@ func entryHold(ctx context.Context, tx pgx.Tx, accountID, key, kind string) (hol
 }
 
 func (p *Postgres) Settle(ctx context.Context, r SettleReq) (Settlement, error) {
-	if r.HoldID == "" || r.IdemKey == "" || r.Actual < 0 {
-		return Settlement{}, fmt.Errorf("%w: settle needs hold, key and non-negative actual", ErrInvalidRequest)
+	if err := validSettle(r); err != nil {
+		return Settlement{}, err
 	}
 	var s Settlement
-	err := p.inTx(ctx, func(tx pgx.Tx) error {
-		h, err := lockHold(ctx, tx, r.HoldID)
-		if err != nil {
-			return err
-		}
-		switch h.Status {
-		case "active":
-			s, err = settleLocked(ctx, tx, h, r.Actual, r.IdemKey, r.Memo)
-			if isUnique(err) {
-				return ErrIdempotencyConflict // key already used for another hold
-			}
-			return err
-		case "settled":
-			// I3/I4: replay only if this exact key produced the settlement.
-			owner, found, err := entryHold(ctx, tx, h.AccountID, r.IdemKey, "settle")
-			if err != nil {
-				return err
-			}
-			if !found || owner != h.ID {
-				return ErrHoldNotActive
-			}
-			if h.Settled+h.Unrecovered != r.Actual { // actual = charged + unrecovered
-				return ErrIdempotencyConflict
-			}
-			s = Settlement{HoldID: h.ID, Charged: h.Settled, Released: h.Amount - min(h.Settled, h.Amount), Unrecovered: h.Unrecovered}
-			return nil
-		default:
-			return ErrHoldNotActive
-		}
+	err := p.inTx(ctx, func(tx pgx.Tx) (err error) {
+		s, err = settleTx(ctx, tx, r)
+		return err
 	})
 	return s, err
+}
+
+// SettleTx is Settle inside the caller's transaction (same checks, same replay
+// rules). On any error the caller must roll the transaction back.
+func (p *Postgres) SettleTx(ctx context.Context, tx pgx.Tx, r SettleReq) (Settlement, error) {
+	if err := validSettle(r); err != nil {
+		return Settlement{}, err
+	}
+	return settleTx(ctx, tx, r)
+}
+
+func validSettle(r SettleReq) error {
+	if r.HoldID == "" || r.IdemKey == "" || r.Actual < 0 {
+		return fmt.Errorf("%w: settle needs hold, key and non-negative actual", ErrInvalidRequest)
+	}
+	return nil
+}
+
+func settleTx(ctx context.Context, tx pgx.Tx, r SettleReq) (Settlement, error) {
+	h, err := lockHold(ctx, tx, r.HoldID)
+	if err != nil {
+		return Settlement{}, err
+	}
+	switch h.Status {
+	case "active":
+		s, err := settleLocked(ctx, tx, h, r.Actual, r.IdemKey, r.Memo)
+		if isUnique(err) {
+			return Settlement{}, ErrIdempotencyConflict // key already used for another hold
+		}
+		return s, err
+	case "settled":
+		// I3/I4: replay only if this exact key produced the settlement.
+		owner, found, err := entryHold(ctx, tx, h.AccountID, r.IdemKey, "settle")
+		if err != nil {
+			return Settlement{}, err
+		}
+		if !found || owner != h.ID {
+			return Settlement{}, ErrHoldNotActive
+		}
+		if h.Settled+h.Unrecovered != r.Actual { // actual = charged + unrecovered
+			return Settlement{}, ErrIdempotencyConflict
+		}
+		return Settlement{HoldID: h.ID, Charged: h.Settled, Released: h.Amount - min(h.Settled, h.Amount), Unrecovered: h.Unrecovered}, nil
+	default:
+		return Settlement{}, ErrHoldNotActive
+	}
 }
 
 func (p *Postgres) Release(ctx context.Context, holdID, idemKey, reason string) (Settlement, error) {
@@ -375,33 +415,87 @@ func (p *Postgres) Release(ctx context.Context, holdID, idemKey, reason string) 
 		return Settlement{}, fmt.Errorf("%w: release needs hold and key", ErrInvalidRequest)
 	}
 	var s Settlement
-	err := p.inTx(ctx, func(tx pgx.Tx) error {
-		h, err := lockHold(ctx, tx, holdID)
-		if err != nil {
-			return err
-		}
-		switch h.Status {
-		case "active":
-			s, err = releaseLocked(ctx, tx, h, idemKey, reason)
-			if isUnique(err) {
-				return ErrIdempotencyConflict
-			}
-			return err
-		case "released":
-			owner, found, err := entryHold(ctx, tx, h.AccountID, idemKey, "release")
-			if err != nil {
-				return err
-			}
-			if !found || owner != h.ID {
-				return ErrHoldNotActive
-			}
-			s = Settlement{HoldID: h.ID, Released: h.Amount}
-			return nil
-		default:
-			return ErrHoldNotActive
-		}
+	err := p.inTx(ctx, func(tx pgx.Tx) (err error) {
+		s, err = releaseTx(ctx, tx, holdID, idemKey, reason)
+		return err
 	})
 	return s, err
+}
+
+// ReleaseTx is Release inside the caller's transaction. On any error the
+// caller must roll the transaction back.
+func (p *Postgres) ReleaseTx(ctx context.Context, tx pgx.Tx, holdID, idemKey, reason string) (Settlement, error) {
+	if holdID == "" || idemKey == "" {
+		return Settlement{}, fmt.Errorf("%w: release needs hold and key", ErrInvalidRequest)
+	}
+	return releaseTx(ctx, tx, holdID, idemKey, reason)
+}
+
+func releaseTx(ctx context.Context, tx pgx.Tx, holdID, idemKey, reason string) (Settlement, error) {
+	h, err := lockHold(ctx, tx, holdID)
+	if err != nil {
+		return Settlement{}, err
+	}
+	switch h.Status {
+	case "active":
+		s, err := releaseLocked(ctx, tx, h, idemKey, reason)
+		if isUnique(err) {
+			return Settlement{}, ErrIdempotencyConflict
+		}
+		return s, err
+	case "released":
+		owner, found, err := entryHold(ctx, tx, h.AccountID, idemKey, "release")
+		if err != nil {
+			return Settlement{}, err
+		}
+		if !found || owner != h.ID {
+			return Settlement{}, ErrHoldNotActive
+		}
+		return Settlement{HoldID: h.ID, Released: h.Amount}, nil
+	default:
+		return Settlement{}, ErrHoldNotActive
+	}
+}
+
+// DepositTx credits an account inside the caller's transaction. A key that
+// was used before is a no-op here (the caller's own lock serialises repeats),
+// so it never raises a unique violation that would poison the transaction.
+func (p *Postgres) DepositTx(ctx context.Context, tx pgx.Tx, accountID string, amount money.Nanos, idemKey, memo string) error {
+	if accountID == "" || idemKey == "" || amount <= 0 {
+		return fmt.Errorf("%w: deposit needs account, key and positive amount", ErrInvalidRequest)
+	}
+	var prev money.Nanos
+	err := tx.QueryRow(ctx, `SELECT amount_nanos FROM ledger_entries WHERE account_id=$1 AND idem_key=$2 AND kind='deposit'`,
+		accountID, idemKey).Scan(&prev)
+	switch {
+	case err == nil && prev == amount:
+		return nil
+	case err == nil:
+		return ErrIdempotencyConflict
+	case !errors.Is(err, pgx.ErrNoRows):
+		return err
+	}
+	var bal, held money.Nanos
+	err = tx.QueryRow(ctx, `UPDATE accounts SET balance_nanos = balance_nanos + $2 WHERE id = $1 RETURNING balance_nanos, held_nanos`,
+		accountID, int64(amount)).Scan(&bal, &held)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrAccountNotFound
+	}
+	if err != nil {
+		return err
+	}
+	return insertEntry(ctx, tx, accountID, nil, "deposit", amount, bal, held, idemKey, memo)
+}
+
+// HoldStatusTx returns a hold's status ("active", "settled", "released") as
+// the caller's transaction sees it, or "" when there is no such hold.
+func (p *Postgres) HoldStatusTx(ctx context.Context, tx pgx.Tx, holdID string) (string, error) {
+	var st string
+	err := tx.QueryRow(ctx, `SELECT status FROM holds WHERE id=$1`, holdID).Scan(&st)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return st, err
 }
 
 func (p *Postgres) Balance(ctx context.Context, accountID string) (Balance, error) {
@@ -426,7 +520,12 @@ func (p *Postgres) Balance(ctx context.Context, accountID string) (Balance, erro
 // locked is skipped by SKIP LOCKED; one that went terminal first is no longer
 // selected. Both count nowhere.
 func (p *Postgres) Reconcile(ctx context.Context, lookup UsageLookup, now time.Time) (Report, error) {
+	// A hold owned by a bank payment that is not final belongs to the bank
+	// poller, which is the only thing that settles or releases it: a lease
+	// running out must never free money while the bank may still send it.
 	rows, err := p.pool.Query(ctx, `SELECT id FROM holds WHERE status='active' AND expires_at <= $1
+		AND NOT EXISTS (SELECT 1 FROM bank_payments b WHERE b.hold_id = holds.id
+			AND b.state NOT IN ('refused','cancelled','failed','returned'))
 		ORDER BY expires_at, id LIMIT 10000`, now.UTC())
 	if err != nil {
 		return Report{}, err
