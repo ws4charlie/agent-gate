@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/ws4charlie/agent-gate/internal/agents"
 	"github.com/ws4charlie/agent-gate/internal/approval"
 	"github.com/ws4charlie/agent-gate/internal/bank"
@@ -39,6 +41,17 @@ func newBankEnvWith(t *testing.T, extra func(*server.Server)) *bankEnv {
 	t.Helper()
 	b := &bankEnv{fake: bank.NewFake()}
 	b.env = newEnv(t, 1000*usd, func(s *server.Server) {
+		// A small pool on purpose: code that holds a connection (a transaction)
+		// and asks the pool for another deadlocks here on any machine, not only
+		// on a CI runner with few CPUs.
+		cfg := s.Pool.Config()
+		cfg.MaxConns = 2
+		small, err := pgxpool.NewWithConfig(context.Background(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(small.Close)
+		s.Pool = small
 		if extra != nil {
 			extra(s)
 		}

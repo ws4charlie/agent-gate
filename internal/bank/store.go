@@ -126,7 +126,10 @@ func (s *Store) Create(ctx context.Context, p Payment, actor string, detail map[
 		return Payment{}, false, err
 	}
 	if tag.RowsAffected() == 0 {
-		old, err := s.ByIdem(ctx, p.AccountID, p.IdemKey)
+		// Read through the transaction we already hold. Asking the pool for a
+		// second connection here deadlocks when every connection is held by a
+		// transaction waiting on the winner's row.
+		old, err := scan(tx.QueryRow(ctx, `SELECT `+cols+` FROM bank_payments WHERE account_id=$1 AND idem_key=$2`, p.AccountID, p.IdemKey))
 		return old, false, err
 	}
 	if err := writeEvent(ctx, tx, p, "", p.State, actor, js(detail), p.CreatedAt); err != nil {
