@@ -355,7 +355,14 @@ func (t *task) run(ctx context.Context, prog string, tm Template) {
 	stop := context.AfterFunc(ctx, func() { _ = t.s.kill(-cmd.Process.Pid, syscall.SIGTERM) })
 	defer stop()
 	t.read(out)
-	t.conclude(ctx, cmd.Wait())
+	werr := cmd.Wait()
+	// Delete the key before the run is reported finished: a run that shows
+	// done must have no certificate left on disk. (The defer covers the early
+	// returns above.)
+	if certDir != "" {
+		os.RemoveAll(certDir)
+	}
+	t.conclude(ctx, werr)
 }
 
 // conclude records how the run ended. werr is the runner's exit status.
