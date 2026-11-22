@@ -218,17 +218,34 @@ type Change struct {
 // in one transaction. Already in `to`: no change, changed=false. A step the
 // state machine does not allow is ErrIllegal.
 func (s *Store) Transition(ctx context.Context, id string, to State, actor string, detail map[string]any, ch Change) (Payment, bool, error) {
-	return s.apply(ctx, id, to, actor, detail, ch, true)
+	return s.apply(ctx, id, to, actor, detail, ch, true, nil)
+}
+
+// Money is work on the ledger and the budget that must commit with a state
+// change, in the caller's transaction (it takes no connection of its own). It
+// sees the locked row and may change p.HoldID.
+type Money func(ctx context.Context, tx pgx.Tx, p *Payment) error
+
+// TransitionWith is Transition with its money: the ledger effect, the state
+// row, the event and the audit row commit together or not at all.
+func (s *Store) TransitionWith(ctx context.Context, id string, to State, actor string, detail map[string]any, ch Change, m Money) (Payment, bool, error) {
+	return s.apply(ctx, id, to, actor, detail, ch, true, m)
+}
+
+// NoteWith is Note with money in the same transaction.
+func (s *Store) NoteWith(ctx context.Context, id, actor string, detail map[string]any, ch Change, m Money) (Payment, error) {
+	p, _, err := s.apply(ctx, id, "", actor, detail, ch, false, m)
+	return p, err
 }
 
 // Note appends an event that does not change the state (the request was
 // submitted, a review arrived) and may set the bank ids.
 func (s *Store) Note(ctx context.Context, id, actor string, detail map[string]any, ch Change) (Payment, error) {
-	p, _, err := s.apply(ctx, id, "", actor, detail, ch, false)
+	p, _, err := s.apply(ctx, id, "", actor, detail, ch, false, nil)
 	return p, err
 }
 
-func (s *Store) apply(ctx context.Context, id string, to State, actor string, detail map[string]any, ch Change, move bool) (Payment, bool, error) {
+func (s *Store) apply(ctx context.Context, id string, to State, actor string, detail map[string]any, ch Change, move bool, m Money) (Payment, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Payment{}, false, err
@@ -245,6 +262,11 @@ func (s *Store) apply(ctx context.Context, id string, to State, actor string, de
 		return p, false, nil
 	} else if !allowed(from, to) {
 		return p, false, fmt.Errorf("%w: %s -> %s", ErrIllegal, from, to)
+	}
+	if m != nil {
+		if err := m(ctx, tx, &p); err != nil {
+			return Payment{}, false, err
+		}
 	}
 	now := s.at()
 	p.State, p.UpdatedAt = to, now

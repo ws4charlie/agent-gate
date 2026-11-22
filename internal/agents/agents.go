@@ -564,9 +564,18 @@ func (s *Store) CloseCharge(ctx context.Context, holdID string, actual money.Nan
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if err := s.CloseChargeTx(ctx, tx, holdID, actual); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// CloseChargeTx is CloseCharge inside the caller's transaction (it takes no
+// connection of its own).
+func (s *Store) CloseChargeTx(ctx context.Context, tx pgx.Tx, holdID string, actual money.Nanos) error {
 	var agent, dk, tk string
 	var old int64
-	err = tx.QueryRow(ctx, `WITH o AS (SELECT hold_id, agent_id, day_key, task_key, amount_nanos AS old
+	err := tx.QueryRow(ctx, `WITH o AS (SELECT hold_id, agent_id, day_key, task_key, amount_nanos AS old
 			FROM budget_charges WHERE hold_id=$1 AND status='open' FOR UPDATE),
 		u AS (UPDATE budget_charges c SET status='closed', amount_nanos=$2::bigint FROM o WHERE c.hold_id=o.hold_id RETURNING c.hold_id)
 		SELECT o.agent_id, o.day_key, o.task_key, o.old FROM o JOIN u USING (hold_id)`, holdID, int64(actual)).Scan(&agent, &dk, &tk, &old)
@@ -584,7 +593,29 @@ func (s *Store) CloseCharge(ctx context.Context, holdID string, actual money.Nan
 			}
 		}
 	}
-	return tx.Commit(ctx)
+	return nil
+}
+
+// RecordSpendTx counts money that really left against the agent's windows,
+// whatever the limits say, inside the caller's transaction. It is for a payment
+// the bank already sent whose original hold (and charge) was released: the
+// limit check happened when the payment was allowed, and refusing now would
+// not bring the money back. The charge row is open, as a normal sent payment's
+// is, so a later return can free it.
+func (s *Store) RecordSpendTx(ctx context.Context, tx pgx.Tx, agentID, taskID, holdID string, amount money.Nanos) error {
+	now := s.now()
+	dk, tk := dayKey(now), taskKey(taskID)
+	if _, err := tx.Exec(ctx, `INSERT INTO budget_charges (hold_id, agent_id, day_key, task_key, amount_nanos, at)
+		VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (hold_id) DO NOTHING`, holdID, agentID, dk, tk, int64(amount), now.UTC()); err != nil {
+		return err
+	}
+	for _, k := range []string{dk, tk} {
+		if _, err := tx.Exec(ctx, `INSERT INTO budget_windows (agent_id, window_key, spent_nanos) VALUES ($1,$2,$3)
+			ON CONFLICT (agent_id, window_key) DO UPDATE SET spent_nanos = budget_windows.spent_nanos + $3`, agentID, k, int64(amount)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ---- decision log ----

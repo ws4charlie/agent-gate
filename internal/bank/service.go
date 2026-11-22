@@ -8,14 +8,32 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/ws4charlie/agent-gate/internal/approval"
 	"github.com/ws4charlie/agent-gate/internal/ledger"
 	"github.com/ws4charlie/agent-gate/internal/money"
 )
 
-// Charges closes the budget charge of a hold (agents.Store implements it).
+// Charges is the budget side of a payment, inside the caller's transaction
+// (agents.Store implements it).
 type Charges interface {
-	CloseCharge(ctx context.Context, holdID string, actual money.Nanos) error
+	// CloseChargeTx closes the hold's budget charge at what was really spent.
+	CloseChargeTx(ctx context.Context, tx pgx.Tx, holdID string, actual money.Nanos) error
+	// RecordSpendTx counts money that left whatever the limits say.
+	RecordSpendTx(ctx context.Context, tx pgx.Tx, agentID, taskID, holdID string, amount money.Nanos) error
+}
+
+// TxLedger is the ledger with its operations that run in the caller's
+// transaction. *ledger.Postgres implements it. The bank and the ledger share
+// one database, so a payment's money and its state commit as one.
+type TxLedger interface {
+	ledger.Ledger
+	ReserveTx(ctx context.Context, tx pgx.Tx, r ledger.ReserveReq) (ledger.Hold, error)
+	SettleTx(ctx context.Context, tx pgx.Tx, r ledger.SettleReq) (ledger.Settlement, error)
+	ReleaseTx(ctx context.Context, tx pgx.Tx, holdID, idemKey, reason string) (ledger.Settlement, error)
+	DepositTx(ctx context.Context, tx pgx.Tx, accountID string, amount money.Nanos, idemKey, memo string) error
+	HoldStatusTx(ctx context.Context, tx pgx.Tx, holdID string) (string, error)
 }
 
 // ApprovalFinder looks up the Gate approval queued for a request.
@@ -29,13 +47,17 @@ type ApprovalFinder interface {
 type Service struct {
 	Store     *Store
 	Rail      Rail // nil in the CLI, which only simulates a return
-	Ledger    ledger.Ledger
+	Ledger    TxLedger
 	Charges   Charges
 	Approvals ApprovalFinder
 	Log       *slog.Logger
 	// HoldTTL is how long a bank payment's hold lives; the poller extends it
 	// on every pass while the payment waits.
 	HoldTTL time.Duration
+	// FaultAfterMoney is for tests: when set, it is called inside the
+	// transaction after the ledger work and before the state is written; an
+	// error rolls everything back, as a crash at that point would.
+	FaultAfterMoney func(to State) error
 	// Env is where this gateway's bank is: "sandbox" or "production". Every
 	// payment records it, and a simulated return is allowed only on a sandbox payment.
 	Env string
@@ -95,89 +117,108 @@ func Target(cur State, req Request, txn *Txn) (to State, ok bool) {
 	return cur, false
 }
 
-// effect does the ledger side of entering state `to`. Every call is
-// idempotent (fixed keys), so a crash between the ledger and the state row is
-// repaired by the next pass. It may change p.HoldID (a re-debit); the caller
-// stores the new id with the state change.
-func (s *Service) effect(ctx context.Context, p *Payment, to State, code string) error {
+// effect does the money side of entering state `to`, inside the transaction
+// that writes the state. A crash or an error rolls both back; the next pass
+// does both again. It may change p.HoldID (a re-debit); the state write then
+// stores the new id.
+func (s *Service) effect(ctx context.Context, tx pgx.Tx, p *Payment, to State, code string) error {
 	switch to {
 	case Sent:
-		return s.debit(ctx, p)
+		return s.debit(ctx, tx, p)
 	case Cancelled, Failed, Refused:
 		if p.HoldID == "" {
 			return nil
 		}
-		_, err := s.Ledger.Release(ctx, p.HoldID, approval.ReleaseKey(p.HoldID), "bank payment "+string(to))
+		_, err := s.Ledger.ReleaseTx(ctx, tx, p.HoldID, approval.ReleaseKey(p.HoldID), "bank payment "+string(to))
 		if err != nil && !errors.Is(err, ledger.ErrHoldNotActive) {
 			return err
 		}
-		return s.closeCharge(ctx, *p)
+		return s.closeCharge(ctx, tx, *p)
 	case Returned:
 		// Never create money: only a payment whose debit exists can be refunded.
-		if st, err := s.Store.HoldStatus(ctx, p.HoldID); err != nil || st != "settled" {
+		if st, err := s.Ledger.HoldStatusTx(ctx, tx, p.HoldID); err != nil || st != "settled" {
 			return fmt.Errorf("no debit to reverse for payment %s (hold is %q): %v", p.ID, st, err)
 		}
 		memo := "ACH return of bank payment " + p.ID
 		if code != "" {
 			memo += " (" + code + ")"
 		}
-		if err := s.Ledger.Deposit(ctx, p.AccountID, p.Amount, "bank-return:"+p.ID, memo); err != nil {
+		if err := s.Ledger.DepositTx(ctx, tx, p.AccountID, p.Amount, "bank-return:"+p.ID, memo); err != nil {
 			return err
 		}
-		return s.closeCharge(ctx, *p)
+		return s.closeCharge(ctx, tx, *p)
 	}
 	return nil
 }
 
 // debit takes the money for a payment that was sent. A hold that is already
-// settled is our own earlier debit (a repeat after a crash). A hold that was
-// released is not: the lease ran out and the reconciler freed it while the
-// bank went on. Then the debit is taken again from a new hold, so a sent
-// payment is never left unpaid (and a later return never refunds money that
-// was not taken). If the money is not there, the payment does not advance.
-func (s *Service) debit(ctx context.Context, p *Payment) error {
-	st, err := s.Store.HoldStatus(ctx, p.HoldID)
+// settled is our own earlier debit. A hold that was released is not: the bank
+// went on after the money was freed. Then the debit is taken again from a new
+// hold that is reserved and settled in this same transaction, so it can never
+// be left half done or expire unsettled, and the spend is counted against the
+// budget again. If the money is not there the transaction fails and the
+// payment does not advance.
+func (s *Service) debit(ctx context.Context, tx pgx.Tx, p *Payment) error {
+	st, err := s.Ledger.HoldStatusTx(ctx, tx, p.HoldID)
 	if err != nil {
 		return err
 	}
-	if st == "active" {
-		_, err := s.Ledger.Settle(ctx, ledger.SettleReq{HoldID: p.HoldID, Actual: p.Amount, IdemKey: "settle:" + p.HoldID, Memo: "bank payment " + p.ID})
-		if err == nil {
-			return nil
-		}
-		if !errors.Is(err, ledger.ErrHoldNotActive) {
-			return err
-		}
-		if st, err = s.Store.HoldStatus(ctx, p.HoldID); err != nil {
-			return err
-		}
-	}
-	if st == "settled" {
+	switch st {
+	case "settled":
 		return nil
+	case "active":
+		_, err := s.Ledger.SettleTx(ctx, tx, ledger.SettleReq{HoldID: p.HoldID, Actual: p.Amount, IdemKey: "settle:" + p.HoldID, Memo: "bank payment " + p.ID})
+		return err
 	}
-	h, err := s.Ledger.Reserve(ctx, ledger.ReserveReq{AccountID: p.AccountID, Amount: p.Amount, IdemKey: "bank-redebit:" + p.ID,
+	h, err := s.Ledger.ReserveTx(ctx, tx, ledger.ReserveReq{AccountID: p.AccountID, Amount: p.Amount, IdemKey: "bank-redebit:" + p.ID,
 		Kind: ledger.KindPayment, TTL: time.Hour, Memo: "re-debit of sent bank payment " + p.ID})
 	if err != nil {
 		return fmt.Errorf("re-debit of sent payment %s: %w", p.ID, err)
 	}
-	if h.Status == "active" {
-		if _, err := s.Ledger.Settle(ctx, ledger.SettleReq{HoldID: h.ID, Actual: p.Amount, IdemKey: "settle:" + h.ID, Memo: "bank payment " + p.ID}); err != nil && !errors.Is(err, ledger.ErrHoldNotActive) {
+	if _, err := s.Ledger.SettleTx(ctx, tx, ledger.SettleReq{HoldID: h.ID, Actual: p.Amount, IdemKey: "settle:" + h.ID, Memo: "bank payment " + p.ID}); err != nil {
+		return err
+	}
+	old := p.HoldID
+	p.HoldID = h.ID
+	if s.Charges == nil {
+		return nil
+	}
+	// The released hold's charge may still be open (whoever released it may
+	// not have closed it): close it first, so the spend is counted once.
+	if old != "" {
+		if err := s.Charges.CloseChargeTx(ctx, tx, old, 0); err != nil {
 			return err
 		}
 	}
-	p.HoldID = h.ID
-	return nil
+	return s.Charges.RecordSpendTx(ctx, tx, p.AgentID, p.TaskID, h.ID, p.Amount)
 }
 
-func (s *Service) closeCharge(ctx context.Context, p Payment) error {
+func (s *Service) closeCharge(ctx context.Context, tx pgx.Tx, p Payment) error {
 	if s.Charges == nil || p.HoldID == "" {
 		return nil
 	}
-	return s.Charges.CloseCharge(ctx, p.HoldID, 0)
+	return s.Charges.CloseChargeTx(ctx, tx, p.HoldID, 0)
+}
+
+// Hold reserves the payment's money and records the hold on the payment in one
+// transaction, so a hold never exists without an owner the poller can find.
+func (s *Service) Hold(ctx context.Context, p Payment) (ledger.Hold, Payment, error) {
+	var h ledger.Hold
+	np, err := s.Store.NoteWith(ctx, p.ID, "gate", map[string]any{"held": true}, Change{}, func(ctx context.Context, tx pgx.Tx, row *Payment) (err error) {
+		h, err = s.Ledger.ReserveTx(ctx, tx, ledger.ReserveReq{AccountID: p.AccountID, Amount: p.Amount, IdemKey: "bank:" + p.IdemKey,
+			Kind: ledger.KindPayment, TTL: s.holdTTL(), Memo: "bank payment " + p.RecipientID})
+		if err == nil && h.Status == "active" {
+			row.HoldID = h.ID
+		}
+		return err
+	})
+	return h, np, err
 }
 
 // Move takes a payment to `to`, stepping through the states in between (a
 // transaction seen first as sent passes bank_approved), one event per step.
+// Each step is one transaction: its money, its state row, its event and its
+// audit row.
 func (s *Service) Move(ctx context.Context, p Payment, to State, actor string, detail map[string]any, ch Change) (Payment, error) {
 	steps := []State{to}
 	if a, b := rank(p.State), rank(to); a >= 0 && b > a+1 {
@@ -189,14 +230,15 @@ func (s *Service) Move(ctx context.Context, p Payment, to State, actor string, d
 		if i == len(steps)-1 {
 			d, c = detail, ch
 		}
-		held := p.HoldID
-		if err := s.effect(ctx, &p, st, code); err != nil {
-			return p, err
-		}
-		if p.HoldID != held {
-			c.HoldID = p.HoldID
-		}
-		np, _, err := s.Store.Transition(ctx, p.ID, st, actor, d, c)
+		np, _, err := s.Store.TransitionWith(ctx, p.ID, st, actor, d, c, func(ctx context.Context, tx pgx.Tx, row *Payment) error {
+			if err := s.effect(ctx, tx, row, st, code); err != nil {
+				return err
+			}
+			if s.FaultAfterMoney != nil {
+				return s.FaultAfterMoney(st)
+			}
+			return nil
+		})
 		if err != nil {
 			return p, err
 		}

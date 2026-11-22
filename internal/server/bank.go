@@ -195,39 +195,41 @@ func (c *call) bankPay() {
 		return
 	}
 
-	hold, err := s.Ledger.Reserve(c.ctx, ledger.ReserveReq{AccountID: acct, Amount: amount, IdemKey: "bank:" + idem,
-		Kind: ledger.KindPayment, TTL: b.HoldLease(), Memo: "bank payment " + in.RecipientID})
-	switch {
-	case errors.Is(err, ledger.ErrInsufficientFunds):
-		end(bank.Refused, "insufficient_funds", nil)
-		c.fail(http.StatusPaymentRequired, audit.StatusInsufficientFunds, "insufficient_funds", "insufficient funds", nil)
-		return
-	case errors.Is(err, ledger.ErrAccountInactive):
-		end(bank.Refused, "account_inactive", nil)
-		c.fail(http.StatusForbidden, audit.StatusAccountInactive, "account_inactive", "account inactive", nil)
-		return
-	case err != nil:
-		s.Log.Error("reserve", "err", err)
-		end(bank.Failed, "internal_error", nil)
-		c.fail(http.StatusInternalServerError, audit.StatusInternal, "internal_error", "internal error", nil)
-		return
-	case hold.Status != "active":
-		end(bank.Failed, "hold_not_active", nil)
-		c.fail(http.StatusConflict, audit.StatusDuplicate, "duplicate_request", "this idempotency_key was already used", nil)
-		return
-	}
-	c.ext.HoldID = hold.ID
-	if row.HoldID == "" { // remember whose hold this is before anything else can fail
-		if np, err := b.Store.Note(dctx, row.ID, "gate", map[string]any{"held": true}, bank.Change{HoldID: hold.ID}); err == nil {
-			row = np
-		} else {
-			s.Log.Error("bank hold record", "payment", row.ID, "err", err)
-			c.release(hold, "bank payment not recorded")
+	// The hold and its owner are recorded in one transaction. A payment that
+	// waited for a Gate human already has its hold; reuse it, never reserve twice.
+	var hold ledger.Hold
+	if row.HoldID == "" {
+		var herr error
+		hold, row, herr = b.Hold(dctx, row)
+		switch {
+		case errors.Is(herr, ledger.ErrInsufficientFunds):
+			end(bank.Refused, "insufficient_funds", nil)
+			c.fail(http.StatusPaymentRequired, audit.StatusInsufficientFunds, "insufficient_funds", "insufficient funds", nil)
+			return
+		case errors.Is(herr, ledger.ErrAccountInactive):
+			end(bank.Refused, "account_inactive", nil)
+			c.fail(http.StatusForbidden, audit.StatusAccountInactive, "account_inactive", "account inactive", nil)
+			return
+		case herr != nil:
+			s.Log.Error("bank hold", "err", herr)
 			end(bank.Failed, "internal_error", nil)
 			c.fail(http.StatusInternalServerError, audit.StatusInternal, "internal_error", "internal error", nil)
 			return
+		case hold.Status != "active":
+			end(bank.Failed, "hold_not_active", nil)
+			c.fail(http.StatusConflict, audit.StatusDuplicate, "duplicate_request", "this idempotency_key was already used", nil)
+			return
 		}
+	} else {
+		st, herr := b.Store.HoldStatus(dctx, row.HoldID)
+		if herr != nil || st != "active" {
+			end(bank.Failed, "hold_not_active", nil)
+			c.fail(http.StatusConflict, audit.StatusDuplicate, "duplicate_request", "the hold of this payment is no longer active", nil)
+			return
+		}
+		hold = ledger.Hold{ID: row.HoldID, AccountID: acct, Amount: amount, Status: st}
 	}
+	c.ext.HoldID = hold.ID
 
 	preq := policy.Request{AgentID: agent.ID, Kind: policy.KindPayment, Tool: BankTool, Payee: in.RecipientID, Network: BankNetwork,
 		Amount: amount, TaskID: task, HoldID: hold.ID, Approved: approved}

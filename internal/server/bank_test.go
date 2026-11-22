@@ -57,7 +57,7 @@ func newBankEnvWith(t *testing.T, extra func(*server.Server)) *bankEnv {
 		}
 		s.Agents = agents.NewStore(s.Pool)
 		s.Approvals = &approval.Queue{Store: approval.NewStore(s.Pool), Ledger: s.Ledger}
-		b.svc = &bank.Service{Env: "sandbox", Store: bank.NewStore(s.Pool), Rail: b.fake, Ledger: s.Ledger, Charges: s.Agents, Approvals: s.Approvals.Store}
+		b.svc = &bank.Service{Env: "sandbox", Store: bank.NewStore(s.Pool), Rail: b.fake, Ledger: s.Ledger.(*ledger.Postgres), Charges: s.Agents, Approvals: s.Approvals.Store}
 		s.Bank = b.svc
 	})
 	b.setScope(func(sc *policy.Scope) {
@@ -656,4 +656,116 @@ func TestBankStalledClaimIsFreed(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 	b.noActiveHolds()
+}
+
+// ---- fix3: money and state are one transaction ----
+
+func (b *bankEnv) holdsWithKeyPrefix(prefix string) (n, settled int) {
+	_ = b.pool.QueryRow(context.Background(), `SELECT count(*), count(*) FILTER (WHERE status='settled') FROM holds WHERE idem_key LIKE $1`, prefix+"%").Scan(&n, &settled)
+	return
+}
+
+// A failure between the money and the state leaves neither: the balance and the
+// state are both unchanged, and the retry succeeds once.
+func TestBankFailureBetweenMoneyAndStateRollsBothBack(t *testing.T) {
+	b := newBankEnv(t)
+	_, m := b.pay(rcpt, "40", "k")
+	id := m["payment_id"].(string)
+	b.fake.SetRequest("req-1", bank.ReqApproved)
+	b.fake.SetTxn("req-1", bank.TxnSent, false)
+	b.svc.FaultAfterMoney = func(to bank.State) error {
+		if to == bank.Sent {
+			return errors.New("crash after the debit")
+		}
+		return nil
+	}
+	b.poll()
+	if got := b.payment(id).State; got != bank.BankApproved {
+		t.Fatalf("state %s", got)
+	}
+	if bl := b.balance(); bl.Balance != 1000*usd || bl.Held != 40*usd {
+		t.Fatalf("the debit survived the failure: %+v", bl)
+	}
+	b.svc.FaultAfterMoney = nil
+	b.poll()
+	if got := b.payment(id).State; got != bank.Sent {
+		t.Fatalf("state %s", got)
+	}
+	if bl := b.balance(); bl.Balance != 960*usd || bl.Held != 0 {
+		t.Fatalf("not debited exactly once: %+v", bl)
+	}
+	b.poll()
+	if bl := b.balance(); bl.Balance != 960*usd {
+		t.Fatalf("debited twice: %+v", bl)
+	}
+}
+
+// The original hold was released; the re-debit crashes after it reserved. Nothing
+// is left half done, and the next poll ends with exactly one debit that also
+// counts against the budget.
+func TestBankReDebitCrashLeavesExactlyOneDebit(t *testing.T) {
+	b := newBankEnv(t)
+	_, m := b.pay(rcpt, "40", "k")
+	id := m["payment_id"].(string)
+	if _, err := b.led.Release(context.Background(), b.payment(id).HoldID, "test-release", "lease ran out"); err != nil {
+		t.Fatal(err)
+	}
+	b.fake.SetRequest("req-1", bank.ReqApproved)
+	b.fake.SetTxn("req-1", bank.TxnSent, false)
+	b.svc.FaultAfterMoney = func(to bank.State) error {
+		if to == bank.Sent {
+			return errors.New("crash after the replacement hold")
+		}
+		return nil
+	}
+	b.poll()
+	if n, _ := b.holdsWithKeyPrefix("bank-redebit:"); n != 0 {
+		t.Fatalf("a replacement hold survived the crash (%d)", n)
+	}
+	if b.balance().Balance != 1000*usd || b.balance().Held != 0 {
+		t.Fatalf("%+v", b.balance())
+	}
+	b.svc.FaultAfterMoney = nil
+	b.poll()
+	b.poll()
+	if n, settled := b.holdsWithKeyPrefix("bank-redebit:"); n != 1 || settled != 1 {
+		t.Fatalf("replacement holds %d settled %d", n, settled)
+	}
+	if got := b.payment(id).State; got != bank.Sent || b.balance().Balance != 960*usd || b.balance().Held != 0 {
+		t.Fatalf("state %s balance %+v", got, b.balance())
+	}
+	// The $40 counts against the $100 daily budget again.
+	if code, _ := b.pay(rcpt, "61", "k2"); code != http.StatusTooManyRequests {
+		t.Fatalf("budget forgot the re-debited payment: %d", code)
+	}
+	if code, _ := b.pay(rcpt, "60", "k3"); code != http.StatusAccepted {
+		t.Fatalf("budget too tight: %d", code)
+	}
+	if err := b.led.Audit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The reconciler never frees the hold of a bank payment that is not final,
+// whatever its lease says.
+func TestBankReconcilerSkipsBankHolds(t *testing.T) {
+	b := newBankEnv(t)
+	_, m := b.pay(rcpt, "40", "k")
+	id := m["payment_id"].(string)
+	hold := b.payment(id).HoldID
+	if _, err := b.pool.Exec(context.Background(), `UPDATE holds SET expires_at = now() - interval '1 hour' WHERE id=$1`, hold); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.led.Reconcile(context.Background(), noLookup{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := b.svc.Store.HoldStatus(context.Background(), hold); st != "active" {
+		t.Fatalf("the reconciler released a bank hold: %q", st)
+	}
+	// Once the payment is final the hold is the reconciler's like any other.
+	b.fake.SetRequest("req-1", bank.ReqCancelled)
+	b.poll()
+	if st, _ := b.svc.Store.HoldStatus(context.Background(), hold); st != "released" {
+		t.Fatalf("cancelled payment kept its hold: %q", st)
+	}
 }

@@ -36,6 +36,8 @@ The same `idempotency_key` is one payment. The payment row is created first, bef
 
 A status Gate does not know is logged and the state is kept. Gate keeps watching a sent payment for five days, the time an ACH return can take.
 
+Each state change and its money (the hold, the debit, the release or the refund, and the budget) commit in one database transaction, so a crash leaves both or neither. The regular reconciler never touches the hold of a payment that is not final; only the bank poller settles or releases it.
+
 Every state change writes one row to `bank_payment_events` (an append-only chain: payment, sequence, from, to, who, details) and one audit row, in the same transaction. The chain shows who asked, the amount and payee, the policy verdict and rule, the Gate approver, the Mercury reviewers and the final state. Read it with:
 
 ```bash
