@@ -67,6 +67,25 @@ func envOr(k, d string) string {
 	return d
 }
 
+// parseAll parses flags that may sit before, between or after positional
+// words, and returns the positional words in order.
+func (c *common) parseAll(args []string) ([]string, error) {
+	var pos []string
+	for {
+		if err := c.fs.Parse(args); err != nil {
+			return nil, err
+		}
+		if c.fs.NArg() == 0 {
+			return pos, nil
+		}
+		// After "--" every remaining word is positional, even one starting with "-".
+		if used := len(args) - c.fs.NArg(); used > 0 && args[used-1] == "--" {
+			return append(pos, c.fs.Args()...), nil
+		}
+		pos, args = append(pos, c.fs.Arg(0)), c.fs.Args()[1:]
+	}
+}
+
 func (c *common) open(ctx context.Context, args []string) (config.Config, *pgxpool.Pool, error) {
 	if err := c.fs.Parse(args); err != nil {
 		return config.Config{}, nil, err
