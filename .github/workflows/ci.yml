@@ -23,6 +23,8 @@ jobs:
       DATABASE_URL: postgres://postgres@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@v4
+      - name: no real emails or secrets in tracked files
+        run: scripts/check-leaks.sh
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
