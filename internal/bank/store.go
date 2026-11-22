@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -90,13 +91,17 @@ func writeEvent(ctx context.Context, tx pgx.Tx, p Payment, from, to State, actor
 		p.ID, seq, string(from), string(to), actor, detail, at); err != nil {
 		return err
 	}
+	status := "bank_" + string(to)
+	if strings.HasPrefix(string(to), "bank_") {
+		status = string(to)
+	}
 	cost := int64(0)
 	if to == Sent && from != Sent {
 		cost = int64(p.Amount)
 	}
 	_, err := tx.Exec(ctx, `INSERT INTO audit_events (request_id, account_id, agent_id, kind, model, provider, status, cost_source, cost_nanos, hold_id, err, upstream_id, at)
 		VALUES ($1,$2,$3,'payment','mercury/ach','mercury',$4,'bank',$5,$6,$7,$8,$9)`,
-		"bank:"+p.ID, p.AccountID, p.AgentID, "bank_"+string(to), cost, p.HoldID, p.Rule, p.RequestID, at)
+		"bank:"+p.ID, p.AccountID, p.AgentID, status, cost, p.HoldID, p.Rule, p.RequestID, at)
 	return err
 }
 

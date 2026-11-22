@@ -42,6 +42,7 @@ Read more about each part. Each page takes a minute or two:
 | [Policy](docs/policy.md) | Sets what each agent may do and spend |
 | [Tools](docs/tools.md) | Controls tool access and screens what comes back |
 | [Payments](docs/payments.md) | Pays for tools in USDC, trusting the chain over the tool |
+| [Bank rail](docs/bank.md) | Pays bank recipients by ACH through Mercury (sandbox), queued for human approval |
 | [Runs](docs/runs.md) | Groups one job's steps so you can read or stop them together |
 | [Console](docs/console.md) | A local page to watch agents, change their limits and run tasks |
 | [Python SDK](docs/sdk.md) | A small client for scripts and agents |

@@ -411,6 +411,11 @@ func TestBankReturnReversesLedgerAndBudget(t *testing.T) {
 	if got := b.auditStatuses(id); got[len(got)-1] != "bank_returned" || len(got) != 6 {
 		t.Fatalf("audit %v", got)
 	}
+	evs, _ := b.svc.Store.Events(context.Background(), id)
+	for _, e := range evs {
+		t.Logf("%d %s -> %s by %s", e.Seq, e.From, e.To, e.Actor)
+	}
+	t.Logf("balance after return: %+v; audit rows %v", b.balance(), b.auditStatuses(id))
 	// Budget freed: $100 fits again.
 	if code, m := b.pay(rcpt, "100", "k2"); code != http.StatusAccepted {
 		t.Fatalf("budget not freed: %d %v", code, m)

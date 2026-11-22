@@ -52,7 +52,7 @@ func agentCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	name := c.fs.String("name", "", "unique agent name (create)")
 	models := c.fs.String("models", "", "allowed models, comma separated; a trailing * is a prefix, * is all (create)")
 	tools := c.fs.String("tools", "", "allowed tools, comma separated (create)")
-	payees := c.fs.String("payees", "", "allowed payee 0x addresses, comma separated (create)")
+	payees := c.fs.String("payees", "", "allowed payees, comma separated: 0x addresses, or Mercury recipient ids for the bank rail (create)")
 	daily := c.fs.String("daily", "", "daily budget in USD, per UTC day; empty: no limit (create)")
 	task := c.fs.String("task", "", "per-task budget in USD (X-AgentGate-Task); empty: no limit (create)")
 	velocity := c.fs.String("velocity", "", "most USD per rolling minute; empty: no limit (create)")

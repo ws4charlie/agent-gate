@@ -97,7 +97,7 @@ func TestMercuryRailAgainstStandIn(t *testing.T) {
 			b, _ := io.ReadAll(r.Body)
 			_ = json.Unmarshal(b, &sent)
 			io.WriteString(w, `{"requestId":"11111111-1111-1111-1111-111111111111","status":"pendingApproval","reviews":[]}`)
-		case strings.Contains(r.URL.Path, "/request-send-money/"):
+		case strings.HasSuffix(r.URL.Path, "/request-send-money/r1"):
 			io.WriteString(w, `{"requestId":"r1","status":"approved","reviews":[{"reviewerUserId":"u2","status":"approved","reviewedAt":"2026-01-01T00:00:00Z"}]}`)
 		case strings.HasSuffix(r.URL.Path, "/transactions"):
 			if r.URL.Query().Get("requestId") != "r1" {
