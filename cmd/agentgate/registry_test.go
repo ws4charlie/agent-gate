@@ -135,6 +135,13 @@ func TestRegistryArgsAnyOrder(t *testing.T) {
 	if err != nil || !strings.Contains(out, "why") || !strings.Contains(out, "approved") {
 		t.Fatalf("history: %q %v", out, err)
 	}
+	// After "--" a word starting with "-" is a positional word, not a flag.
+	if _, err := c.run("registry", "add", "--owner", "o", "--purpose", "p", "--", "model", "-dash"); err != nil {
+		t.Fatalf("after --: %v", err)
+	}
+	if out, _ := c.run("registry", "list"); !strings.Contains(out, "-dash") {
+		t.Fatalf("after --: %q", out)
+	}
 	if _, err := c.run("registry", "list", "--kind", "model", "extra"); err == nil {
 		t.Fatal("list took a stray word")
 	}

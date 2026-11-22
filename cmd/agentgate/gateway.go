@@ -78,6 +78,10 @@ func (c *common) parseAll(args []string) ([]string, error) {
 		if c.fs.NArg() == 0 {
 			return pos, nil
 		}
+		// After "--" every remaining word is positional, even one starting with "-".
+		if used := len(args) - c.fs.NArg(); used > 0 && args[used-1] == "--" {
+			return append(pos, c.fs.Args()...), nil
+		}
 		pos, args = append(pos, c.fs.Arg(0)), c.fs.Args()[1:]
 	}
 }
