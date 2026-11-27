@@ -53,6 +53,8 @@ type Step struct {
 	// Status and Code: a refusal (stored, except retry_later).
 	Status      int
 	Code, Field string
+	// Delay holds the answer this long (or until the client gives up).
+	Delay time.Duration
 	// Drop aborts the connection before deciding anything.
 	Drop bool
 	// DropAfterSign signs and stores the answer, then aborts the connection:
@@ -86,6 +88,9 @@ type Vault struct {
 	OtherCert, OtherKey string
 
 	srv     *httptest.Server
+	ca      *x509.Certificate
+	caKey   *ecdsa.PrivateKey
+	dir     string
 	secret  string
 	mu      sync.Mutex
 	steps   []Step
@@ -118,6 +123,7 @@ func New(t testing.TB, opt Options) *Vault {
 	v.From = crypto.PubkeyToAddress(v.Key.PublicKey)
 
 	ca, caKey := newCA(t)
+	v.ca, v.caKey, v.dir = ca, caKey, dir
 	v.CAFile = writePEM(t, dir, "ca.crt", "CERTIFICATE", ca.Raw)
 	serverCert := issue(t, ca, caKey, &x509.Certificate{
 		Subject:     pkix.Name{CommonName: "qv-core"},
@@ -161,6 +167,38 @@ func New(t testing.TB, opt Options) *Vault {
 	t.Cleanup(idp.Close)
 	v.TokenURL = idp.URL + "/token"
 	return v
+}
+
+// IssueClient makes a client certificate from the fake's CA with the given
+// URI SAN and expiry and writes it to certFile and keyFile (new files under
+// the fake's directory when empty). It returns the paths and the serial.
+func (v *Vault) IssueClient(t testing.TB, uri string, notAfter time.Time, certFile, keyFile string) (string, string, *big.Int) {
+	t.Helper()
+	tmpl := clientTemplate(uri)
+	c := issue(t, v.ca, v.caKey, tmpl)
+	if !notAfter.IsZero() {
+		tmpl.NotAfter = notAfter
+		tmpl.NotBefore = notAfter.Add(-48 * time.Hour)
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, v.ca, &c.PrivateKey.(*ecdsa.PrivateKey).PublicKey, v.caKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Certificate = [][]byte{der}
+	}
+	name := "client-" + tmpl.SerialNumber.String()
+	cf, kf := writeLeaf(t, v.dir, name, c)
+	if certFile != "" {
+		mustRename(t, cf, certFile)
+		mustRename(t, kf, keyFile)
+		cf, kf = certFile, keyFile
+	}
+	return cf, kf, tmpl.SerialNumber
+}
+
+func mustRename(t testing.TB, from, to string) {
+	if err := os.Rename(from, to); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // HTTPClient trusts the fake's CA, for the fake identity provider.
@@ -313,6 +351,13 @@ func (v *Vault) sign(w http.ResponseWriter, r *http.Request) {
 	}
 	v.mu.Unlock()
 
+	if step.Delay > 0 {
+		select {
+		case <-time.After(step.Delay):
+		case <-r.Context().Done():
+			return
+		}
+	}
 	switch {
 	case step.Drop:
 		panic(http.ErrAbortHandler)
@@ -327,8 +372,8 @@ func (v *Vault) sign(w http.ResponseWriter, r *http.Request) {
 			b = refuse(w, step.Status, step.Code, step.Field, "scripted "+step.Code)
 		}
 		// Vault stores decisions only: every 4xx and signing_failed. A
-		// retry_later or a gateway 5xx decided nothing.
-		if step.Status < 500 || step.Code == "signing_failed" {
+		// retry_later, a 429 or a gateway 5xx decided nothing.
+		if step.Status < 500 && step.Status != 429 || step.Code == "signing_failed" {
 			v.save(credID, canon, step.Status, b)
 		}
 		return

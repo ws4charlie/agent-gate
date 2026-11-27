@@ -69,8 +69,15 @@ func newEnv(t *testing.T, opt vaulttest.Options) *env {
 
 // request builds a fresh authorization from the fake's wallet and a fake
 // credential (this package does not verify it; Vault does).
-func (e *env) request() vaultsign.Request {
+func (e *env) request() vaultsign.Request { return e.requestExp(120 * time.Second) }
+
+// requestExp: the credential expires ttl from now (whole seconds, rounded up).
+func (e *env) requestExp(ttl time.Duration) vaultsign.Request {
 	now := time.Now().Unix()
+	exp := time.Now().Add(ttl).Unix()
+	if time.Now().Add(ttl).After(time.Unix(exp, 0)) {
+		exp++
+	}
 	var nonce [32]byte
 	rand.Read(nonce[:])
 	id := uuid.NewString()
@@ -81,7 +88,7 @@ func (e *env) request() vaultsign.Request {
 	cred, _ := json.Marshal(map[string]any{"v": 1, "kid": "gate-test-1", "credential_id": id, "obligation_id": "ob-1",
 		"audience": "qv-test", "wallet_id": e.fake.WalletID, "chain": "eip155:84532",
 		"asset": strings.ToLower(x402.USDCBaseSepolia), "payee": "0x2222222222222222222222222222222222222222",
-		"amount": "1500", "issued_at": now, "expires_at": now + 120, "policy_version": "p1", "decision_reason": "ok", "sig": sig})
+		"amount": "1500", "issued_at": now, "expires_at": exp, "policy_version": "p1", "decision_reason": "ok", "sig": sig})
 	return vaultsign.Request{
 		Domain: x402.Domain{Name: "USDC", Version: "2", ChainID: big.NewInt(84532), Contract: common.HexToAddress(x402.USDCBaseSepolia)},
 		Auth: x402.Auth{From: e.fake.From, To: common.HexToAddress("0x2222222222222222222222222222222222222222"),
@@ -371,7 +378,7 @@ func TestAuth(t *testing.T) {
 	t.Run("another identity's certificate: Config refusal", func(t *testing.T) {
 		e := newEnv(t, vaulttest.Options{})
 		e.cfg.ClientCert, e.cfg.ClientKey = e.fake.OtherCert, e.fake.OtherKey
-		e.cli, _ = vaultsign.New(e.cfg)
+		e.cli, _ = vaultsign.NewUnchecked(e.cfg)
 		_, err := e.sign(e.request())
 		var ref *vaultsign.Refusal
 		if !errors.As(err, &ref) || ref.Status != 403 || !ref.Config() {

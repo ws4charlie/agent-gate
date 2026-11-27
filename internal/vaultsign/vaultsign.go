@@ -93,6 +93,8 @@ type Client struct {
 	log      *slog.Logger
 	// Backoff between retries: starts at backoff0, doubles, at most backoffMax.
 	backoff0, backoffMax time.Duration
+	certs                *certReloader // nil only in tests that bypass New
+	now                  func() time.Time
 }
 
 // New checks the configuration and builds the client.
@@ -110,7 +112,11 @@ func New(cfg Config) (*Client, error) {
 	if cfg.ClientCert == "" || cfg.ClientKey == "" || cfg.CAFile == "" {
 		return nil, errors.New("vaultsign: client certificate, key and CA file are all required")
 	}
-	certs := &certReloader{certFile: cfg.ClientCert, keyFile: cfg.ClientKey}
+	log := cfg.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	certs := &certReloader{certFile: cfg.ClientCert, keyFile: cfg.ClientKey, log: log, now: time.Now}
 	if _, err := certs.get(); err != nil {
 		return nil, err
 	}
@@ -136,6 +142,7 @@ func New(cfg Config) (*Client, error) {
 		MaxIdleConns:      4,
 		IdleConnTimeout:   90 * time.Second,
 	})
+	c.certs = certs
 	return c, nil
 }
 
@@ -147,6 +154,7 @@ func newClient(cfg Config, rt http.RoundTripper) *Client {
 		token:    cfg.Token,
 		timeout:  cfg.Timeout, retryFor: cfg.RetryFor, log: cfg.Logger,
 		backoff0: 250 * time.Millisecond, backoffMax: 5 * time.Second,
+		now: time.Now,
 	}
 	if c.timeout <= 0 {
 		c.timeout = DefaultTimeout
@@ -163,13 +171,22 @@ func newClient(cfg Config, rt http.RoundTripper) *Client {
 // A redirect would send the bearer token and the credential somewhere else.
 func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
-// certReloader reloads the client certificate when its files change: Vault's
-// business issuer gives short-lived certificates that a renewer replaces.
+// GateSPIFFE is the one identity Vault accepts on this route.
+const GateSPIFFE = "spiffe://quorumvault/business/agentgate"
+
+// certReloader reloads the client certificate when its files change (mtime
+// or size): Vault's business issuer gives short-lived certificates that a
+// renewer replaces. Every load is validated (key matches, URI SAN is Gate's,
+// not expired); a failed reload is logged and the current certificate kept
+// while it is still valid.
 type certReloader struct {
 	certFile, keyFile string
+	log               *slog.Logger
+	now               func() time.Time
 	mu                sync.Mutex
 	cert              *tls.Certificate
-	certMod, keyMod   time.Time
+	notAfter          time.Time
+	stamp             [4]int64 // cert mtime, cert size, key mtime, key size
 }
 
 func (r *certReloader) get() (*tls.Certificate, error) {
@@ -177,25 +194,58 @@ func (r *certReloader) get() (*tls.Certificate, error) {
 	defer r.mu.Unlock()
 	cs, err1 := os.Stat(r.certFile)
 	ks, err2 := os.Stat(r.keyFile)
+	var err error
 	if err1 != nil || err2 != nil {
-		if r.cert != nil {
-			return r.cert, nil // mid-rotation: keep the one we have
+		err = errors.New("client certificate or key file not readable")
+	} else {
+		stamp := [4]int64{cs.ModTime().UnixNano(), cs.Size(), ks.ModTime().UnixNano(), ks.Size()}
+		if r.cert != nil && stamp == r.stamp {
+			return r.current()
 		}
-		return nil, errors.New("vaultsign: client certificate or key file not readable")
-	}
-	if r.cert != nil && cs.ModTime().Equal(r.certMod) && ks.ModTime().Equal(r.keyMod) {
-		return r.cert, nil
-	}
-	cert, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
-	if err != nil {
-		if r.cert != nil {
+		var cert *tls.Certificate
+		var notAfter time.Time
+		if cert, notAfter, err = r.load(); err == nil {
+			r.cert, r.notAfter, r.stamp = cert, notAfter, stamp
 			return r.cert, nil
 		}
-		// tls's own error text names the PEM problem, never the key bytes.
-		return nil, fmt.Errorf("vaultsign: loading client certificate: %v", err)
+		r.stamp = stamp // log a bad file once, not on every handshake
 	}
-	r.cert, r.certMod, r.keyMod = &cert, cs.ModTime(), ks.ModTime()
+	if r.log != nil {
+		r.log.Warn("vaultsign: client certificate reload failed; keeping the current one", "file", r.certFile, "err", err.Error())
+	}
+	if r.cert == nil {
+		return nil, fmt.Errorf("%w: client certificate: %v", ErrTLS, err)
+	}
+	return r.current()
+}
+
+// current is the loaded certificate if it is still valid. Caller holds mu.
+func (r *certReloader) current() (*tls.Certificate, error) {
+	if !r.now().Before(r.notAfter) {
+		return nil, fmt.Errorf("%w: client certificate expired at %s", ErrTLS, r.notAfter.UTC().Format(time.RFC3339))
+	}
 	return r.cert, nil
+}
+
+func (r *certReloader) load() (*tls.Certificate, time.Time, error) {
+	// LoadX509KeyPair checks that the key matches the certificate. Its error
+	// text names the PEM problem, never key bytes.
+	cert, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	leaf, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	if len(leaf.URIs) != 1 || leaf.URIs[0].String() != GateSPIFFE {
+		return nil, time.Time{}, fmt.Errorf("certificate URI SAN must be exactly %s", GateSPIFFE)
+	}
+	if !r.now().Before(leaf.NotAfter) {
+		return nil, time.Time{}, fmt.Errorf("certificate expired at %s", leaf.NotAfter.UTC().Format(time.RFC3339))
+	}
+	cert.Leaf = leaf
+	return &cert, leaf.NotAfter, nil
 }
 
 type signRequest struct {
@@ -220,11 +270,12 @@ type refusalBody struct {
 
 // call is one Sign's state, for the log line and redaction.
 type call struct {
-	credID   string
-	secrets  []string // values that must never be printed: the sig, tokens
-	attempts int
-	status   int
-	code     string
+	credID    string
+	secrets   []string // values that must never be printed: the sig, tokens
+	attempts  int
+	status    int
+	code      string
+	lastToken string
 }
 
 func (k *call) redact(s string) string {
@@ -247,11 +298,14 @@ func (c *Client) Sign(ctx context.Context, r Request) (sig Signature, err error)
 	k := &call{credID: r.CredentialID}
 	defer func() { c.logCall(k, start, err) }()
 
-	body, err := c.buildBody(r, k)
+	body, expires, err := c.buildBody(r, k)
 	if err != nil {
 		return sig, err
 	}
 	digest := x402.Digest(r.Domain, r.Auth)
+	// Never send past the credential's expiry, whatever the caller's ctx.
+	ctx, cancel := context.WithDeadline(ctx, expires)
+	defer cancel()
 
 	deadline := start.Add(c.retryFor)
 	backoff := c.backoff0
@@ -272,7 +326,13 @@ func (c *Client) Sign(ctx context.Context, r Request) (sig Signature, err error)
 			}
 			last = aerr
 		case status == http.StatusOK:
-			return c.verify(resp, r, digest, k)
+			sig, err := c.verify(resp, r, digest, k)
+			if err == nil && r.Auth.ValidBefore.Cmp(big.NewInt(c.now().Unix())) <= 0 {
+				// Correct, but the token contract would refuse it: never hand
+				// out a signature that is already dead.
+				return Signature{}, fmt.Errorf("%w: the authorization's validBefore has passed", ErrExpired)
+			}
+			return sig, err
 		default:
 			var rb refusalBody
 			jerr := json.Unmarshal(resp, &rb)
@@ -281,23 +341,24 @@ func (c *Client) Sign(ctx context.Context, r Request) (sig Signature, err error)
 				// The token may have expired early or been revoked: one fresh
 				// token, same body. A second 401 is final.
 				refreshed = true
-				c.token.Invalidate()
+				c.token.Invalidate(k.lastToken)
 				continue
 			}
-			nothingDecided := rb.Code == CodeRetryLater ||
-				(jerr != nil || rb.Code == "") && (status == 502 || status == 503 || status == 504)
+			noCode := jerr != nil || rb.Code == ""
+			// Nothing decided: retry_later (only with 503, as the spec pairs
+			// them), 429, or a 5xx without a Vault code (a proxy or gateway).
+			nothingDecided := status == 503 && rb.Code == CodeRetryLater ||
+				status == http.StatusTooManyRequests || status >= 500 && noCode
 			if !nothingDecided {
-				ref := &Refusal{Status: status, Code: rb.Code, Field: rb.Field, Message: k.redact(rb.Message)}
-				if jerr != nil || rb.Code == "" {
+				ref := &Refusal{Status: status, Code: clean(rb.Code, 64), Field: clean(rb.Field, 64),
+					Message: clean(k.redact(rb.Message), 256)}
+				if noCode {
 					ref.Message = ""
 				}
 				if !ref.Known() {
-					raw := k.redact(string(resp))
-					if len(raw) > 512 {
-						raw = raw[:512] + "…"
-					}
 					c.log.Warn("vaultsign: unknown answer, treated as final",
-						"credential_id", k.credID, "status", status, "code", rb.Code, "body", raw)
+						"credential_id", k.credID, "status", status, "code", ref.Code,
+						"body", fmt.Sprintf("%q", truncate(k.redact(string(resp)), 512)))
 				}
 				return sig, ref
 			}
@@ -305,6 +366,9 @@ func (c *Client) Sign(ctx context.Context, r Request) (sig Signature, err error)
 		}
 		// Nothing was decided: wait, then send the same bytes again.
 		wake := time.Now().Add(backoff)
+		if wake.After(expires) {
+			return sig, fmt.Errorf("%w: the credential expires before Vault decided (%w)", ErrExpired, context.DeadlineExceeded)
+		}
 		if wake.After(deadline) {
 			return sig, fmt.Errorf("%w after %d attempts: %s", ErrRetryExhausted, k.attempts, k.redact(last.Error()))
 		}
@@ -322,39 +386,100 @@ func (c *Client) Sign(ctx context.Context, r Request) (sig Signature, err error)
 	}
 }
 
-func (c *Client) buildBody(r Request, k *call) ([]byte, error) {
+// buildBody checks the request and returns the bytes to send and the
+// credential's expiry.
+func (c *Client) buildBody(r Request, k *call) ([]byte, time.Time, error) {
+	var none time.Time
 	var cred map[string]json.RawMessage
 	if err := json.Unmarshal(r.Credential, &cred); err != nil || cred == nil {
-		return nil, errors.New("vaultsign: credential must be a JSON object")
+		return nil, none, errors.New("vaultsign: credential must be a JSON object")
 	}
 	var sigText, credID, walletID string
+	var expiresAt int64
 	_ = json.Unmarshal(cred["sig"], &sigText)
 	_ = json.Unmarshal(cred["credential_id"], &credID)
 	_ = json.Unmarshal(cred["wallet_id"], &walletID)
 	k.secrets = append(k.secrets, sigText)
 	if r.CredentialID == "" || credID != r.CredentialID {
-		return nil, errors.New("vaultsign: CredentialID differs from the credential's credential_id")
+		return nil, none, errors.New("vaultsign: CredentialID differs from the credential's credential_id")
 	}
 	if walletID != c.walletID {
-		return nil, errors.New("vaultsign: the credential is for another wallet than this client's")
+		return nil, none, errors.New("vaultsign: the credential is for another wallet than this client's")
 	}
 	if sigText == "" {
-		return nil, errors.New("vaultsign: the credential is not signed")
+		return nil, none, errors.New("vaultsign: the credential is not signed")
 	}
-	if r.Domain.ChainID == nil || r.Auth.Value == nil || r.Auth.ValidAfter == nil || r.Auth.ValidBefore == nil {
-		return nil, errors.New("vaultsign: incomplete domain or authorization")
+	if err := json.Unmarshal(cred["expires_at"], &expiresAt); err != nil || expiresAt <= 0 {
+		return nil, none, errors.New("vaultsign: the credential has no integer expires_at")
+	}
+	expires := time.Unix(expiresAt, 0)
+	if !c.now().Before(expires) {
+		return nil, none, fmt.Errorf("%w: the credential expired at %d", ErrExpired, expiresAt)
+	}
+	if err := checkAuth(r.Domain, r.Auth); err != nil {
+		return nil, none, err
 	}
 	body, err := json.Marshal(signRequest{WalletID: c.walletID, Kind: KindEIP3009,
 		Payload: Payload(r.Domain, r.Auth), Credential: r.Credential})
 	if err != nil {
-		return nil, errors.New("vaultsign: credential is not valid JSON")
+		return nil, none, errors.New("vaultsign: credential is not valid JSON")
 	}
-	return body, nil
+	return body, expires, nil
+}
+
+// checkAuth refuses values Payload would write but the contract or Vault
+// cannot take: missing, negative or above 2^256-1 numbers, and a window that
+// is empty or reversed.
+func checkAuth(d x402.Domain, a x402.Auth) error {
+	for _, f := range []struct {
+		name string
+		n    *big.Int
+	}{{"chainId", d.ChainID}, {"value", a.Value}, {"validAfter", a.ValidAfter}, {"validBefore", a.ValidBefore}} {
+		if f.n == nil {
+			return fmt.Errorf("vaultsign: %s is missing", f.name)
+		}
+		if f.n.Sign() < 0 || f.n.BitLen() > 256 {
+			return fmt.Errorf("vaultsign: %s is not a uint256", f.name)
+		}
+	}
+	if d.ChainID.Sign() == 0 {
+		return errors.New("vaultsign: chainId is 0")
+	}
+	if a.ValidAfter.Cmp(a.ValidBefore) >= 0 {
+		return errors.New("vaultsign: validAfter must be before validBefore")
+	}
+	return nil
+}
+
+// truncate cuts s to at most n bytes on a UTF-8 boundary.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return strings.ToValidUTF8(s[:n], "") + "…"
+}
+
+// clean makes server text safe for one log line: control characters become
+// '?', at most n bytes.
+func clean(s string, n int) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || r == 0x2028 || r == 0x2029 {
+			return '?'
+		}
+		return r
+	}, s)
+	return truncate(s, n)
 }
 
 // attempt sends body once. The returned error is a transport error (or a
 // token error); a Vault answer of any status is (status, body, nil).
 func (c *Client) attempt(ctx context.Context, body []byte, k *call) (int, []byte, error) {
+	if c.certs != nil {
+		// A pooled connection skips the handshake, so check here too.
+		if _, err := c.certs.get(); err != nil {
+			return 0, nil, err
+		}
+	}
 	actx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	tok, err := c.token.Token(actx)
@@ -365,6 +490,7 @@ func (c *Client) attempt(ctx context.Context, body []byte, k *call) (int, []byte
 		return 0, nil, err
 	}
 	k.secrets = append(k.secrets, tok)
+	k.lastToken = tok
 	req, err := http.NewRequestWithContext(actx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, errors.New("vaultsign: building request")

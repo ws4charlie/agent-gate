@@ -114,6 +114,9 @@ var (
 	// kept failing) until RetryFor ran out. Nothing is known to be decided; the
 	// same credential may still be sent again before it expires.
 	ErrRetryExhausted = errors.New("vaultsign: vault did not decide before the retry time ran out")
+	// ErrExpired: the credential expired before it could be sent, or the
+	// signature came back after the authorization's validBefore. Nothing usable.
+	ErrExpired = errors.New("vaultsign: expired")
 	// ErrTLS: the TLS handshake failed on a certificate (ours refused, or the
 	// server's not trusted). This is configuration and is not retried.
 	ErrTLS = errors.New("vaultsign: TLS certificate failure (configuration)")
