@@ -98,6 +98,10 @@ func TestGatewayVaultSignerStartup(t *testing.T) {
 	listen := freeAddr(t)
 	gw := startGateway(t, append(gatewayEnv(dbURL(pool), listen, providers, prices), vaultEnv...), listen)
 	want := "x402 signer: vault (wallet_id " + f.WalletID + ", audience qv-e2e, from " + f.From.Hex() + ")"
+	// Stop it first: Cmd.Wait returns only after the output is copied, so the
+	// log buffer is no longer written while it is read.
+	_ = gw.cmd.Process.Kill()
+	_ = gw.cmd.Wait()
 	if !strings.Contains(gw.log.String(), want) {
 		t.Fatalf("no signer line %q in:\n%s", want, gw.log.String())
 	}
