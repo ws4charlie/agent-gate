@@ -304,8 +304,16 @@ func (c *Client) Sign(ctx context.Context, r Request) (sig Signature, err error)
 	}
 	digest := x402.Digest(r.Domain, r.Auth)
 	// Never send past the credential's expiry, whatever the caller's ctx.
+	parent := ctx
 	ctx, cancel := context.WithDeadline(ctx, expires)
 	defer cancel()
+	// stopped says why ctx ended: the caller's ctx, or the credential expiring.
+	stopped := func() error {
+		if parent.Err() == nil {
+			return fmt.Errorf("%w: the credential expires before Vault decided (%w)", ErrExpired, context.DeadlineExceeded)
+		}
+		return fmt.Errorf("vaultsign: stopped: %w", parent.Err())
+	}
 
 	deadline := start.Add(c.retryFor)
 	backoff := c.backoff0
@@ -319,7 +327,7 @@ func (c *Client) Sign(ctx context.Context, r Request) (sig Signature, err error)
 		switch {
 		case aerr != nil:
 			if ctx.Err() != nil {
-				return sig, fmt.Errorf("vaultsign: stopped: %w", ctx.Err())
+				return sig, stopped()
 			}
 			if !retryableErr(aerr) {
 				return sig, aerr
@@ -379,7 +387,7 @@ func (c *Client) Sign(ctx context.Context, r Request) (sig Signature, err error)
 		select {
 		case <-ctx.Done():
 			t.Stop()
-			return sig, fmt.Errorf("vaultsign: stopped: %w", ctx.Err())
+			return sig, stopped()
 		case <-t.C:
 		}
 		backoff = min(backoff*2, c.backoffMax)
