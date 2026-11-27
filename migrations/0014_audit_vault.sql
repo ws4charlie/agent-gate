@@ -1,7 +1,7 @@
--- One audit row per QuorumVault signing attempt (AG_SIGNER=vault) carries what
--- the attempt was: the Gate credential, the Vault wallet, the payee, the amount,
--- and Vault's answer. NULL on every other row. Never the credential's sig, the
--- token or a key.
+-- A payment request signed through QuorumVault (AG_SIGNER=vault) makes at most
+-- one Vault attempt; that request's own audit row carries what it was: the Gate
+-- credential, the Vault wallet, the payee, the amount, and Vault's answer. NULL
+-- on every other row. Never the credential's sig, the token or a key.
 ALTER TABLE audit_events
     ADD COLUMN vault_credential_id text,
     ADD COLUMN vault_wallet_id     text,

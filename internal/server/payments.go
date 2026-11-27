@@ -331,8 +331,9 @@ func (c *call) payChallenge(t payTarget) {
 		return
 	}
 	payload, at, err := p.Wallet.SignFor(c.ctx, pending, dec)
-	if at != nil {
-		c.auditVault(hold.ID, at)
+	if at != nil { // one Vault attempt per request: its fields go on the request's own audit row
+		c.ext.Vault = &audit.Vault{CredentialID: at.CredentialID, WalletID: at.WalletID,
+			Payee: at.Payee, Amount: at.Amount, Code: at.Code, Field: at.Field, Outcome: at.Outcome}
 	}
 	if err != nil {
 		c.signFailed(hold, at, err)
@@ -469,31 +470,6 @@ func cutUTF8(s string, n int) string {
 		s = s[:len(s)-1]
 	}
 	return s
-}
-
-// auditVault writes the one audit row of a Vault signing attempt.
-func (c *call) auditVault(holdID string, at *wallet.Attempt) {
-	ev := c.ev
-	ev.Provider, ev.Cost, ev.CostSource, ev.Err, ev.At = "quorumvault", 0, "", at.Code, time.Now()
-	ev.Usage = provider.Usage{UpstreamID: at.CredentialID}
-	switch at.Outcome {
-	case wallet.OutcomeSigned:
-		ev.Status = audit.StatusVaultSigned
-	case wallet.OutcomeRefused:
-		ev.Status = audit.StatusVaultRefused
-	default:
-		ev.Status = audit.StatusVaultError
-		if ev.Err == "" {
-			ev.Err = at.Outcome
-		}
-	}
-	x := audit.Extra{HoldID: holdID, Vault: &audit.Vault{CredentialID: at.CredentialID, WalletID: at.WalletID,
-		Payee: at.Payee, Amount: at.Amount, Code: at.Code, Field: at.Field, Outcome: at.Outcome}}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.ctx), 5*time.Second)
-	defer cancel()
-	if err := c.s.Audit.Write(ctx, ev, x); err != nil {
-		c.s.Log.Error("audit write failed (vault attempt)", "request_id", c.ev.RequestID, "err", err)
-	}
 }
 
 // unknown is the "signed, outcome not known" exit: the hold and the policy

@@ -54,22 +54,16 @@ type Extra struct {
 	UnmeteredNanos money.Nanos // how much that release returned to the account
 	RequestBody    *string     // only when body storage is on; already redacted
 	ResponseBody   *string
-	Vault          *Vault // set only on a QuorumVault signing attempt
+	Vault          *Vault // set only on a payment signed (or refused) through QuorumVault
 }
 
-// Vault is one QuorumVault signing attempt (the vault_* columns). It never
-// holds the credential's sig, the token or a key.
+// Vault is the QuorumVault signing attempt of a payment request (the vault_*
+// columns of that request's row; there is at most one attempt per request).
+// It never holds the credential's sig, the token or a key.
 type Vault struct {
 	CredentialID, WalletID, Payee, Amount string
 	Code, Field, Outcome                  string
 }
-
-// Statuses of a Vault attempt row (kind payment).
-const (
-	StatusVaultSigned  = "vault_signed"
-	StatusVaultRefused = "vault_refused"
-	StatusVaultError   = "vault_error"
-)
 
 func nullable(s string) *string {
 	if s == "" {

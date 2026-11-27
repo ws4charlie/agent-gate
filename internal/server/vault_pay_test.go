@@ -112,20 +112,14 @@ func (r *vaultRig) verify(m map[string]json.RawMessage) gatecred.Credential {
 
 func (r *vaultRig) r() *testing.T { return r.t }
 
-// vaultRows are the Vault attempt rows of a request.
-func (r *vaultRig) vaultRows(rid string) (attempts []audit.Row, final audit.Row) {
+// row is the request's one audit row, which carries its Vault attempt.
+func (r *vaultRig) row(rid string) audit.Row {
 	r.t.Helper()
-	rows, err := r.audit.ByRequest(context.Background(), rid)
-	if err != nil || len(rows) == 0 {
-		r.t.Fatalf("audit rows for %s: %d %v", rid, len(rows), err)
+	row := r.auditRowID(rid) // exactly one row: the Vault attempt is not another call
+	if row.Vault == nil {
+		r.t.Fatalf("no vault fields on %+v", row)
 	}
-	for _, row := range rows[:len(rows)-1] {
-		if row.Vault == nil {
-			r.t.Fatalf("extra audit row without vault fields: %+v", row)
-		}
-		attempts = append(attempts, row)
-	}
-	return attempts, rows[len(rows)-1]
+	return row
 }
 
 // AC2: an allowed payment is signed by Vault, settles as before, and the
@@ -147,11 +141,11 @@ func TestVaultPaymentSigned(t *testing.T) {
 		t.Fatalf("vault saw %d requests", len(reqs))
 	}
 	c, msg := reqs[0].cred, reqs[0].message
-	attempts, final := r.vaultRows(rid)
-	if len(attempts) != 1 || final.Status != audit.StatusOK {
-		t.Fatalf("audit: %d attempts, final %+v", len(attempts), final)
+	v := r.row(rid)
+	if v.Status != audit.StatusOK || v.Kind != "payment" {
+		t.Fatalf("audit %+v", v)
 	}
-	hold := final.HoldID
+	hold := v.HoldID
 	want := gatecred.Credential{V: 1, Kid: "gate-test-1", CredentialID: c.CredentialID, ObligationID: hold, Audience: vaultAudience,
 		WalletID: r.vault.WalletID, Chain: x402.NetworkLocal, Asset: strings.ToLower(r.sim.Token.Hex()),
 		Payee: strings.ToLower(r.payTo.Hex()), Amount: "10000", IssuedAt: c.IssuedAt, ExpiresAt: c.ExpiresAt,
@@ -169,10 +163,8 @@ func TestVaultPaymentSigned(t *testing.T) {
 		msg["validAfter"] != itoa(c.IssuedAt) || msg["validBefore"] != itoa(c.ExpiresAt) || !strings.EqualFold(msg["nonce"], common.Hash(nonce).Hex()) {
 		t.Fatalf("authorization %v vs credential %+v", msg, c)
 	}
-	v := attempts[0]
-	if v.Status != audit.StatusVaultSigned || v.HoldID != hold || v.Kind != "payment" || v.Usage.UpstreamID != c.CredentialID ||
-		*v.Vault != (audit.Vault{CredentialID: c.CredentialID, WalletID: r.vault.WalletID, Payee: c.Payee, Amount: "10000", Outcome: wallet.OutcomeSigned}) {
-		t.Fatalf("vault audit row %+v %+v", v, v.Vault)
+	if *v.Vault != (audit.Vault{CredentialID: c.CredentialID, WalletID: r.vault.WalletID, Payee: c.Payee, Amount: "10000", Outcome: wallet.OutcomeSigned}) {
+		t.Fatalf("vault fields %+v", v.Vault)
 	}
 	if got := strings.Join(r.entryKinds(), ","); got != "hold,settle" {
 		t.Fatalf("ledger %s", got)
@@ -245,14 +237,11 @@ func TestVaultRefusalReleasesAndRetryIsNew(t *testing.T) {
 			if b := r.balance(); b.Held != 0 || b.Balance != 10*usd {
 				t.Fatalf("balance %+v", b)
 			}
-			attempts, final := r.vaultRows(rid)
-			if len(attempts) != 1 || final.Status != server.StatusPaymentFailed || final.Err != server.CodeVaultRefused {
-				t.Fatalf("audit %d %+v", len(attempts), final)
-			}
-			a := attempts[0]
-			if a.Status != audit.StatusVaultRefused || a.Vault.Code != tc.code || a.Vault.Field != tc.field ||
-				a.Vault.Outcome != wallet.OutcomeRefused || a.Vault.CredentialID == "" || a.Vault.CredentialID != m["credential_id"] {
-				t.Fatalf("vault row %+v %+v", a, a.Vault)
+			final := r.row(rid)
+			if final.Status != server.StatusPaymentFailed || final.Err != server.CodeVaultRefused || final.Vault.Code != tc.code ||
+				final.Vault.Field != tc.field || final.Vault.Outcome != wallet.OutcomeRefused || final.Vault.CredentialID == "" ||
+				final.Vault.CredentialID != m["credential_id"] {
+				t.Fatalf("audit %+v %+v", final, final.Vault)
 			}
 
 			code, m, rid2 := r.pay("echo", "v-ref-2") // the agent tries again: the fake signs this time
@@ -264,7 +253,7 @@ func TestVaultRefusalReleasesAndRetryIsNew(t *testing.T) {
 				t.Fatalf("vault saw %d requests", len(reqs))
 			}
 			first, second := reqs[0], reqs[1]
-			_, final2 := r.vaultRows(rid2)
+			final2 := r.row(rid2)
 			if first.cred.ObligationID != final.HoldID || second.cred.ObligationID != final2.HoldID || final.HoldID == final2.HoldID {
 				t.Fatalf("holds %s %s / credentials %s %s", final.HoldID, final2.HoldID, first.cred.ObligationID, second.cred.ObligationID)
 			}
@@ -291,8 +280,8 @@ func TestVaultRetryLaterThenSigned(t *testing.T) {
 	if len(bodies) != 3 || string(bodies[0]) != string(bodies[2]) || r.vault.Signs() != 1 || r.vs.Attempts() != 1 {
 		t.Fatalf("bodies %d, signs %d, attempts %d", len(bodies), r.vault.Signs(), r.vs.Attempts())
 	}
-	if attempts, _ := r.vaultRows(rid); len(attempts) != 1 || attempts[0].Status != audit.StatusVaultSigned {
-		t.Fatalf("attempt rows %+v", attempts)
+	if v := r.row(rid); v.Status != audit.StatusOK || v.Vault.Outcome != wallet.OutcomeSigned {
+		t.Fatalf("audit %+v %+v", v, v.Vault)
 	}
 	if got := strings.Join(r.entryKinds(), ","); got != "hold,settle" || r.chainBal(r.payTo) != 10_000 {
 		t.Fatalf("ledger %s payee %d", got, r.chainBal(r.payTo))
@@ -309,9 +298,8 @@ func TestVaultBadSignatureKeepsHoldUntilWindowCloses(t *testing.T) {
 	if code != 202 || m["status"] != "settlement_pending" || m["reason"] != "vault_bad_signature" {
 		t.Fatalf("%d %v", code, m)
 	}
-	attempts, final := r.vaultRows(rid)
-	if len(attempts) != 1 || attempts[0].Vault.Outcome != wallet.OutcomeBadSignature || final.Status != server.StatusSettlementPending {
-		t.Fatalf("audit %+v %+v", attempts, final)
+	if v := r.row(rid); v.Vault.Outcome != wallet.OutcomeBadSignature || v.Status != server.StatusSettlementPending {
+		t.Fatalf("audit %+v %+v", v, v.Vault)
 	}
 	if r.activeHolds() != 1 {
 		t.Fatal("hold released while the nonce may be spent")
