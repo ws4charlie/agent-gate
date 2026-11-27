@@ -54,6 +54,28 @@ type Extra struct {
 	UnmeteredNanos money.Nanos // how much that release returned to the account
 	RequestBody    *string     // only when body storage is on; already redacted
 	ResponseBody   *string
+	Vault          *Vault // set only on a QuorumVault signing attempt
+}
+
+// Vault is one QuorumVault signing attempt (the vault_* columns). It never
+// holds the credential's sig, the token or a key.
+type Vault struct {
+	CredentialID, WalletID, Payee, Amount string
+	Code, Field, Outcome                  string
+}
+
+// Statuses of a Vault attempt row (kind payment).
+const (
+	StatusVaultSigned  = "vault_signed"
+	StatusVaultRefused = "vault_refused"
+	StatusVaultError   = "vault_error"
+)
+
+func nullable(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 type Store struct{ pool *pgxpool.Pool }
@@ -69,14 +91,21 @@ func (s *Store) Write(ctx context.Context, e Event, x Extra) error {
 	if e.Kind == "" {
 		e.Kind = "model"
 	}
+	var v struct{ CredentialID, WalletID, Payee, Amount, Code, Field, Outcome *string }
+	if x.Vault != nil {
+		v.CredentialID, v.WalletID, v.Payee, v.Amount = nullable(x.Vault.CredentialID), nullable(x.Vault.WalletID), nullable(x.Vault.Payee), nullable(x.Vault.Amount)
+		v.Code, v.Field, v.Outcome = nullable(x.Vault.Code), nullable(x.Vault.Field), nullable(x.Vault.Outcome)
+	}
 	_, err := s.pool.Exec(ctx, `INSERT INTO audit_events (request_id, account_id, agent_id, run_id, kind, model, provider,
 		status, cost_source, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, upstream_id,
-		cost_nanos, unrecovered_nanos, unmetered, hold_id, latency_ms, overhead_ms, err, request_body, response_body, at, unmetered_nanos)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
+		cost_nanos, unrecovered_nanos, unmetered, hold_id, latency_ms, overhead_ms, err, request_body, response_body, at, unmetered_nanos,
+		vault_credential_id, vault_wallet_id, vault_payee, vault_amount, vault_code, vault_field, vault_outcome)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)`,
 		e.RequestID, e.AccountID, e.AgentID, e.RunID, e.Kind, e.Model, e.Provider, e.Status, e.CostSource,
 		e.Usage.InputTokens, e.Usage.OutputTokens, e.Usage.CacheReadTokens, e.Usage.CacheWriteTokens, e.Usage.UpstreamID,
 		int64(e.Cost), int64(x.Unrecovered), x.Unmetered, x.HoldID, e.LatencyMs, e.OverheadMs, e.Err,
-		x.RequestBody, x.ResponseBody, e.At.UTC().Truncate(time.Microsecond), int64(x.UnmeteredNanos))
+		x.RequestBody, x.ResponseBody, e.At.UTC().Truncate(time.Microsecond), int64(x.UnmeteredNanos),
+		v.CredentialID, v.WalletID, v.Payee, v.Amount, v.Code, v.Field, v.Outcome)
 	return err
 }
 
@@ -89,7 +118,8 @@ type Row struct {
 func (s *Store) ByRequest(ctx context.Context, requestID string) ([]Row, error) {
 	rows, err := s.pool.Query(ctx, `SELECT request_id, account_id, agent_id, run_id, kind, model, provider, status, cost_source,
 		input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, upstream_id, cost_nanos, unrecovered_nanos,
-		unmetered, hold_id, latency_ms, overhead_ms, err, request_body, response_body, at, unmetered_nanos
+		unmetered, hold_id, latency_ms, overhead_ms, err, request_body, response_body, at, unmetered_nanos,
+		vault_credential_id, vault_wallet_id, vault_payee, vault_amount, vault_code, vault_field, vault_outcome
 		FROM audit_events WHERE request_id=$1 ORDER BY id`, requestID)
 	if err != nil {
 		return nil, err
@@ -98,14 +128,26 @@ func (s *Store) ByRequest(ctx context.Context, requestID string) ([]Row, error) 
 	var out []Row
 	for rows.Next() {
 		var r Row
+		var vc, vw, vp, va, vco, vf, vo *string
 		if err := rows.Scan(&r.RequestID, &r.AccountID, &r.AgentID, &r.RunID, &r.Kind, &r.Model, &r.Provider, &r.Status, &r.CostSource,
 			&r.Usage.InputTokens, &r.Usage.OutputTokens, &r.Usage.CacheReadTokens, &r.Usage.CacheWriteTokens, &r.Usage.UpstreamID,
-			&r.Cost, &r.Unrecovered, &r.Unmetered, &r.HoldID, &r.LatencyMs, &r.OverheadMs, &r.Err, &r.RequestBody, &r.ResponseBody, &r.At, &r.UnmeteredNanos); err != nil {
+			&r.Cost, &r.Unrecovered, &r.Unmetered, &r.HoldID, &r.LatencyMs, &r.OverheadMs, &r.Err, &r.RequestBody, &r.ResponseBody, &r.At, &r.UnmeteredNanos,
+			&vc, &vw, &vp, &va, &vco, &vf, &vo); err != nil {
 			return nil, err
+		}
+		if vo != nil {
+			r.Vault = &Vault{CredentialID: deref(vc), WalletID: deref(vw), Payee: deref(vp), Amount: deref(va), Code: deref(vco), Field: deref(vf), Outcome: *vo}
 		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // ---- redaction (I9) ----
