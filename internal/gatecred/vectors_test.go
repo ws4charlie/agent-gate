@@ -66,7 +66,7 @@ func loadVectors(t *testing.T) vectorFile {
 func testKey(t *testing.T, seedString, kid string) Key {
 	t.Helper()
 	seed := sha256.Sum256([]byte(seedString))
-	return Key{Kid: kid, priv: ed25519.NewKeyFromSeed(seed[:])}
+	return keyFrom(kid, ed25519.NewKeyFromSeed(seed[:]))
 }
 
 // caseBytes is the credential text after the case's substitute, if any.
@@ -85,10 +85,13 @@ func caseBytes(t *testing.T, cred string, sub *struct {
 	return bytes.Replace(b, []byte(sub.Find), with, 1)
 }
 
-// TestVectors runs every case through the test verifier. then_expect_on_reuse
-// is skipped: it needs a used-credential store, and Gate keeps none (Vault's
-// checkers do; Gate only mints).
-func TestVectors(t *testing.T) {
+// TestVectorsVerifierSide runs every case through the test-only verifier
+// (verify_test.go), the side Vault runs, to prove our parser, field rules and
+// encoder agree with Vault's on all 73 cases. Minting is checked separately in
+// TestMintReproducesVectors. then_expect_on_reuse is skipped on purpose: it
+// needs a used-credential store, and Gate keeps none (Vault's checkers do;
+// Gate only mints).
+func TestVectorsVerifierSide(t *testing.T) {
 	v := loadVectors(t)
 	if v.DomainPrefix != DomainPrefix {
 		t.Fatalf("domain prefix %q, want %q", v.DomainPrefix, DomainPrefix)
@@ -172,6 +175,19 @@ func TestMintReproducesVectors(t *testing.T) {
 			}
 			if out["sig"] != base64.RawURLEncoding.EncodeToString(sig) {
 				t.Fatalf("sig %v, want %s", out["sig"], base64.RawURLEncoding.EncodeToString(sig))
+			}
+			// The whole object Mint emits must be the vector's canonical form
+			// with sig added. Built from signed_bytes_hex, not from our encoder:
+			// drop the domain prefix, and insert sig where it sorts (after
+			// policy_version, before v).
+			sb, _ := hex.DecodeString(c.SignedBytesHex)
+			canon, ok := bytes.CutPrefix(sb, []byte(DomainPrefix))
+			if !ok || bytes.Count(canon, []byte(`,"v":`)) != 1 {
+				t.Fatalf("unexpected vector form: %s", sb)
+			}
+			want := bytes.Replace(canon, []byte(`,"v":`), []byte(`,"sig":"`+base64.RawURLEncoding.EncodeToString(sig)+`","v":`), 1)
+			if !bytes.Equal(s.JSON, want) {
+				t.Fatalf("Mint JSON differs:\n got %s\nwant %s", s.JSON, want)
 			}
 			if s.CredentialID != cred.CredentialID {
 				t.Fatalf("credential_id %s, want %s", s.CredentialID, cred.CredentialID)

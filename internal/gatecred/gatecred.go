@@ -92,31 +92,44 @@ func fieldErr(f, format string, a ...any) *FieldError {
 }
 
 // Key is the Gate credential signing key. It exists only for this purpose:
-// not the x402 wallet key, not a SPIFFE key.
+// not the x402 wallet key, not a SPIFFE key. Build it with NewKey or LoadKey.
+//
+// The private key is held only inside the sign closure. fmt and every other
+// reflection-based printer show a func as an address, never what it captures,
+// so a Key prints no key bytes even where its methods cannot run (as an
+// unexported field of another struct, or through fmt's bad-verb path, which
+// dereferences pointers to structs, arrays and slices).
 type Key struct {
 	Kid  string
-	priv ed25519.PrivateKey // unexported: no formatting path or caller can reach the seed
+	pub  ed25519.PublicKey
+	sign func(msg []byte) []byte
 }
 
-// The seed must never reach a log line, a %v, a JSON body or a panic message:
-// these print only the kid.
+// keyFrom wraps priv without the checks NewKey makes (tests use it for the
+// vectors' TEST ONLY keys). priv is copied.
+func keyFrom(kid string, priv ed25519.PrivateKey) Key {
+	p := append(ed25519.PrivateKey(nil), priv...)
+	return Key{
+		Kid:  kid,
+		pub:  append(ed25519.PublicKey(nil), p[ed25519.SeedSize:]...),
+		sign: func(msg []byte) []byte { return ed25519.Sign(p, msg) },
+	}
+}
+
+// The formatting paths a Key's own methods can reach print only the kid.
 func (k Key) String() string   { return "gatecred.Key(" + k.Kid + ")" }
 func (k Key) GoString() string { return k.String() }
 
-// Format handles every fmt verb. String alone covers only %v %s %x %X %q;
-// %d, %b, %o and the rest would print the struct by reflection, private
-// key bytes included.
+// Format handles every fmt verb. String alone covers only %v %s %x %X %q.
 func (k Key) Format(f fmt.State, _ rune) { io.WriteString(f, k.String()) }
 
 func (k Key) LogValue() slog.Value         { return slog.StringValue(k.String()) }
 func (k Key) MarshalJSON() ([]byte, error) { return json.Marshal(k.String()) }
 func (k Key) MarshalText() ([]byte, error) { return []byte(k.String()), nil }
-func (k Key) Public() ed25519.PublicKey {
-	if len(k.priv) != ed25519.PrivateKeySize {
-		return nil
-	}
-	return k.priv.Public().(ed25519.PublicKey)
-}
+
+// Public is the key's public half, nil for a zero Key.
+func (k Key) Public() ed25519.PublicKey { return append(ed25519.PublicKey(nil), k.pub...) }
+
 func (k Key) PublicBase64() string               { return EncodePublicKey(k.Public()) }
 func EncodePublicKey(p ed25519.PublicKey) string { return base64.RawURLEncoding.EncodeToString(p) }
 
@@ -137,7 +150,7 @@ func NewCredentialID() string {
 // and a lifetime above MaxTTL: Gate never sends a credential that is wrong by
 // construction.
 func Mint(key Key, c Credential) (Signed, error) {
-	if len(key.priv) != ed25519.PrivateKeySize {
+	if key.sign == nil || len(key.pub) != ed25519.PublicKeySize {
 		return Signed{}, errors.New("gatecred: no signing key")
 	}
 	if err := validKid(key.Kid); err != nil {
@@ -161,7 +174,7 @@ func Mint(key Key, c Credential) (Signed, error) {
 	if c.ExpiresAt-c.IssuedAt > int64(MaxTTL/time.Second) {
 		return Signed{}, fieldErr("expires_at", "lifetime %ds is above the maximum %ds", c.ExpiresAt-c.IssuedAt, int64(MaxTTL/time.Second))
 	}
-	sig := ed25519.Sign(key.priv, SignedBytes(c))
+	sig := key.sign(SignedBytes(c))
 	out := encodeJCS(append(members(c), member{key: "sig", str: base64.RawURLEncoding.EncodeToString(sig)}))
 	if err := checkSize(out); err != nil {
 		return Signed{}, err

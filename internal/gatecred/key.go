@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // Where the key lives. The file holds the 32-byte Ed25519 seed as hex and is
@@ -56,7 +57,14 @@ func LoadKey() (Key, error) {
 	return LoadKeyFile(path, os.Getenv(EnvKid))
 }
 
-// LoadKeyFile is LoadKey with the path and kid given.
+// currentUID is the user the key file must belong to (a test hook).
+var currentUID = os.Getuid
+
+// LoadKeyFile is LoadKey with the path and kid given. The file is opened once
+// without following a symlink, and every check runs on the open file, so it
+// cannot be swapped between the check and the read. It must be a regular
+// file owned by this user, mode 0600 or stricter, in a directory no one else
+// can write to (else someone could replace it).
 func LoadKeyFile(path, kid string) (Key, error) {
 	if kid == "" {
 		return Key{}, fmt.Errorf("gatecred: no kid: set %s to the kid Vault's operators registered", EnvKid)
@@ -64,9 +72,20 @@ func LoadKeyFile(path, kid string) (Key, error) {
 	if err := validKid(kid); err != nil {
 		return Key{}, fmt.Errorf("gatecred: %s: %s", EnvKid, err.Reason)
 	}
-	fi, err := os.Stat(path)
+	if err := checkKeyDir(filepath.Dir(path)); err != nil {
+		return Key{}, err
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
+		if fi, lerr := os.Lstat(path); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+			return Key{}, fmt.Errorf("gatecred: key file %s is a symlink; use the real file", path)
+		}
 		return Key{}, fmt.Errorf("gatecred: no key file (agentgate gatecred keygen): %w", err)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return Key{}, fmt.Errorf("gatecred: key file: %w", err)
 	}
 	if !fi.Mode().IsRegular() {
 		return Key{}, fmt.Errorf("gatecred: key file %s is not a regular file", path)
@@ -74,7 +93,10 @@ func LoadKeyFile(path, kid string) (Key, error) {
 	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
 		return Key{}, fmt.Errorf("gatecred: key file %s has mode %04o; need 0600 or stricter (chmod 600)", path, perm)
 	}
-	b, err := os.ReadFile(path)
+	if st, ok := fi.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != currentUID() {
+		return Key{}, fmt.Errorf("gatecred: key file %s is not owned by this user", path)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, 256))
 	if err != nil {
 		return Key{}, fmt.Errorf("gatecred: read key file: %w", err)
 	}
@@ -86,22 +108,42 @@ func LoadKeyFile(path, kid string) (Key, error) {
 	}
 	priv := ed25519.NewKeyFromSeed(seed)
 	clear(seed)
+	defer clear(priv)
 	return NewKey(kid, priv)
 }
 
+// checkKeyDir refuses a directory that group or others can write to: anyone
+// who can write there can replace the key file.
+func checkKeyDir(dir string) error {
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("gatecred: key directory: %w", err)
+	}
+	if perm := fi.Mode().Perm(); perm&0o022 != 0 {
+		return fmt.Errorf("gatecred: key directory %s has mode %04o; group or others can write to it (chmod 700)", dir, perm)
+	}
+	return nil
+}
+
 // NewKeyFile creates a fresh seed at path (mode 0600, refuses to overwrite)
-// and returns the public key. The seed is never returned or printed.
+// and returns the public key. A missing directory is created 0700; an
+// existing one that group or others can write to is refused. The seed is
+// never returned or printed.
 func NewKeyFile(path string) (ed25519.PublicKey, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	if err := checkKeyDir(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
 	}
+	defer clear(priv)
 	seed := priv.Seed()
 	defer clear(seed)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("gatecred: %w (refusing to overwrite an existing key)", err)
 	}
@@ -141,14 +183,18 @@ func Keygen(w io.Writer, path, kid string) error {
 		return errors.New("gatecred: generated a TEST ONLY key")
 	}
 	fmt.Fprintf(w, "kid:        %s\npublic_key: %s\nkey file:   %s (mode 0600; keep it out of git and backups you do not control)\n", kid, EncodePublicKey(pub), path)
+	if fi, err := os.Stat(filepath.Dir(path)); err == nil && fi.Mode().Perm()&0o077 != 0 {
+		fmt.Fprintf(w, "note:       directory %s has mode %04o; others can list it (the key file itself is 0600). chmod 700 it if you can.\n", filepath.Dir(path), fi.Mode().Perm())
+	}
 	fmt.Fprintf(w, "next: set %s=%s for the gateway, and send the kid and public_key to Vault's operators for the signed gate setting.\n", EnvKid, kid)
 	return nil
 }
 
 // NewKey makes a signing key from a kid and an Ed25519 private key. It
-// refuses a bad kid, a key of the wrong size and the vectors' TEST ONLY keys.
-// The private key is kept unexported, so nothing outside this package can
-// print or copy it.
+// refuses a bad kid, a key of the wrong size, a key whose public half is not
+// the one its seed derives, and the vectors' TEST ONLY keys (judged by the
+// derived public half). The key is copied into the Key's signer; nothing
+// outside this package can read or print it.
 func NewKey(kid string, priv ed25519.PrivateKey) (Key, error) {
 	if err := validKid(kid); err != nil {
 		return Key{}, fmt.Errorf("gatecred: kid: %s", err.Reason)
@@ -156,9 +202,13 @@ func NewKey(kid string, priv ed25519.PrivateKey) (Key, error) {
 	if len(priv) != ed25519.PrivateKeySize {
 		return Key{}, fmt.Errorf("gatecred: private key must be %d bytes", ed25519.PrivateKeySize)
 	}
-	k := Key{Kid: kid, priv: append(ed25519.PrivateKey(nil), priv...)}
-	if IsTestKey(k.Public()) {
+	derived := ed25519.NewKeyFromSeed(priv.Seed())
+	defer clear(derived)
+	if subtle.ConstantTimeCompare(derived[ed25519.SeedSize:], priv[ed25519.SeedSize:]) != 1 {
+		return Key{}, errors.New("gatecred: private key's public half does not match its seed")
+	}
+	if IsTestKey(derived.Public().(ed25519.PublicKey)) {
 		return Key{}, errors.New("gatecred: refusing a TEST ONLY key from the shared vectors; it signs nothing real")
 	}
-	return k, nil
+	return keyFrom(kid, derived), nil
 }

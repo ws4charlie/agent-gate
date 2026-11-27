@@ -15,8 +15,12 @@ import (
 // realKey is a throwaway key that is not one of the vectors' test keys.
 func realKey(t *testing.T) Key {
 	t.Helper()
+	return keyFrom("gate-test", ed25519.NewKeyFromSeed(realSeed(t)))
+}
+
+func realSeed(t *testing.T) []byte {
 	seed := sha256.Sum256([]byte("gatecred unit test " + t.Name()))
-	return Key{Kid: "gate-test", priv: ed25519.NewKeyFromSeed(seed[:])}
+	return seed[:]
 }
 
 func good() Credential {
@@ -164,7 +168,7 @@ func TestMintMaxSize(t *testing.T) {
 	c.ObligationID = strings.Repeat(`"`, 128)
 	c.PolicyVersion = strings.Repeat(`\`, 64)
 	c.DecisionReason = strings.Repeat(`"`, 256)
-	s, err := Mint(Key{Kid: c.Kid, priv: realKey(t).priv}, c)
+	s, err := Mint(keyFrom(c.Kid, ed25519.NewKeyFromSeed(realSeed(t))), c)
 	if err != nil || len(s.JSON) > MaxSize {
 		t.Fatalf("largest valid credential: %v, %d bytes", err, len(s.JSON))
 	}
@@ -177,7 +181,7 @@ func TestMintNoKey(t *testing.T) {
 }
 
 // TestKeyNeverPrintsSeed: every formatting path prints only the kid. The
-// private key is unexported (callers cannot reach it), and Format covers the
+// private key lives only in the Key's signer (callers cannot reach it), and Format covers the
 // verbs String does not (%d, %b, %o ... would otherwise print it by reflection).
 func TestKeyNeverPrintsSeed(t *testing.T) {
 	k := realKey(t)
@@ -200,7 +204,7 @@ func TestKeyNeverPrintsSeed(t *testing.T) {
 	slog.New(slog.NewTextHandler(&logs, nil)).Info("minting", "key", k, "ptr", &k)
 	j, _ := json.Marshal(struct{ K Key }{k})
 	out := string(j) + logs.String()
-	assertNoSeed(t, out, k.priv.Seed())
+	assertNoSeed(t, out, realSeed(t))
 	if strings.Count(out, want) != 4 {
 		t.Fatalf("want the kid form 4 times: %s", out)
 	}
@@ -213,12 +217,15 @@ func TestNewKey(t *testing.T) {
 	if err != nil || !k.Public().Equal(priv.Public()) || k.Kid != "gate-1" {
 		t.Fatalf("NewKey: %v", err)
 	}
+	pub := priv.Public().(ed25519.PublicKey)
 	priv[0] ^= 0xff // NewKey keeps its own copy
-	if !k.Public().Equal(ed25519.NewKeyFromSeed(seed[:]).Public()) {
-		t.Fatal("NewKey shares the caller's slice")
+	s, err := Mint(k, good())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := Mint(k, good()); err != nil {
-		t.Fatal("kid of good() is empty, so Mint should fill gate-1 and succeed")
+	c, sig, perr := parseStrict(s.JSON)
+	if perr != nil || !k.Public().Equal(pub) || !ed25519.Verify(pub, SignedBytes(c), sig) {
+		t.Fatal("NewKey shares the caller's slice")
 	}
 	for name, tc := range map[string]struct {
 		kid  string
