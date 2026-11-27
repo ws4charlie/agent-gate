@@ -62,6 +62,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = bankCmd(ctx, args[1:], stdout)
 	case "console":
 		err = consoleCmd(ctx, args[1:], stdout)
+	case "gatecred":
+		err = gatecredCmd(args[1:], stdout)
 	case "help", "-h", "--help":
 		usage(stdout)
 	default:
@@ -97,7 +99,8 @@ commands:
   cedar       check DIR | shadow [--since 24h]: Cedar policies in shadow mode
   bank        list | show | simulate-return: Mercury ACH payments and their audit chain
   registry    add | list | status | remove | gaps: the catalogue of allowed models, tools and agents
-  console     the local web console: overview, controls, research tasks`)
+  console     the local web console: overview, controls, research tasks
+  gatecred    keygen [--file F] [--kid K]: the key Gate signs QuorumVault credentials with`)
 }
 
 func migrate(ctx context.Context, args []string, stdout io.Writer) error {
