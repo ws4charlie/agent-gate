@@ -78,7 +78,11 @@ type rig struct {
 	submit   http.Handler // the real paid handler: what the tool uses to cash the kept authorization
 }
 
-func newRig(t *testing.T) *rig {
+func newRig(t *testing.T) *rig { t.Helper(); return newRigWith(t, nil) }
+
+// newRigWith builds the anvil rig; signer (may be nil: the local wallet r.w)
+// picks what the gateway signs with.
+func newRigWith(t *testing.T, signer func(r *rig) wallet.Signer) *rig {
 	t.Helper()
 	node := dialAnvil(t)
 	ctx := context.Background()
@@ -130,6 +134,10 @@ func newRig(t *testing.T) *rig {
 	}))
 	t.Cleanup(tool.Close)
 
+	var sg wallet.Signer = r.w
+	if signer != nil {
+		sg = signer(r)
+	}
 	r.pool = dbtest.New(t)
 	r.led = ledger.New(r.pool)
 	r.audit = audit.NewStore(r.pool)
@@ -141,7 +149,7 @@ func newRig(t *testing.T) *rig {
 		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		MaxHold:   5 * usd, DefaultMaxTokens: 100,
 		Payments: &server.Payments{
-			Wallet:  r.w,
+			Wallet:  sg,
 			Tools:   map[string]string{"echo": tool.URL + "/echo", "premium": tool.URL + "/premium"},
 			Fetcher: x402.Fetcher{HTTP: &http.Client{Transport: r.net}},
 		},

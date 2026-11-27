@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
@@ -22,6 +24,7 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/policy"
 	"github.com/ws4charlie/agent-gate/internal/provider"
 	"github.com/ws4charlie/agent-gate/internal/run"
+	"github.com/ws4charlie/agent-gate/internal/vaultsign"
 	"github.com/ws4charlie/agent-gate/internal/wallet"
 	"github.com/ws4charlie/agent-gate/internal/x402"
 )
@@ -43,11 +46,27 @@ const (
 // threshold are part of each agent's scope (internal/agents), checked by
 // policy.Evaluate. Tools maps names to URLs for the first door only: clients
 // name tools, they never supply URLs (no SSRF).
+//
+// Wallet is the signer: the local key (*wallet.Wallet, the default) or
+// QuorumVault (*wallet.VaultSigner, AG_SIGNER=vault). Either way only a
+// policy.Allowed gets an authorization prepared (I10).
 type Payments struct {
-	Wallet  *wallet.Wallet
+	Wallet  wallet.Signer
 	Tools   map[string]string // tool name -> URL, for POST /v1/payments; "GET <url>" for a GET resource
 	Fetcher x402.Fetcher
+	// PolicyVersion names the policy Gate decides under; it goes into the
+	// Vault credential. Empty: DefaultPolicyVersion.
+	PolicyVersion string
 }
+
+// DefaultPolicyVersion is the policy version when nothing more specific is known.
+const DefaultPolicyVersion = "go1"
+
+// Vault answers, as the agent sees them.
+const (
+	CodeVaultRefused     = "vault_refused"
+	CodeVaultUnavailable = "vault_unavailable"
+)
 
 // toolTarget splits a Tools entry into method and URL. A plain URL is called
 // with POST and the agent's input as the body; "GET <url>" is a fixed resource,
@@ -297,15 +316,28 @@ func (c *call) payChallenge(t payTarget) {
 	}
 	if err != nil {
 		c.release(hold, "prepare failed")
+		if errors.Is(err, wallet.ErrWindowTooShort) { // refused before Vault is asked
+			c.fail(http.StatusBadGateway, StatusPaymentFailed, "bad_payment_requirements", err.Error(), nil)
+			return
+		}
 		s.Log.Error("prepare", "request_id", c.ev.RequestID, "err", err)
 		c.fail(http.StatusInternalServerError, StatusPaymentFailed, "sign_failed", "could not prepare the payment", nil)
 		return
 	}
-	payload, err := p.Wallet.Sign(pending)
+	dec, err := c.vaultDecision(p, approved, approvalID)
 	if err != nil {
-		c.release(hold, "sign failed")
-		s.Log.Error("sign", "request_id", c.ev.RequestID, "err", err)
+		c.release(hold, "decision for vault failed")
+		s.Log.Error("vault decision", "request_id", c.ev.RequestID, "err", err)
 		c.fail(http.StatusInternalServerError, StatusPaymentFailed, "sign_failed", "could not sign the payment", nil)
+		return
+	}
+	payload, at, err := p.Wallet.SignFor(c.ctx, pending, dec)
+	if at != nil { // one Vault attempt per request: its fields go on the request's own audit row
+		c.ext.Vault = &audit.Vault{CredentialID: at.CredentialID, WalletID: at.WalletID,
+			Payee: at.Payee, Amount: at.Amount, Code: at.Code, Field: at.Field, Outcome: at.Outcome}
+	}
+	if err != nil {
+		c.signFailed(hold, at, err)
 		return
 	}
 
@@ -358,6 +390,110 @@ func (c *call) payChallenge(t payTarget) {
 		c.ev.Cost, c.ev.CostSource = st.Charged, "chain"
 	}
 	t.OK(out, resp.Header.Get("Content-Type"), sr, c.ev.Cost)
+}
+
+// signFailed ends a payment whose signer produced no usable signature.
+//
+// Vault refused, or never decided: nothing signed is in anyone's hands, so
+// the hold is released and the agent's next try is a new hold, a new nonce and
+// a new credential (Vault burned this nonce). A 200 whose signature does not
+// verify is different: Vault may have signed something, so the nonce counts as
+// possibly spent and the hold stays until the reconciler has asked the chain
+// after validBefore (the authorization ref is already on the hold).
+func (c *call) signFailed(hold ledger.Hold, at *wallet.Attempt, err error) {
+	s := c.s
+	if at == nil { // the local key
+		c.release(hold, "sign failed")
+		s.Log.Error("sign", "request_id", c.ev.RequestID, "err", err)
+		c.fail(http.StatusInternalServerError, StatusPaymentFailed, "sign_failed", "could not sign the payment", nil)
+		return
+	}
+	logAt := s.Log.Warn
+	if at.Config {
+		logAt = s.Log.Error // the operator must fix Gate's setup, not this payment
+	}
+	switch at.Outcome {
+	case wallet.OutcomeBadSignature:
+		s.Log.Error("vault signature does not verify; hold kept until the authorization window closes",
+			"request_id", c.ev.RequestID, "hold_id", hold.ID, "credential_id", at.CredentialID)
+		c.unknown("vault_bad_signature", "")
+	case wallet.OutcomeRefused:
+		c.release(hold, "vault: "+at.Code)
+		logAt("vault refused", "request_id", c.ev.RequestID, "credential_id", at.CredentialID, "code", at.Code, "field", at.Field, "config", at.Config)
+		msg := "QuorumVault refused to sign: " + at.Code
+		if at.Code == vaultsign.CodeFastLaneCap {
+			msg = "over the Vault fast-lane limit: QuorumVault refused to sign"
+		}
+		c.fail(http.StatusForbidden, StatusPaymentFailed, CodeVaultRefused, msg,
+			map[string]any{"type": CodeVaultRefused, "code": at.Code, "field": at.Field, "credential_id": at.CredentialID, "request_id": c.ev.RequestID})
+	case wallet.OutcomeUnavailable:
+		// No decision reached Gate: retries ran out, the deadline passed, the
+		// client left, or TLS/token failed. Vault may still have signed, but
+		// the signature never left Vault to Gate or to the tool, so no money
+		// can move with it: release. Vault's fast-lane counters may still
+		// count this attempt that Gate abandoned.
+		c.release(hold, "vault unavailable")
+		logAt("vault unavailable", "request_id", c.ev.RequestID, "credential_id", at.CredentialID, "config", at.Config, "err", err)
+		c.fail(http.StatusBadGateway, StatusPaymentFailed, CodeVaultUnavailable, "QuorumVault did not answer; nothing was signed",
+			map[string]any{"type": CodeVaultUnavailable, "credential_id": at.CredentialID, "request_id": c.ev.RequestID})
+	default:
+		c.release(hold, "sign failed")
+		s.Log.Error("vault sign", "request_id", c.ev.RequestID, "credential_id", at.CredentialID, "err", err)
+		c.fail(http.StatusInternalServerError, StatusPaymentFailed, "sign_failed", "could not sign the payment", nil)
+	}
+}
+
+// vaultDecision is what the Vault credential records about the decision.
+// Only the Vault signer uses it, so the default path makes no extra query.
+func (c *call) vaultDecision(p *Payments, approved bool, approvalID string) (wallet.Decision, error) {
+	d := wallet.Decision{PolicyVersion: p.PolicyVersion, Reason: "allow"}
+	if d.PolicyVersion == "" {
+		d.PolicyVersion = DefaultPolicyVersion
+	}
+	if _, vault := p.Wallet.(*wallet.VaultSigner); !vault || !approved {
+		return d, nil
+	}
+	if c.s.Approvals == nil || approvalID == "" {
+		return d, errors.New("approved payment without an approval to name")
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.ctx), 5*time.Second)
+	defer cancel()
+	a, err := c.s.Approvals.Get(ctx, approvalID)
+	if err != nil {
+		return d, err
+	}
+	d.Reason = approvedBy(a.DecidedBy)
+	return d, nil
+}
+
+// approvedBy is the credential's decision_reason for an approved payment.
+// The approver's name is whatever the CLI was given, so it is made safe for
+// the credential (valid UTF-8, no control characters, at most 256 bytes):
+// a name Mint would refuse must not fail a payment whose approval is spent.
+func approvedBy(name string) string {
+	const prefix, limit = "approved_by:", 256
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '_'
+		}
+		return r
+	}, strings.ToValidUTF8(name, "_"))
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "unknown"
+	}
+	return cutUTF8(prefix+name, limit)
+}
+
+// cutUTF8 shortens s (valid UTF-8) to at most n bytes without splitting a character.
+func cutUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // unknown is the "signed, outcome not known" exit: the hold and the policy

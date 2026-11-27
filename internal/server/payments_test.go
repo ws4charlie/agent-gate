@@ -105,6 +105,13 @@ func newPayEnv(t *testing.T) *payEnv { return newPayEnvFunded(t, 10*usd) }
 
 func newPayEnvFunded(t *testing.T, deposit money.Nanos) *payEnv {
 	t.Helper()
+	return newPayEnvWith(t, deposit, nil)
+}
+
+// newPayEnvWith builds the payment rig; signer (may be nil: the local wallet
+// p.w) picks what the gateway signs with.
+func newPayEnvWith(t *testing.T, deposit money.Nanos, signer func(pe *payEnv) wallet.Signer) *payEnv {
+	t.Helper()
 	sim, err := x402.NewSim()
 	if err != nil {
 		t.Fatal(err)
@@ -161,11 +168,15 @@ func newPayEnvFunded(t *testing.T, deposit money.Nanos) *payEnv {
 	}))
 	t.Cleanup(tool.Close)
 
+	var sg wallet.Signer = w
+	if signer != nil {
+		sg = signer(pe)
+	}
 	pe.env = newEnv(t, deposit, func(s *server.Server) {
 		pe.led = &failSettleLedger{Ledger: s.Ledger}
 		s.Ledger = pe.led
 		s.Payments = &server.Payments{
-			Wallet:  w,
+			Wallet:  sg,
 			Tools:   map[string]string{"echo": tool.URL + "/echo", "premium": tool.URL + "/premium", "data": "GET " + tool.URL + "/data"},
 			Fetcher: x402.Fetcher{HTTP: &http.Client{Transport: pe.net}},
 		}

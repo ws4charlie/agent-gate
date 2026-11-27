@@ -99,11 +99,20 @@ func (w *Wallet) SignCount() int64 { return w.signs.Load() }
 // fields are unexported, so a Pending only comes from Prepare (which needs an
 // Allowed), keeping I10.
 type Pending struct {
-	auth x402.Auth
-	dom  x402.Domain
-	req  x402.Requirements
-	res  x402.Resource
+	auth   x402.Auth
+	dom    x402.Domain
+	req    x402.Requirements
+	res    x402.Resource
+	holdID string
+	by     any         // the signer that prepared it: only that signer signs it
+	signed atomic.Bool // set by the first Sign/SignFor: one signature (and one credential) per nonce
 }
+
+// ErrAlreadySigned: this Pending was already signed (or sent to Vault) once.
+var ErrAlreadySigned = errors.New("wallet: this authorization was already signed once")
+
+// claim marks p signed; false when it already was.
+func (p *Pending) claim() bool { return p.signed.CompareAndSwap(false, true) }
 
 // Ref is the opaque string to store on the hold before signing.
 func (p *Pending) Ref() string { return x402.NewAuthRef(p.auth, p.dom.Contract).Encode() }
@@ -112,6 +121,25 @@ func (p *Pending) Ref() string { return x402.NewAuthRef(p.auth, p.dom.Contract).
 // network) and builds the authorization, with the nonce derived from the hold
 // id (I11). It does not sign.
 func (w *Wallet) Prepare(ctx context.Context, allowed policy.Allowed, holdID string, res x402.Resource, req x402.Requirements) (*Pending, error) {
+	amt, err := checkAllowed(ctx, allowed, holdID, req, w.Network(), w.maxTx, nil)
+	if err != nil {
+		return nil, err
+	}
+	now := w.now().Unix()
+	a := x402.Auth{From: w.Address(), To: common.HexToAddress(req.PayTo), Value: amt,
+		ValidAfter: big.NewInt(now - 10), ValidBefore: big.NewInt(now + int64(req.MaxTimeoutSeconds)),
+		Nonce: x402.PaymentNonce(holdID)}
+	dom := x402.Domain{Name: req.Extra.Name, Version: req.Extra.Version, ChainID: new(big.Int).SetUint64(w.chainID),
+		Contract: common.HexToAddress(req.Asset)}
+	return &Pending{auth: a, dom: dom, req: req, res: res, holdID: holdID, by: w}, nil
+}
+
+// checkAllowed is every check both signers run before an authorization is
+// built: the request against what policy approved (payee, amount, network),
+// the signer's own per-transaction cap, and, last, spending the Allowed on
+// this hold (I10). pre (may be nil) runs after the cap and before the Allowed
+// is spent, for a signer's own refusals that must not burn the approval.
+func checkAllowed(ctx context.Context, allowed policy.Allowed, holdID string, req x402.Requirements, network string, maxTx money.Nanos, pre func() error) (*big.Int, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -119,8 +147,8 @@ func (w *Wallet) Prepare(ctx context.Context, allowed policy.Allowed, holdID str
 		return nil, errors.New("wallet: payment was not approved by policy")
 	}
 	ar := allowed.Request()
-	if req.Network != w.Network() || ar.Network != req.Network {
-		return nil, fmt.Errorf("wallet: network %q is not this wallet's %q", req.Network, w.Network())
+	if req.Network != network || ar.Network != req.Network {
+		return nil, fmt.Errorf("wallet: network %q is not this wallet's %q", req.Network, network)
 	}
 	if !common.IsHexAddress(req.PayTo) || !strings.EqualFold(ar.Payee, req.PayTo) {
 		return nil, errors.New("wallet: payee differs from the one policy approved")
@@ -135,40 +163,55 @@ func (w *Wallet) Prepare(ctx context.Context, allowed policy.Allowed, holdID str
 	if !common.IsHexAddress(req.Asset) || holdID == "" {
 		return nil, errors.New("wallet: bad asset or hold id")
 	}
+	// Second, independent cap (I10): checked before the approval is spent, and
+	// on the signer's own number, not on anything policy decided.
+	if n, _ := x402.NanosFromAtomic(amt); n > maxTx {
+		return nil, fmt.Errorf("%w (%s > %s)", ErrOverTxCap, n, maxTx)
+	}
+	if pre != nil {
+		if err := pre(); err != nil {
+			return nil, err
+		}
+	}
 	// Last check, so a Prepare that failed above does not burn the approval:
 	// spend it, tied to this hold. A second Prepare with the same Allowed, or
 	// with another hold id, stops here (I10).
-	// Second, independent cap (I10): checked before the approval is spent, and
-	// on the wallet's own number, not on anything policy decided.
-	if n, _ := x402.NanosFromAtomic(amt); n > w.maxTx {
-		return nil, fmt.Errorf("%w (%s > %s)", ErrOverTxCap, n, w.maxTx)
-	}
 	if err := allowed.Use(holdID); err != nil {
 		return nil, fmt.Errorf("wallet: %w", err)
 	}
-	now := w.now().Unix()
-	a := x402.Auth{From: w.Address(), To: common.HexToAddress(req.PayTo), Value: amt,
-		ValidAfter: big.NewInt(now - 10), ValidBefore: big.NewInt(now + int64(req.MaxTimeoutSeconds)),
-		Nonce: x402.PaymentNonce(holdID)}
-	dom := x402.Domain{Name: req.Extra.Name, Version: req.Extra.Version, ChainID: new(big.Int).SetUint64(w.chainID),
-		Contract: common.HexToAddress(req.Asset)}
-	return &Pending{auth: a, dom: dom, req: req, res: res}, nil
+	return amt, nil
 }
 
 // Sign signs exactly the values Prepare built and Ref reported.
 func (w *Wallet) Sign(p *Pending) (x402.PaymentPayload, error) {
 	var zero x402.PaymentPayload
-	if p == nil {
-		return zero, errors.New("wallet: nothing prepared")
+	if p == nil || p.by != w {
+		return zero, errors.New("wallet: nothing prepared by this wallet")
+	}
+	if !p.claim() {
+		return zero, ErrAlreadySigned
 	}
 	w.signs.Add(1)
 	sig, err := x402.Sign(w.key, x402.Digest(p.dom, p.auth))
 	if err != nil {
 		return zero, err
 	}
+	return p.payload("0x" + common.Bytes2Hex(sig)), nil
+}
+
+// payload is the x402 wire form for a signature over p: the same for both
+// signers, so a paid tool cannot tell them apart.
+func (p *Pending) payload(sigHex string) x402.PaymentPayload {
 	r := p.res
 	return x402.PaymentPayload{X402Version: x402.Version, Resource: &r, Accepted: p.req,
-		Payload: x402.Payload{Signature: "0x" + common.Bytes2Hex(sig), Authorization: p.auth.Wire()}}, nil
+		Payload: x402.Payload{Signature: sigHex, Authorization: p.auth.Wire()}}
+}
+
+// SignFor is Sign behind the Signer interface. The local key needs nothing
+// from the decision, and there is no Vault attempt to report.
+func (w *Wallet) SignFor(_ context.Context, p *Pending, _ Decision) (x402.PaymentPayload, *Attempt, error) {
+	pl, err := w.Sign(p)
+	return pl, nil, err
 }
 
 // Pay is Prepare then Sign, for callers that do not need to record the

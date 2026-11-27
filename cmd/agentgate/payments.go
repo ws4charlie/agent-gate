@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -12,6 +13,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -21,10 +24,12 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
+	"github.com/ws4charlie/agent-gate/internal/gatecred"
 	"github.com/ws4charlie/agent-gate/internal/ledger"
 	"github.com/ws4charlie/agent-gate/internal/money"
 	"github.com/ws4charlie/agent-gate/internal/paidtool"
 	"github.com/ws4charlie/agent-gate/internal/server"
+	"github.com/ws4charlie/agent-gate/internal/vaultsign"
 	"github.com/ws4charlie/agent-gate/internal/wallet"
 	"github.com/ws4charlie/agent-gate/internal/x402"
 )
@@ -57,27 +62,136 @@ func readPaymentsFile(path string) (PaymentsFile, error) {
 	return f, nil
 }
 
+// Signer selection. AG_SIGNER=wallet (the default) signs with the local key
+// in AG_WALLET_KEY; AG_SIGNER=vault asks QuorumVault, and never loads that key.
+const (
+	EnvSigner             = "AG_SIGNER"
+	EnvVaultAudience      = "AG_VAULT_AUDIENCE"
+	EnvVaultWalletAddress = "AG_VAULT_WALLET_ADDRESS"
+	EnvVaultCredTTL       = "AG_VAULT_CRED_TTL" // Go duration, e.g. 60s; default and most 90s
+)
+
 func loadPayments(f PaymentsFile) (*server.Payments, error) {
 	chainID, err := chainIDFor(f.Network)
 	if err != nil {
 		return nil, err
 	}
-	key, err := wallet.LoadKey()
-	if err != nil {
-		return nil, err
-	}
-	w, err := wallet.New(key, chainID) // refuses any chain but 84532 and the local sim
-	if err != nil {
-		return nil, err
-	}
-	if f.MaxTxUSD != "" { // the wallet's own cap, independent of every agent's policy
+	var maxTx money.Nanos
+	if f.MaxTxUSD != "" { // the signer's own cap, independent of every agent's policy
 		n, err := money.FromUSD(f.MaxTxUSD)
 		if err != nil || n <= 0 {
 			return nil, fmt.Errorf("payments config: max_tx_usd: %q is not a positive USD amount", f.MaxTxUSD)
 		}
-		w.SetMaxTx(n)
+		maxTx = n
 	}
-	return &server.Payments{Wallet: w, Tools: f.Tools}, nil
+	switch mode := strings.TrimSpace(os.Getenv(EnvSigner)); mode {
+	case "", "wallet":
+		key, err := wallet.LoadKey()
+		if err != nil {
+			return nil, err
+		}
+		w, err := wallet.New(key, chainID) // refuses any chain but 84532 and the local sim
+		if err != nil {
+			return nil, err
+		}
+		w.SetMaxTx(maxTx)
+		return &server.Payments{Wallet: w, Tools: f.Tools}, nil
+	case "vault":
+		v, err := loadVaultSigner(chainID)
+		if err != nil {
+			return nil, err
+		}
+		v.SetMaxTx(maxTx)
+		return &server.Payments{Wallet: v, Tools: f.Tools}, nil
+	default:
+		return nil, fmt.Errorf("%s=%q: want wallet or vault", EnvSigner, mode)
+	}
+}
+
+// vaultEnv is every setting AG_SIGNER=vault needs, in the order it is reported.
+var vaultEnv = []string{vaultsign.EnvURL, vaultsign.EnvWalletID, vaultsign.EnvCert, vaultsign.EnvKey, vaultsign.EnvCA,
+	vaultsign.EnvTokenURL, vaultsign.EnvClientID, vaultsign.EnvClientSecretFile, gatecred.EnvKid, EnvVaultAudience, EnvVaultWalletAddress}
+
+// loadVaultSigner builds the QuorumVault signer from the environment. Any
+// missing setting stops the gateway with its name.
+func loadVaultSigner(chainID uint64) (*wallet.VaultSigner, error) {
+	var missing []string
+	for _, n := range vaultEnv {
+		if strings.TrimSpace(os.Getenv(n)) == "" {
+			missing = append(missing, n)
+		}
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("%s=vault: missing %s", EnvSigner, strings.Join(missing, ", "))
+	}
+	addr := strings.TrimSpace(os.Getenv(EnvVaultWalletAddress))
+	if !ecommon.IsHexAddress(addr) {
+		return nil, fmt.Errorf("%s=vault: %s is not a 0x address", EnvSigner, EnvVaultWalletAddress)
+	}
+	var ttl time.Duration
+	if s := strings.TrimSpace(os.Getenv(EnvVaultCredTTL)); s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil || d < wallet.MinVaultTTL || d > gatecred.DefaultTTL {
+			return nil, fmt.Errorf("%s=vault: %s=%q: want a duration from %s to %s", EnvSigner, EnvVaultCredTTL, s, wallet.MinVaultTTL, gatecred.DefaultTTL)
+		}
+		ttl = d
+	}
+	cfg, err := vaultsign.ConfigFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("%s=vault: %w", EnvSigner, err)
+	}
+	client, err := vaultsign.New(*cfg)
+	if err != nil {
+		return nil, fmt.Errorf("%s=vault: %w", EnvSigner, err)
+	}
+	key, err := gatecred.LoadKey() // $AG_GATE_CRED_KEY_FILE (default data/gate-cred.key) and $AG_GATE_CRED_KID
+	if err != nil {
+		return nil, fmt.Errorf("%s=vault: Gate credential key (%s, %s): %w", EnvSigner, gatecred.EnvKeyFile, gatecred.EnvKid, err)
+	}
+	return wallet.NewVaultSigner(wallet.VaultConfig{Client: client, CredKey: key, Audience: strings.TrimSpace(os.Getenv(EnvVaultAudience)),
+		WalletID: cfg.WalletID, From: ecommon.HexToAddress(addr), ChainID: chainID, TTL: ttl})
+}
+
+// setPolicyVersion fills pay.PolicyVersion when the signer is Vault, the only
+// thing that uses it: the default (wallet) startup reads nothing more than before.
+func setPolicyVersion(pay *server.Payments, cedarDir string, enforce bool) error {
+	if _, ok := pay.Wallet.(*wallet.VaultSigner); !ok {
+		return nil
+	}
+	v, err := policyVersion(cedarDir, enforce)
+	if err != nil {
+		return fmt.Errorf("%s=vault: policy version: %w", EnvSigner, err)
+	}
+	pay.PolicyVersion = v
+	return nil
+}
+
+// policyVersion names the policy a payment was decided under, for the Vault
+// credential (≤ 64 bytes): the Go engine's version and, when Cedar runs, its
+// mode and a hash of the policy files.
+func policyVersion(cedarDir string, enforce bool) (string, error) {
+	if cedarDir == "" {
+		return server.DefaultPolicyVersion, nil
+	}
+	files, err := filepath.Glob(filepath.Join(cedarDir, "*.cedar"))
+	if err != nil {
+		return "", err
+	}
+	sort.Strings(files)
+	h := sha256.New()
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(h, "%s\n%d\n", filepath.Base(f), len(b))
+		h.Write(b)
+	}
+	mode := "shadow"
+	if enforce {
+		mode = "enforce"
+	}
+	return fmt.Sprintf("%s+cedar-%s:%x", server.DefaultPolicyVersion, mode, h.Sum(nil)[:6]), nil
 }
 
 // paymentsLookup builds the reconciler's view of the chain for payment holds.
