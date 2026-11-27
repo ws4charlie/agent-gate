@@ -152,6 +152,20 @@ func loadVaultSigner(chainID uint64) (*wallet.VaultSigner, error) {
 		WalletID: cfg.WalletID, From: ecommon.HexToAddress(addr), ChainID: chainID, TTL: ttl})
 }
 
+// setPolicyVersion fills pay.PolicyVersion when the signer is Vault, the only
+// thing that uses it: the default (wallet) startup reads nothing more than before.
+func setPolicyVersion(pay *server.Payments, cedarDir string, enforce bool) error {
+	if _, ok := pay.Wallet.(*wallet.VaultSigner); !ok {
+		return nil
+	}
+	v, err := policyVersion(cedarDir, enforce)
+	if err != nil {
+		return fmt.Errorf("%s=vault: policy version: %w", EnvSigner, err)
+	}
+	pay.PolicyVersion = v
+	return nil
+}
+
 // policyVersion names the policy a payment was decided under, for the Vault
 // credential (≤ 64 bytes): the Go engine's version and, when Cedar runs, its
 // mode and a hash of the policy files.

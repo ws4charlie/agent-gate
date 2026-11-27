@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -53,7 +55,7 @@ func allowed(t *testing.T, hold string) policy.Allowed {
 
 func requirements(timeout int) x402.Requirements {
 	return x402.Requirements{Network: x402.NetworkLocal, Amount: "10000", Asset: "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-		PayTo: payTo.Hex(), MaxTimeoutSeconds: timeout}
+		PayTo: payTo.Hex(), MaxTimeoutSeconds: timeout, Extra: x402.Extra{Name: "USDC", Version: "2"}}
 }
 
 func TestVaultSignerConfigGuards(t *testing.T) {
@@ -154,5 +156,84 @@ func TestVaultSignerWindow(t *testing.T) {
 	}
 	if _, err := v.Prepare(ctx, a, "short", x402.Resource{}, requirements(15)); err != nil {
 		t.Fatalf("approval burned by the refusal: %v", err)
+	}
+}
+
+// fix1 #6: the windows as Vault receives them, read from the minted
+// credential and the typed data: the authorization inside the credential,
+// and the credential no longer than Vault's maximum.
+func TestVaultSignerWindowOnTheWire(t *testing.T) {
+	for _, tc := range []struct {
+		ttl     time.Duration
+		timeout int
+	}{{0, 60}, {0, 300}, {40 * time.Second, 600}, {90 * time.Second, 20}} {
+		cfg, f := vaultCfg(t)
+		cfg.TTL = tc.ttl
+		v, _ := wallet.NewVaultSigner(cfg)
+		hold := fmt.Sprint("w", tc.timeout)
+		p, err := v.Prepare(context.Background(), allowed(t, hold), hold, x402.Resource{}, requirements(tc.timeout))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The fake checks nothing of this; the call's result does not matter here.
+		_, _, _ = v.SignFor(context.Background(), p, wallet.Decision{PolicyVersion: "go1", Reason: "allow"})
+		bodies := f.Bodies()
+		if len(bodies) != 1 {
+			t.Fatalf("bodies %d", len(bodies))
+		}
+		var req struct {
+			Payload struct {
+				Message map[string]string `json:"message"`
+			} `json:"payload"`
+			Credential struct {
+				IssuedAt  int64 `json:"issued_at"`
+				ExpiresAt int64 `json:"expires_at"`
+			} `json:"credential"`
+		}
+		if err := json.Unmarshal(bodies[0], &req); err != nil {
+			t.Fatal(err)
+		}
+		after, _ := strconv.ParseInt(req.Payload.Message["validAfter"], 10, 64)
+		before, _ := strconv.ParseInt(req.Payload.Message["validBefore"], 10, 64)
+		c := req.Credential
+		if after < c.IssuedAt || before > c.ExpiresAt || c.ExpiresAt-c.IssuedAt > 600 || after >= before ||
+			after >= time.Now().Unix() || before > time.Now().Unix()+int64(tc.timeout) {
+			t.Fatalf("ttl %s timeout %d: validAfter %d validBefore %d, credential %d..%d", tc.ttl, tc.timeout, after, before, c.IssuedAt, c.ExpiresAt)
+		}
+	}
+}
+
+// fix1 #5: one signature per Pending. A second Sign/SignFor refuses locally:
+// never a second signature, never a second credential for the same nonce.
+func TestPendingSignsOnce(t *testing.T) {
+	cfg, f := vaultCfg(t)
+	v, _ := wallet.NewVaultSigner(cfg)
+	ctx := context.Background()
+	d := wallet.Decision{PolicyVersion: "go1", Reason: "allow"}
+	p, err := v.Prepare(ctx, allowed(t, "o1"), "o1", x402.Resource{}, requirements(60))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := v.SignFor(ctx, p, d); err != nil {
+		t.Fatal(err)
+	}
+	if _, at, err := v.SignFor(ctx, p, d); !errors.Is(err, wallet.ErrAlreadySigned) || at != nil {
+		t.Fatalf("second SignFor: %v %+v", err, at)
+	}
+	if len(f.Bodies()) != 1 || v.Attempts() != 1 {
+		t.Fatalf("vault asked %d times", len(f.Bodies()))
+	}
+
+	key, _ := crypto.GenerateKey()
+	w, _ := wallet.New(key, x402.LocalChainID)
+	wp, err := w.Prepare(ctx, allowed(t, "o2"), "o2", x402.Resource{}, requirements(60))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Sign(wp); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := w.SignFor(ctx, wp, d); !errors.Is(err, wallet.ErrAlreadySigned) || w.SignCount() != 1 {
+		t.Fatalf("second local sign: %v, count %d", err, w.SignCount())
 	}
 }

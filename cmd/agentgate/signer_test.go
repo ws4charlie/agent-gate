@@ -120,3 +120,37 @@ func TestPolicyVersion(t *testing.T) {
 		t.Fatal("version did not change with the policy")
 	}
 }
+
+// fix1 #4: only the Vault signer needs a policy version; the default startup
+// reads no policy files for it, so a policy dir it cannot hash changes nothing.
+func TestPolicyVersionOnlyForVault(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "broken.cedar"), 0o700); err != nil { // a *.cedar that cannot be read
+		t.Fatal(err)
+	}
+	t.Setenv(wallet.EnvKey, "")
+	keyFile := filepath.Join(t.TempDir(), "wallet.key")
+	if _, err := wallet.NewKeyFile(keyFile); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(wallet.EnvKeyFile, keyFile)
+	pay, err := loadPayments(PaymentsFile{Network: "sim"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := setPolicyVersion(pay, dir, true); err != nil || pay.PolicyVersion != "" {
+		t.Fatalf("wallet mode: %v %q", err, pay.PolicyVersion)
+	}
+
+	vaultSignerEnv(t)
+	vpay, err := loadPayments(PaymentsFile{Network: "sim"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := setPolicyVersion(vpay, dir, true); err == nil {
+		t.Fatal("vault mode hashed an unreadable policy")
+	}
+	if err := setPolicyVersion(vpay, "", false); err != nil || vpay.PolicyVersion != "go1" {
+		t.Fatalf("vault mode: %v %q", err, vpay.PolicyVersion)
+	}
+}

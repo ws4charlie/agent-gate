@@ -94,7 +94,7 @@ scripts/agentgate-local up
 
 QuorumVault 是另一个钱包服务。对于由 AgentGate 管理的钱包，只有请求里带着 Gate 凭证时，QuorumVault 才会签这笔付款。Gate 凭证是一份短时有效的许可，只对应这一笔付款，由 AgentGate 用一把专用的 Ed25519 密钥签名，这把密钥不做别的用途。格式以 QuorumVault 的书面规范为准，`testdata/gate-credential` 里的共享测试向量证明两边逐字节一致。生成密钥时运行 `agentgate gatecred keygen --kid <名字>`：它把种子写进 `data/gate-cred.key`（权限 0600，从不打印），并打印 kid 和公钥。把 `AG_GATE_CRED_KID` 设成这个 kid，再把 kid 和公钥交给 QuorumVault 的运维，由他们加入签名的 gate 设置。
 
-要让 QuorumVault 代替网关自己的钱包来签 x402 付款，设置 `AG_SIGNER=vault`。这时网关需要 `AG_VAULT_*` 连接设置（URL、钱包 id、客户端证书和私钥、CA、令牌 URL、client id、client secret 文件）、上面的 Gate 凭证密钥、`AG_VAULT_AUDIENCE`（QuorumVault 部署名）和 `AG_VAULT_WALLET_ADDRESS`（QuorumVault 钱包的地址）；缺任何一项，网关都拒绝启动，而且不会加载 `AG_WALLET_KEY`。和以前一样，先由策略决定：只有被允许的付款才拿到凭证，凭证只对应这一笔付款，最长 90 秒（可用 `AG_VAULT_CRED_TTL` 缩短）。如果 QuorumVault 拒签，agent 会收到 `vault_refused` 和 QuorumVault 的代码，为这笔付款冻结的钱会被释放，重试就是一笔新的付款。`AG_SIGNER` 不设或设为 `wallet`，仍用本地钱包。
+要让 QuorumVault 代替网关自己的钱包来签 x402 付款，设置 `AG_SIGNER=vault`。这时网关需要 `AG_VAULT_*` 连接设置（URL、钱包 id、客户端证书和私钥、CA、令牌 URL、client id、client secret 文件）、上面的 Gate 凭证密钥、`AG_VAULT_AUDIENCE`（QuorumVault 部署名）和 `AG_VAULT_WALLET_ADDRESS`（QuorumVault 钱包的地址）；缺任何一项，网关都拒绝启动，而且不会加载 `AG_WALLET_KEY`。和以前一样，先由策略决定：只有被允许的付款才拿到凭证，凭证只对应这一笔付款，最长 90 秒（可用 `AG_VAULT_CRED_TTL` 缩短）。如果 QuorumVault 拒签，agent 会收到 `vault_refused` 和 QuorumVault 的代码，为这笔付款冻结的钱会被释放，重试就是一笔新的付款。如果 QuorumVault 没有及时回答，agent 会收到 `vault_unavailable`，钱同样被释放；但 QuorumVault 的快速通道计数可能仍会算上这次被放弃的尝试。`AG_SIGNER` 不设或设为 `wallet`，仍用本地钱包。
 
 ## 许可证
 

@@ -7,9 +7,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"math/big"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ethereum/go-ethereum/common"
 
@@ -34,7 +37,8 @@ type vaultRig struct {
 
 const vaultAudience = "qv-test"
 
-func newVaultRig(t *testing.T) *vaultRig {
+// newVaultRig builds the rig; opts may change the vaultsign client's config.
+func newVaultRig(t *testing.T, opts ...func(*vaultsign.Config, *vaulttest.Vault)) *vaultRig {
 	t.Helper()
 	f := vaulttest.New(t, vaulttest.Options{})
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -50,11 +54,15 @@ func newVaultRig(t *testing.T) *vaultRig {
 		if err := pe.sim.Mint(context.Background(), f.From, big.NewInt(5_000_000)); err != nil {
 			t.Fatal(err)
 		}
-		cli, err := vaultsign.New(vaultsign.Config{BaseURL: f.URL, WalletID: f.WalletID,
+		cfg := vaultsign.Config{BaseURL: f.URL, WalletID: f.WalletID,
 			ClientCert: f.ClientCert, ClientKey: f.ClientKey, CAFile: f.CAFile,
 			Token: &vaultsign.ClientCredentials{TokenURL: f.TokenURL, ClientID: vaulttest.ClientID,
 				SecretFile: f.SecretFile, HTTPClient: f.HTTPClient()},
-			Timeout: 2 * time.Second, RetryFor: 5 * time.Second})
+			Timeout: 2 * time.Second, RetryFor: 5 * time.Second}
+		for _, o := range opts {
+			o(&cfg, f)
+		}
+		cli, err := vaultsign.New(cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -363,5 +371,124 @@ func TestVaultWindowTooShort(t *testing.T) {
 	req.MaxTimeoutSeconds = 15 // exactly the minimum passes, so the refusal did not spend the approval
 	if _, err := pl.Prepare(context.Background(), a, "h", x402.Resource{}, req); err != nil {
 		t.Fatalf("approval burned: %v", err)
+	}
+}
+
+// fix1 #2: whatever the approver's name, an approved payment still gets a
+// decision_reason Mint accepts.
+func TestApprovedByIsAlwaysAValidReason(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	key, _ := gatecred.NewKey("gate-test-1", priv)
+	for _, name := range []string{"alice", "ali\nce", "a\x00b", "a\xffb\xfe c", "\t\r ", "", strings.Repeat("é", 150), strings.Repeat("x", 300)} {
+		reason := server.ApprovedBy(name)
+		if len(reason) > 256 || !strings.HasPrefix(reason, "approved_by:") || !utf8.ValidString(reason) {
+			t.Errorf("%q -> %q", name, reason)
+		}
+		_, err := gatecred.Mint(key, gatecred.Credential{ObligationID: "h", Audience: "qv-test", WalletID: "6f1c2b3a-0d4e-4f5a-8b6c-7d8e9f0a1b2c",
+			Chain: "eip155:1337", Asset: "0x5fbdb2315678afecb367f032d93f642f64180aa3", Payee: "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+			Amount: "1", IssuedAt: 1_800_000_000, ExpiresAt: 1_800_000_060, PolicyVersion: "go1", DecisionReason: reason})
+		if err != nil {
+			t.Errorf("%q -> %q: Mint refuses: %v", name, reason, err)
+		}
+	}
+	if got := server.ApprovedBy("\x01\x02"); got != "approved_by:__" {
+		t.Errorf("control chars: %q", got)
+	}
+	if got := server.ApprovedBy(" "); got != "approved_by:unknown" {
+		t.Errorf("empty: %q", got)
+	}
+}
+
+// fix1 #2 end to end: an approver name with a newline (what Postgres will
+// store) still pays after approval.
+func TestVaultApproverWithControlCharPays(t *testing.T) {
+	r := newVaultRig(t)
+	r.setScope(func(s *policy.Scope) { s.Payees = []string{r.payTo.Hex()}; s.ApprovalThreshold = 5_000_000 })
+	_, m, _ := r.pay("echo", "v-appr-nl")
+	id, _ := m["approval_id"].(string)
+	if _, err := r.srv.Approvals.Allow(context.Background(), id, "ali\nce"+strings.Repeat("x", 300)); err != nil {
+		t.Fatal(err)
+	}
+	if code, m, _ := r.pay("echo", "v-appr-nl"); code != 200 {
+		t.Fatalf("%d %v", code, m)
+	}
+	if reqs := r.requests(); len(reqs) != 1 || !strings.HasPrefix(reqs[0].cred.DecisionReason, "approved_by:ali_ce") || len(reqs[0].cred.DecisionReason) > 256 {
+		t.Fatalf("requests %+v", reqs)
+	}
+}
+
+// fix1 #3: Vault never decided. The signature cannot have left Vault, so the
+// hold is released and the agent gets 502 vault_unavailable; a configuration
+// failure (TLS, token) is also logged at ERROR for the operator.
+func TestVaultUnavailableReleases(t *testing.T) {
+	cases := []struct {
+		name     string
+		opts     []func(*vaultsign.Config, *vaulttest.Vault)
+		setup    func(r *vaultRig)
+		cancel   bool // the client gives up while Vault holds the answer
+		errorLog bool
+	}{
+		{name: "retries exhausted", opts: []func(*vaultsign.Config, *vaulttest.Vault){func(c *vaultsign.Config, _ *vaulttest.Vault) { c.RetryFor = 600 * time.Millisecond }},
+			setup: func(r *vaultRig) {
+				steps := make([]vaulttest.Step, 20)
+				for i := range steps {
+					steps[i] = vaulttest.Step{Status: 503, Code: vaultsign.CodeRetryLater}
+				}
+				r.vault.Script(steps...)
+			}},
+		{name: "expired", setup: func(r *vaultRig) { r.vs.SetClock(func() time.Time { return time.Now().Add(-5 * time.Minute) }) }},
+		{name: "client cancel", cancel: true, setup: func(r *vaultRig) { r.vault.Script(vaulttest.Step{Delay: 3 * time.Second}) }},
+		{name: "tls", errorLog: true, opts: []func(*vaultsign.Config, *vaulttest.Vault){func(c *vaultsign.Config, _ *vaulttest.Vault) {
+			c.CAFile = vaulttest.New(t, vaulttest.Options{}).CAFile // trusts another CA: Vault's certificate fails
+		}}},
+		{name: "token", errorLog: true, opts: []func(*vaultsign.Config, *vaulttest.Vault){func(c *vaultsign.Config, f *vaulttest.Vault) {
+			bad := filepath.Join(t.TempDir(), "secret")
+			_ = os.WriteFile(bad, []byte("wrong-secret\n"), 0o600)
+			c.Token = &vaultsign.ClientCredentials{TokenURL: f.TokenURL, ClientID: vaulttest.ClientID, SecretFile: bad, HTTPClient: f.HTTPClient()}
+		}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newVaultRig(t, tc.opts...)
+			if tc.setup != nil {
+				tc.setup(r)
+			}
+			var rid string
+			if tc.cancel {
+				ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+				resp, err := r.doCtx(ctx, "/v1/payments", `{"tool":"echo","input":{"text":"hello"}}`, map[string]string{"Idempotency-Key": "v-un"})
+				cancel()
+				if err == nil {
+					resp.Body.Close()
+					t.Fatalf("client got an answer: %d", resp.StatusCode)
+				}
+				deadline := time.Now().Add(10 * time.Second) // the gateway finishes on its own after the client left
+				for r.activeHolds() != 0 && time.Now().Before(deadline) {
+					time.Sleep(50 * time.Millisecond)
+				}
+			} else {
+				code, body, id := r.pay("echo", "v-un")
+				m, _ := body["error"].(map[string]any)
+				if code != 502 || m["type"] != server.CodeVaultUnavailable {
+					t.Fatalf("%d %v", code, body)
+				}
+				rid = id
+			}
+			if r.activeHolds() != 0 || r.holdStatus() != "released" {
+				t.Fatalf("hold %s, %d active", r.holdStatus(), r.activeHolds())
+			}
+			if b := r.balance(); b.Held != 0 || b.Balance != 10*usd {
+				t.Fatalf("balance %+v", b)
+			}
+			if rid != "" {
+				if v := r.row(rid); v.Vault.Outcome != wallet.OutcomeUnavailable || v.Status != server.StatusPaymentFailed {
+					t.Fatalf("audit %+v %+v", v, v.Vault)
+				}
+			}
+			logs := r.logs.String()
+			if hasErr := strings.Contains(logs, "level=ERROR msg=\"vault unavailable\""); hasErr != tc.errorLog {
+				t.Fatalf("ERROR log %v, want %v:\n%s", hasErr, tc.errorLog, logs)
+			}
+		})
 	}
 }

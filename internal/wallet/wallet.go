@@ -104,8 +104,15 @@ type Pending struct {
 	req    x402.Requirements
 	res    x402.Resource
 	holdID string
-	by     any // the signer that prepared it: only that signer signs it
+	by     any         // the signer that prepared it: only that signer signs it
+	signed atomic.Bool // set by the first Sign/SignFor: one signature (and one credential) per nonce
 }
+
+// ErrAlreadySigned: this Pending was already signed (or sent to Vault) once.
+var ErrAlreadySigned = errors.New("wallet: this authorization was already signed once")
+
+// claim marks p signed; false when it already was.
+func (p *Pending) claim() bool { return p.signed.CompareAndSwap(false, true) }
 
 // Ref is the opaque string to store on the hold before signing.
 func (p *Pending) Ref() string { return x402.NewAuthRef(p.auth, p.dom.Contract).Encode() }
@@ -180,6 +187,9 @@ func (w *Wallet) Sign(p *Pending) (x402.PaymentPayload, error) {
 	var zero x402.PaymentPayload
 	if p == nil || p.by != w {
 		return zero, errors.New("wallet: nothing prepared by this wallet")
+	}
+	if !p.claim() {
+		return zero, ErrAlreadySigned
 	}
 	w.signs.Add(1)
 	sig, err := x402.Sign(w.key, x402.Digest(p.dom, p.auth))

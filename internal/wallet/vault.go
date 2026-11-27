@@ -188,6 +188,9 @@ func (v *VaultSigner) SignFor(ctx context.Context, p *Pending, d Decision) (x402
 	if p == nil || p.by != v {
 		return zero, nil, errors.New("wallet: nothing prepared by this vault signer")
 	}
+	if !p.claim() { // never a second credential for the same nonce
+		return zero, nil, ErrAlreadySigned
+	}
 	at := &Attempt{WalletID: v.cfg.WalletID, Payee: strings.ToLower(p.auth.To.Hex()), Amount: p.auth.Value.String(), Outcome: OutcomeError}
 	signed, err := gatecred.Mint(v.cfg.CredKey, gatecred.Credential{
 		ObligationID:   p.holdID,

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -426,6 +427,11 @@ func (c *call) signFailed(hold ledger.Hold, at *wallet.Attempt, err error) {
 		c.fail(http.StatusForbidden, StatusPaymentFailed, CodeVaultRefused, msg,
 			map[string]any{"type": CodeVaultRefused, "code": at.Code, "field": at.Field, "credential_id": at.CredentialID, "request_id": c.ev.RequestID})
 	case wallet.OutcomeUnavailable:
+		// No decision reached Gate: retries ran out, the deadline passed, the
+		// client left, or TLS/token failed. Vault may still have signed, but
+		// the signature never left Vault to Gate or to the tool, so no money
+		// can move with it: release. Vault's fast-lane counters may still
+		// count this attempt that Gate abandoned.
 		c.release(hold, "vault unavailable")
 		logAt("vault unavailable", "request_id", c.ev.RequestID, "credential_id", at.CredentialID, "config", at.Config, "err", err)
 		c.fail(http.StatusBadGateway, StatusPaymentFailed, CodeVaultUnavailable, "QuorumVault did not answer; nothing was signed",
@@ -456,20 +462,38 @@ func (c *call) vaultDecision(p *Payments, approved bool, approvalID string) (wal
 	if err != nil {
 		return d, err
 	}
-	d.Reason = cutUTF8("approved_by:"+a.DecidedBy, 256)
+	d.Reason = approvedBy(a.DecidedBy)
 	return d, nil
 }
 
-// cutUTF8 shortens s to at most n bytes without splitting a character.
+// approvedBy is the credential's decision_reason for an approved payment.
+// The approver's name is whatever the CLI was given, so it is made safe for
+// the credential (valid UTF-8, no control characters, at most 256 bytes):
+// a name Mint would refuse must not fail a payment whose approval is spent.
+func approvedBy(name string) string {
+	const prefix, limit = "approved_by:", 256
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '_'
+		}
+		return r
+	}, strings.ToValidUTF8(name, "_"))
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "unknown"
+	}
+	return cutUTF8(prefix+name, limit)
+}
+
+// cutUTF8 shortens s (valid UTF-8) to at most n bytes without splitting a character.
 func cutUTF8(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	s = s[:n]
-	for len(s) > 0 && !utf8.ValidString(s) {
-		s = s[:len(s)-1]
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
-	return s
+	return s[:n]
 }
 
 // unknown is the "signed, outcome not known" exit: the hold and the policy

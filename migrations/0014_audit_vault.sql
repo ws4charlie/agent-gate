@@ -10,5 +10,5 @@ ALTER TABLE audit_events
     ADD COLUMN vault_code          text,
     ADD COLUMN vault_field         text,
     ADD COLUMN vault_outcome       text;
-
-CREATE INDEX audit_events_vault_credential_idx ON audit_events (vault_credential_id) WHERE vault_credential_id IS NOT NULL;
+-- No index here: a plain CREATE INDEX would block audit inserts on a live
+-- table, and nothing queries by these columns yet.

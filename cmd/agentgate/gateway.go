@@ -222,11 +222,11 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if pay.PolicyVersion, err = policyVersion(*cedarDir, *cedarEnforce); err != nil {
-			return err
-		}
 		lookup.Payments = pl
 		srv.Payments = pay
+		if err := setPolicyVersion(pay, *cedarDir, *cedarEnforce); err != nil {
+			return err
+		}
 		if v, ok := pay.Wallet.(*wallet.VaultSigner); ok {
 			log.Info(fmt.Sprintf("x402 signer: vault (wallet_id %s, audience %s, from %s)", v.WalletID(), v.Audience(), v.Address().Hex()),
 				"network", v.Network(), "policy_version", pay.PolicyVersion)
