@@ -93,6 +93,10 @@ On 2026-11-07 (UTC) the gateway paid for one tool call on Base Sepolia (chain id
 
 We deployed no contract of our own. Settlement uses the transfer-by-signature function that USDC already has.
 
+### QuorumVault credential
+
+QuorumVault, a separate wallet service, signs a payment from a wallet that AgentGate governs only when the request carries a Gate credential: a short-lived permission for exactly that payment, signed by AgentGate with an Ed25519 key that is used for nothing else. The format is QuorumVault's written spec, and the shared test vectors in `testdata/gate-credential` prove both sides agree byte for byte. To make the key, run `agentgate gatecred keygen --kid <name>`: it writes the seed to `data/gate-cred.key` (mode 0600, never printed) and prints the kid and the public key. Set `AG_GATE_CRED_KID` to the kid, and give the kid and public key to QuorumVault's operators, who add them to their signed gate setting. Calling QuorumVault is not wired in yet.
+
 ## License
 
 MIT
