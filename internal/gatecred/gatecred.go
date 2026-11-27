@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/big"
 	"strings"
@@ -94,17 +95,28 @@ func fieldErr(f, format string, a ...any) *FieldError {
 // not the x402 wallet key, not a SPIFFE key.
 type Key struct {
 	Kid  string
-	Priv ed25519.PrivateKey
+	priv ed25519.PrivateKey // unexported: no formatting path or caller can reach the seed
 }
 
 // The seed must never reach a log line, a %v, a JSON body or a panic message:
 // these print only the kid.
-func (k Key) String() string                     { return "gatecred.Key(" + k.Kid + ")" }
-func (k Key) GoString() string                   { return k.String() }
-func (k Key) LogValue() slog.Value               { return slog.StringValue(k.String()) }
-func (k Key) MarshalJSON() ([]byte, error)       { return json.Marshal(k.String()) }
-func (k Key) MarshalText() ([]byte, error)       { return []byte(k.String()), nil }
-func (k Key) Public() ed25519.PublicKey          { return k.Priv.Public().(ed25519.PublicKey) }
+func (k Key) String() string   { return "gatecred.Key(" + k.Kid + ")" }
+func (k Key) GoString() string { return k.String() }
+
+// Format handles every fmt verb. String alone covers only %v %s %x %X %q;
+// %d, %b, %o and the rest would print the struct by reflection, private
+// key bytes included.
+func (k Key) Format(f fmt.State, _ rune) { io.WriteString(f, k.String()) }
+
+func (k Key) LogValue() slog.Value         { return slog.StringValue(k.String()) }
+func (k Key) MarshalJSON() ([]byte, error) { return json.Marshal(k.String()) }
+func (k Key) MarshalText() ([]byte, error) { return []byte(k.String()), nil }
+func (k Key) Public() ed25519.PublicKey {
+	if len(k.priv) != ed25519.PrivateKeySize {
+		return nil
+	}
+	return k.priv.Public().(ed25519.PublicKey)
+}
 func (k Key) PublicBase64() string               { return EncodePublicKey(k.Public()) }
 func EncodePublicKey(p ed25519.PublicKey) string { return base64.RawURLEncoding.EncodeToString(p) }
 
@@ -125,7 +137,7 @@ func NewCredentialID() string {
 // and a lifetime above MaxTTL: Gate never sends a credential that is wrong by
 // construction.
 func Mint(key Key, c Credential) (Signed, error) {
-	if len(key.Priv) != ed25519.PrivateKeySize {
+	if len(key.priv) != ed25519.PrivateKeySize {
 		return Signed{}, errors.New("gatecred: no signing key")
 	}
 	if err := validKid(key.Kid); err != nil {
@@ -149,7 +161,7 @@ func Mint(key Key, c Credential) (Signed, error) {
 	if c.ExpiresAt-c.IssuedAt > int64(MaxTTL/time.Second) {
 		return Signed{}, fieldErr("expires_at", "lifetime %ds is above the maximum %ds", c.ExpiresAt-c.IssuedAt, int64(MaxTTL/time.Second))
 	}
-	sig := ed25519.Sign(key.Priv, SignedBytes(c))
+	sig := ed25519.Sign(key.priv, SignedBytes(c))
 	out := encodeJCS(append(members(c), member{key: "sig", str: base64.RawURLEncoding.EncodeToString(sig)}))
 	if err := checkSize(out); err != nil {
 		return Signed{}, err

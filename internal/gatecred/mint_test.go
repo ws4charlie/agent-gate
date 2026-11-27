@@ -16,7 +16,7 @@ import (
 func realKey(t *testing.T) Key {
 	t.Helper()
 	seed := sha256.Sum256([]byte("gatecred unit test " + t.Name()))
-	return Key{Kid: "gate-test", Priv: ed25519.NewKeyFromSeed(seed[:])}
+	return Key{Kid: "gate-test", priv: ed25519.NewKeyFromSeed(seed[:])}
 }
 
 func good() Credential {
@@ -164,7 +164,7 @@ func TestMintMaxSize(t *testing.T) {
 	c.ObligationID = strings.Repeat(`"`, 128)
 	c.PolicyVersion = strings.Repeat(`\`, 64)
 	c.DecisionReason = strings.Repeat(`"`, 256)
-	s, err := Mint(Key{Kid: c.Kid, Priv: realKey(t).Priv}, c)
+	s, err := Mint(Key{Kid: c.Kid, priv: realKey(t).priv}, c)
 	if err != nil || len(s.JSON) > MaxSize {
 		t.Fatalf("largest valid credential: %v, %d bytes", err, len(s.JSON))
 	}
@@ -176,16 +176,66 @@ func TestMintNoKey(t *testing.T) {
 	}
 }
 
-// TestKeyNeverPrintsSeed: every formatting path prints only the kid.
+// TestKeyNeverPrintsSeed: every formatting path prints only the kid. The
+// private key is unexported (callers cannot reach it), and Format covers the
+// verbs String does not (%d, %b, %o ... would otherwise print it by reflection).
 func TestKeyNeverPrintsSeed(t *testing.T) {
 	k := realKey(t)
+	const want = "gatecred.Key(gate-test)"
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%X", "%d", "%+d", "%b", "%o", "%O", "%c", "%U", "%e", "%f", "%g", "%t", "%8.3d", "%-20v"} {
+		for _, arg := range []any{k, &k} {
+			got := strings.TrimSpace(fmt.Sprintf(verb, arg))
+			if got != want {
+				t.Errorf("Sprintf(%q, %T) = %q, want %q", verb, arg, got, want)
+			}
+		}
+	}
+	for _, got := range []string{fmt.Sprint(k), fmt.Sprint(&k), fmt.Sprintln(k, &k), fmt.Sprint([]Key{k}), fmt.Sprint(map[string]Key{"a": k})} {
+		if strings.Count(got, want) == 0 || strings.ContainsAny(strings.ReplaceAll(got, want, ""), "0123456789") {
+			t.Errorf("printed %q", got)
+		}
+	}
 	var logs bytes.Buffer
 	slog.New(slog.NewJSONHandler(&logs, nil)).Info("minting", "key", k)
 	slog.New(slog.NewTextHandler(&logs, nil)).Info("minting", "key", k, "ptr", &k)
 	j, _ := json.Marshal(struct{ K Key }{k})
-	out := fmt.Sprintf("%v %+v %#v %s", k, k, k, k) + fmt.Sprint(&k) + string(j) + logs.String()
-	assertNoSeed(t, out, k.Priv.Seed())
-	if !strings.Contains(out, "gate-test") {
-		t.Fatalf("kid missing from output: %s", out)
+	out := string(j) + logs.String()
+	assertNoSeed(t, out, k.priv.Seed())
+	if strings.Count(out, want) != 4 {
+		t.Fatalf("want the kid form 4 times: %s", out)
+	}
+}
+
+func TestNewKey(t *testing.T) {
+	seed := sha256.Sum256([]byte("new key " + t.Name()))
+	priv := ed25519.NewKeyFromSeed(seed[:])
+	k, err := NewKey("gate-1", priv)
+	if err != nil || !k.Public().Equal(priv.Public()) || k.Kid != "gate-1" {
+		t.Fatalf("NewKey: %v", err)
+	}
+	priv[0] ^= 0xff // NewKey keeps its own copy
+	if !k.Public().Equal(ed25519.NewKeyFromSeed(seed[:]).Public()) {
+		t.Fatal("NewKey shares the caller's slice")
+	}
+	if _, err := Mint(k, good()); err != nil {
+		t.Fatal("kid of good() is empty, so Mint should fill gate-1 and succeed")
+	}
+	for name, tc := range map[string]struct {
+		kid  string
+		priv ed25519.PrivateKey
+	}{
+		"bad kid":    {"gate 1", ed25519.NewKeyFromSeed(seed[:])},
+		"empty kid":  {"", ed25519.NewKeyFromSeed(seed[:])},
+		"short key":  {"gate-1", ed25519.NewKeyFromSeed(seed[:])[:32]},
+		"nil key":    {"gate-1", nil},
+		"test key 1": {"gate-1", ed25519.NewKeyFromSeed(testSeed("TEST-ONLY-qv-gate-credential-key-1"))},
+		"test key 2": {"test-only-2", ed25519.NewKeyFromSeed(testSeed("TEST-ONLY-qv-gate-credential-key-2"))},
+	} {
+		if _, err := NewKey(tc.kid, tc.priv); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if (Key{}).Public() != nil {
+		t.Fatal("zero Key has a public key")
 	}
 }

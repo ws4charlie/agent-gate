@@ -86,11 +86,7 @@ func LoadKeyFile(path, kid string) (Key, error) {
 	}
 	priv := ed25519.NewKeyFromSeed(seed)
 	clear(seed)
-	k := Key{Kid: kid, Priv: priv}
-	if IsTestKey(k.Public()) {
-		return Key{}, errors.New("gatecred: refusing a TEST ONLY key from the shared vectors; it signs nothing real")
-	}
-	return k, nil
+	return NewKey(kid, priv)
 }
 
 // NewKeyFile creates a fresh seed at path (mode 0600, refuses to overwrite)
@@ -147,4 +143,22 @@ func Keygen(w io.Writer, path, kid string) error {
 	fmt.Fprintf(w, "kid:        %s\npublic_key: %s\nkey file:   %s (mode 0600; keep it out of git and backups you do not control)\n", kid, EncodePublicKey(pub), path)
 	fmt.Fprintf(w, "next: set %s=%s for the gateway, and send the kid and public_key to Vault's operators for the signed gate setting.\n", EnvKid, kid)
 	return nil
+}
+
+// NewKey makes a signing key from a kid and an Ed25519 private key. It
+// refuses a bad kid, a key of the wrong size and the vectors' TEST ONLY keys.
+// The private key is kept unexported, so nothing outside this package can
+// print or copy it.
+func NewKey(kid string, priv ed25519.PrivateKey) (Key, error) {
+	if err := validKid(kid); err != nil {
+		return Key{}, fmt.Errorf("gatecred: kid: %s", err.Reason)
+	}
+	if len(priv) != ed25519.PrivateKeySize {
+		return Key{}, fmt.Errorf("gatecred: private key must be %d bytes", ed25519.PrivateKeySize)
+	}
+	k := Key{Kid: kid, priv: append(ed25519.PrivateKey(nil), priv...)}
+	if IsTestKey(k.Public()) {
+		return Key{}, errors.New("gatecred: refusing a TEST ONLY key from the shared vectors; it signs nothing real")
+	}
+	return k, nil
 }

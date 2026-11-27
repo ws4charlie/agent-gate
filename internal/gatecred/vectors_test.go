@@ -66,7 +66,7 @@ func loadVectors(t *testing.T) vectorFile {
 func testKey(t *testing.T, seedString, kid string) Key {
 	t.Helper()
 	seed := sha256.Sum256([]byte(seedString))
-	return Key{Kid: kid, Priv: ed25519.NewKeyFromSeed(seed[:])}
+	return Key{Kid: kid, priv: ed25519.NewKeyFromSeed(seed[:])}
 }
 
 // caseBytes is the credential text after the case's substitute, if any.
