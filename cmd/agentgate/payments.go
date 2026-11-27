@@ -131,8 +131,8 @@ func loadVaultSigner(chainID uint64) (*wallet.VaultSigner, error) {
 	var ttl time.Duration
 	if s := strings.TrimSpace(os.Getenv(EnvVaultCredTTL)); s != "" {
 		d, err := time.ParseDuration(s)
-		if err != nil || d < wallet.MinVaultWindow || d > gatecred.DefaultTTL {
-			return nil, fmt.Errorf("%s=vault: %s=%q: want a duration from %s to %s", EnvSigner, EnvVaultCredTTL, s, wallet.MinVaultWindow, gatecred.DefaultTTL)
+		if err != nil || d < wallet.MinVaultTTL || d > gatecred.DefaultTTL {
+			return nil, fmt.Errorf("%s=vault: %s=%q: want a duration from %s to %s", EnvSigner, EnvVaultCredTTL, s, wallet.MinVaultTTL, gatecred.DefaultTTL)
 		}
 		ttl = d
 	}

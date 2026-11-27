@@ -69,8 +69,15 @@ type Attempt struct {
 // for a credential and a Vault call. Refused before Vault is asked.
 var ErrWindowTooShort = errors.New("wallet: the payment's time window is too short to sign through Vault")
 
-// MinVaultWindow is the shortest authorization window the Vault signer accepts.
+// MinVaultWindow is the least time from now to validBefore the Vault signer
+// accepts: room to mint, call Vault, retry and hand the payment to the tool.
 const MinVaultWindow = 15 * time.Second
+
+// authBackdate is how far before now the window starts (as the local wallet's).
+const authBackdate = 10 * time.Second
+
+// MinVaultTTL is the shortest credential TTL that leaves MinVaultWindow.
+const MinVaultTTL = MinVaultWindow + authBackdate
 
 // VaultConfig is what NewVaultSigner needs.
 type VaultConfig struct {
@@ -81,7 +88,7 @@ type VaultConfig struct {
 	From     common.Address // that wallet's address: the authorization's from
 	ChainID  uint64
 	// TTL of the credential and of the authorization window; 0 = gatecred.DefaultTTL.
-	// Shortened to the paid tool's maxTimeoutSeconds when that is smaller.
+	// The window also ends no later than the paid tool's maxTimeoutSeconds from now.
 	TTL time.Duration
 }
 
@@ -117,8 +124,8 @@ func NewVaultSigner(cfg VaultConfig) (*VaultSigner, error) {
 	if cfg.TTL == 0 {
 		cfg.TTL = gatecred.DefaultTTL
 	}
-	if cfg.TTL < MinVaultWindow || cfg.TTL > gatecred.MaxTTL {
-		return nil, fmt.Errorf("wallet: vault credential TTL %s must be between %s and %s", cfg.TTL, MinVaultWindow, gatecred.MaxTTL)
+	if cfg.TTL < MinVaultTTL || cfg.TTL > gatecred.MaxTTL {
+		return nil, fmt.Errorf("wallet: vault credential TTL %s must be between %s and %s", cfg.TTL, MinVaultTTL, gatecred.MaxTTL)
 	}
 	return &VaultSigner{cfg: cfg, maxTx: DefaultMaxTx, now: time.Now}, nil
 }
@@ -146,27 +153,28 @@ func (v *VaultSigner) GoString() string     { return v.String() }
 func (v *VaultSigner) LogValue() slog.Value { return slog.StringValue(v.String()) }
 
 // Prepare runs the same checks as the local wallet and builds the
-// authorization for the Vault wallet. Its window is the credential's:
-// validAfter = issued_at and validBefore = expires_at (Vault requires the
-// authorization window inside the credential window), no longer than the
-// paid tool's maxTimeoutSeconds.
+// authorization for the Vault wallet. Its window is the credential's
+// (Vault requires the authorization window inside the credential window):
+// validAfter = issued_at = now - 10 s, as the local wallet does (EIP-3009
+// needs block time > validAfter, and clocks differ), and validBefore =
+// expires_at = the earlier of issued_at + TTL and now + the paid tool's
+// maxTimeoutSeconds. Less than MinVaultWindow left from now is refused before
+// the approval is spent.
 func (v *VaultSigner) Prepare(ctx context.Context, allowed policy.Allowed, holdID string, res x402.Resource, req x402.Requirements) (*Pending, error) {
-	ttl := v.cfg.TTL
-	if tool := time.Duration(req.MaxTimeoutSeconds) * time.Second; tool < ttl {
-		ttl = tool
-	}
+	now := v.now().Unix()
+	issued := now - int64(authBackdate/time.Second)
+	expires := min(issued+int64(v.cfg.TTL/time.Second), now+int64(req.MaxTimeoutSeconds))
 	amt, err := checkAllowed(ctx, allowed, holdID, req, v.Network(), v.maxTx, func() error {
-		if ttl < MinVaultWindow {
-			return fmt.Errorf("%w (maxTimeoutSeconds %d < %d)", ErrWindowTooShort, req.MaxTimeoutSeconds, int(MinVaultWindow.Seconds()))
+		if expires-now < int64(MinVaultWindow/time.Second) {
+			return fmt.Errorf("%w (maxTimeoutSeconds %d, need %d)", ErrWindowTooShort, req.MaxTimeoutSeconds, int(MinVaultWindow.Seconds()))
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	issued := v.now().Unix()
 	a := x402.Auth{From: v.cfg.From, To: common.HexToAddress(req.PayTo), Value: amt,
-		ValidAfter: big.NewInt(issued), ValidBefore: big.NewInt(issued + int64(ttl/time.Second)),
+		ValidAfter: big.NewInt(issued), ValidBefore: big.NewInt(expires),
 		Nonce: x402.PaymentNonce(holdID)}
 	dom := x402.Domain{Name: req.Extra.Name, Version: req.Extra.Version, ChainID: new(big.Int).SetUint64(v.cfg.ChainID),
 		Contract: common.HexToAddress(req.Asset)}
