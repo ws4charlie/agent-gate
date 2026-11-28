@@ -301,6 +301,26 @@ func walletCmd(args []string, stdout io.Writer) error {
 	return fmt.Errorf("wallet: unknown subcommand %q", args[0])
 }
 
+// EnvPaidtoolToken names the token the paid tool accepts on anvil (--token).
+const EnvPaidtoolToken = "AG_PAIDTOOL_TOKEN"
+
+// anvilToken returns the token the paid tool accepts on anvil. With an
+// address, it is that deployed token, after checking it is an EIP-3009
+// contract whose EIP-712 domain matches what it reports; cfg takes the
+// token's own name and version, so the domain in the 402 is the one the
+// contract verifies. Without one, a fresh mock USDC is deployed.
+func anvilToken(ctx context.Context, chain *x402.EthChain, addr string, cfg *x402.Config) (ecommon.Address, error) {
+	if addr == "" {
+		return chain.DeployMockUSDC(ctx)
+	}
+	d, err := chain.TokenDomain(ctx, ecommon.HexToAddress(addr))
+	if err != nil {
+		return ecommon.Address{}, fmt.Errorf("paidtool: --token: %w", err)
+	}
+	cfg.TokenName, cfg.TokenVersion = d.Name, d.Version
+	return d.Contract, nil
+}
+
 // paidtoolCmd runs the paid endpoint. `--network sim` (default) runs an
 // in-process simulated chain and needs nothing else. `--network base-sepolia`
 // needs $AG_RPC_URL and $AG_FACILITATOR_KEY (a key funded with Base Sepolia ETH
@@ -314,11 +334,21 @@ func paidtoolCmd(ctx context.Context, args []string, stdout io.Writer) error {
 	scraperReplay := fs.Bool("litescraper-replay", false, "answer only from --litescraper-cache and never call Firecrawl")
 	fund := fs.String("fund", "", "sim and anvil: mint this many USDC to --fund-address at startup, e.g. 5")
 	fundAddr := fs.String("fund-address", "", "sim and anvil: the payer address to fund")
+	tokenAddr := fs.String("token", os.Getenv(EnvPaidtoolToken), "anvil: accept this already deployed EIP-3009 token instead of deploying a mock (default $"+EnvPaidtoolToken+")")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if !ecommon.IsHexAddress(*payTo) {
 		return errors.New("paidtool: --pay-to must be an address")
+	}
+	*tokenAddr = strings.TrimSpace(*tokenAddr)
+	if *tokenAddr != "" {
+		if *network != x402.NetworkAnvil {
+			return fmt.Errorf("paidtool: --token (%s) is for --network anvil only", EnvPaidtoolToken)
+		}
+		if !ecommon.IsHexAddress(*tokenAddr) {
+			return fmt.Errorf("paidtool: --token %q is not a 0x address", *tokenAddr)
+		}
 	}
 	cfg := x402.Config{PayTo: ecommon.HexToAddress(*payTo), TokenName: "USDC", TokenVersion: "2"}
 	switch *network {
@@ -353,7 +383,7 @@ func paidtoolCmd(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		token, err := chain.DeployMockUSDC(ctx)
+		token, err := anvilToken(ctx, chain, *tokenAddr, &cfg)
 		if err != nil {
 			return err
 		}
