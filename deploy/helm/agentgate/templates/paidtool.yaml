@@ -1,0 +1,97 @@
+{{- if .Values.paidtool.enabled }}
+{{- $p := .Values.paidtool -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentgate.paidtoolHost" . }}
+  labels:
+    {{- include "agentgate.labels" . | nindent 4 }}
+    app.kubernetes.io/component: paidtool
+spec:
+  # One replica: on sim the chain lives inside the process, and on anvil each
+  # start deploys its own mock USDC.
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels:
+      {{- include "agentgate.selector" (dict "ctx" . "component" "paidtool") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentgate.labels" . | nindent 8 }}
+        app.kubernetes.io/component: paidtool
+      {{- with $p.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "agentgate.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: paidtool
+          image: {{ include "agentgate.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - paidtool
+            - --listen=0.0.0.0:{{ $p.port }}
+            - --network={{ $p.network }}
+            - --pay-to={{ $p.payTo }}
+            {{- if $p.fund }}
+            - --fund={{ $p.fund }}
+            - --fund-address={{ $p.fundAddress }}
+            {{- end }}
+            {{- range $p.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - {name: http, containerPort: {{ $p.port }}}
+          env:
+            {{- with include "agentgate.rpcEnv" . }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- with $p.facilitatorKey.existingSecret }}
+            - name: AG_FACILITATOR_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ . | quote }}, key: {{ $p.facilitatorKey.key | quote }}}
+            {{- end }}
+            {{- with $p.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 5
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml $p.resources | nindent 12 }}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+      {{- with $p.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $p.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $p.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

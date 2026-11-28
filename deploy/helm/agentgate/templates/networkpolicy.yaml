@@ -1,0 +1,81 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy -}}
+{{- $eg := $np.egress -}}
+# Gateway: default deny, then its callers, DNS, Postgres, Vault and the
+# identity provider (signer=vault), the chain RPC and the paid tool.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentgate.fullname" . }}-gateway
+  labels:
+    {{- include "agentgate.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentgate.selector" (dict "ctx" . "component" "gateway") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    {{- with $np.gatewayIngressFrom }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - {port: http}
+    {{- end }}
+  egress:
+    {{- include "agentgate.dnsEgress" . | nindent 4 }}
+    {{- with $eg.postgres }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if eq .Values.signer "vault" }}
+    {{- with $eg.vault }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with $eg.tokenProvider }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- end }}
+    {{- with $eg.chainRpc }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if .Values.paidtool.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "agentgate.selector" (dict "ctx" . "component" "paidtool") | nindent 14 }}
+      ports:
+        - {port: {{ .Values.paidtool.port }}}
+    {{- end }}
+    {{- with $eg.extra }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- if .Values.paidtool.enabled }}
+---
+# Paid tool: only the gateway calls it; it reaches DNS and the chain RPC.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agentgate.paidtoolHost" . }}
+  labels:
+    {{- include "agentgate.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentgate.selector" (dict "ctx" . "component" "paidtool") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentgate.selector" (dict "ctx" . "component" "gateway") | nindent 14 }}
+      ports:
+        - {port: http}
+  egress:
+    {{- include "agentgate.dnsEgress" . | nindent 4 }}
+    {{- with $eg.chainRpc }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- with $eg.extra }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}

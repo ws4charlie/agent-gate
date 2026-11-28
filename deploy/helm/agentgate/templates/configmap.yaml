@@ -1,0 +1,38 @@
+{{- include "agentgate.validate" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentgate.fullname" . }}-config
+  labels:
+    {{- include "agentgate.labels" . | nindent 4 }}
+data:
+  providers.json: |
+    {{- toPrettyJson .Values.gateway.providers | nindent 4 }}
+  prices.json: |
+    {{- toPrettyJson .Values.gateway.prices | nindent 4 }}
+  {{- if .Values.gateway.config }}
+  config.json: |
+    {{- toPrettyJson .Values.gateway.config | nindent 4 }}
+  {{- end }}
+  {{- if .Values.gateway.mcp }}
+  mcp.json: |
+    {{- toPrettyJson .Values.gateway.mcp | nindent 4 }}
+  {{- end }}
+  {{- if .Values.payments.enabled }}
+  payments.json: |
+    {{- include "agentgate.paymentsJSON" . | nindent 4 }}
+  {{- end }}
+{{- if .Values.gateway.cedarPolicies }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentgate.fullname" . }}-cedar
+  labels:
+    {{- include "agentgate.labels" . | nindent 4 }}
+data:
+  {{- range $name, $body := .Values.gateway.cedarPolicies }}
+  {{ $name }}: |
+    {{- $body | nindent 4 }}
+  {{- end }}
+{{- end }}
