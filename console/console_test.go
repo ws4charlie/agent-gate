@@ -166,6 +166,9 @@ func start(t *testing.T, s *Server, h http.Handler, body string) runMeta {
 	return m
 }
 
+// wait returns the run once it has finished: finish() has run (FinishedAt is
+// set) or the run is no longer live. A status alone is not enough: a kill marks
+// a live run killed at once, before the runner or its unit has been stopped.
 func wait(t *testing.T, s *Server, id string) runMeta {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
@@ -174,7 +177,10 @@ func wait(t *testing.T, s *Server, id string) runMeta {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Status != stRunning {
+		s.mu.Lock()
+		_, live := s.live[id]
+		s.mu.Unlock()
+		if got.FinishedAt != nil || (!live && got.Status != stRunning) {
 			return got
 		}
 		time.Sleep(20 * time.Millisecond)
