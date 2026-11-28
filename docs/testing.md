@@ -26,6 +26,10 @@ Real providers and real networks. This is the thin part so far: testing against 
 
 Each scenario has an expected verdict, such as "this should be refused for being over budget". Many are requests that should be allowed, because otherwise a gateway that refuses everything would look perfect.
 
+## Latency overhead
+
+`bench/main.go` measures only the time the gateway adds to a request. It sends the same streaming request straight to a fake upstream and through the gateway, at concurrency 1 and 50, and prints p50/p99 time to first byte and total time. Everything is loopback, so the numbers are overhead, not real provider latency. Run `DATABASE_URL=postgres://... go run ./bench`; it creates and drops its own temporary database on that server.
+
 ## What a clean score doesn't show
 
 We wrote the scenarios alongside the rules, so passing shows the rules do what we meant, not how they hold up against an unfamiliar attacker. Local tests prove our accounting, not how a real provider or Circle's real USDC behaves.
