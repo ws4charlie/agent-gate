@@ -26,7 +26,7 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/x402"
 )
 
-// vaultRig is the payment rig with AG_SIGNER=vault: the gateway signs through
+// vaultRig is the payment rig with the QuorumVault signer: the gateway signs through
 // the fake QuorumVault, whose wallet holds the test USDC on the simulated chain.
 type vaultRig struct {
 	*payEnv

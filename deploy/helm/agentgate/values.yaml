@@ -19,10 +19,6 @@ database:
   existingSecret: "" # required: Secret holding the Postgres URL
   key: DATABASE_URL
 
-# How the gateway signs x402 payments: wallet (a local key, test chains only)
-# or vault (QuorumVault). Only matters when payments.enabled.
-signer: wallet
-
 # Model provider keys: a Secret whose keys are the env names the gateway
 # reads (<NAME>_API_KEY, e.g. OPENROUTER_API_KEY). Empty: none.
 providerKeys:
@@ -80,12 +76,10 @@ payments:
   # sim only: the paid tool's base URL; default this release's paid tool.
   chainQueryURL: ""
 
-# AG_SIGNER=wallet: the key file comes from a Secret.
-wallet:
-  existingSecret: ""           # required with payments.enabled and signer=wallet
-  key: wallet.key             # a plain file name
-
-# AG_SIGNER=vault. Non-secret settings as values; files from Secrets.
+# QuorumVault, the only signer on a chain: required when payments.enabled and
+# payments.network is anvil or base-sepolia (on sim the gateway signs with a
+# throw-away key and these are unused). Non-secret settings as values; files
+# from Secrets.
 vault:
   url: ""                      # AG_VAULT_URL
   walletId: ""                 # AG_VAULT_WALLET_ID
@@ -104,14 +98,14 @@ vault:
     clientSecret: client_secret  # AG_VAULT_CLIENT_SECRET_FILE
     tokenCA: token_ca.crt      # AG_VAULT_TOKEN_CA; empty: system roots
 
-# The Gate credential key (signer=vault). The gateway accepts only a regular
+# The Gate credential key (QuorumVault signer). The gateway accepts only a regular
 # file owned by its own user, mode 0600, in a directory no one else can write.
 # A Secret volume is none of these, so an init container (this image,
 # `agentgate gatecred install`) copies it into a private in-memory directory.
 gateCred:
-  existingSecret: ""           # required with signer=vault
+  existingSecret: ""           # required with payments on anvil or base-sepolia
   key: gate-cred.key
-  kid: ""                      # AG_GATE_CRED_KID, required with signer=vault
+  kid: ""                      # AG_GATE_CRED_KID, required with payments on anvil or base-sepolia
 
 # The x402 seller with its own facilitator (`agentgate paidtool`).
 paidtool:
@@ -151,7 +145,7 @@ securityContext:
 
 # Default deny for both pods, then only what is listed. Each egress group is a
 # list of NetworkPolicyEgressRule (to + ports). DNS to kube-dns is always allowed.
-# When enabled, postgres is required, and with signer=vault so are vault and
+# When enabled, postgres is required, and with payments on a chain so are vault and
 # tokenProvider, each rule with ports. Model providers and MCP upstreams go in extra.
 networkPolicy:
   enabled: false
@@ -160,7 +154,7 @@ networkPolicy:
     - podSelector: {}
   egress:
     postgres: []               # e.g. [{to: [{podSelector: {matchLabels: {cnpg.io/cluster: gate-db}}}], ports: [{port: 5432}]}]
-    vault: []                  # QuorumVault core (signer=vault)
-    tokenProvider: []          # the identity provider's token endpoint (signer=vault)
+    vault: []                  # QuorumVault core (payments on a chain)
+    tokenProvider: []          # the identity provider's token endpoint (payments on a chain)
     chainRpc: []               # gateway reconciler and paid tool
     extra: []                  # anything else, e.g. model providers

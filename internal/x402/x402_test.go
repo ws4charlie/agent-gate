@@ -292,8 +292,8 @@ func TestWalletRefusals(t *testing.T) {
 	if _, err := wallet.New(key, 8453); err == nil {
 		t.Fatal("wallet must refuse Base mainnet")
 	}
-	if _, err := wallet.New(key, x402.BaseSepoliaChainID); err != nil {
-		t.Fatal(err)
+	if _, err := wallet.New(key, x402.BaseSepoliaChainID); err == nil {
+		t.Fatal("a local key must refuse Base Sepolia: only QuorumVault signs on a real chain")
 	}
 	w, _ := wallet.New(key, x402.LocalChainID)
 	if _, err := w.Pay(context.Background(), policy.Allowed{}, "h", x402.Resource{}, x402.Requirements{}); err == nil {

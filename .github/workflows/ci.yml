@@ -176,17 +176,13 @@ jobs:
       # The paid tool with --token, on the same anvil. AG_REQUIRE_ANVIL=1 (job env) makes it fail, not skip, without a node.
       - name: paid tool accepts an existing token (anvil)
         run: go test -count=1 -timeout 5m -v -run 'TestPaidtoolUsesExistingToken$' ./cmd/agentgate
-      - name: demo, phase 1.5, anvil
-        run: demo/phase15.sh --network anvil
-      - name: demo, phase 3, anvil
-        run: demo/phase3.sh --network anvil
       - name: Python agents on fixtures
         run: python -m pytest sdk/python/tests -q -k fixtures
       - name: anvil log
         if: failure()
         run: cat anvil.log
 
-  # The Helm chart, offline: lint and render with both signers (scripts/check-chart.sh).
+  # The Helm chart, offline: lint and render on sim and on a chain (scripts/check-chart.sh).
   helm:
     runs-on: ubuntu-latest
     steps:

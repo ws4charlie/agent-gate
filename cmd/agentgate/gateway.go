@@ -131,6 +131,9 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	mf := addMercuryFlags(c)
 	reconcileEvery := c.fs.Duration("reconcile-every", 30*time.Second, "background reconcile interval")
 	logFormat := c.fs.String("log-format", envOr("AG_LOG_FORMAT", "text"), "log format on stderr: text or json (default $AG_LOG_FORMAT, text)")
+	if err := refuseRetiredEnv(); err != nil { // before anything else: an old deployment fails loudly
+		return err
+	}
 	cfg, pool, err := c.open(ctx, args)
 	if err != nil {
 		return err
@@ -247,7 +250,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 			log.Info(fmt.Sprintf("x402 signer: vault (wallet_id %s, audience %s, from %s)", v.WalletID(), v.Audience(), v.Address().Hex()),
 				"network", v.Network(), "policy_version", pay.PolicyVersion)
 		} else {
-			log.Info("payments enabled", "wallet", pay.Wallet.Address().Hex(), "network", pay.Wallet.Network())
+			log.Info("x402 signer: ephemeral sim key (no on-chain value)", "wallet", pay.Wallet.Address().Hex(), "network", pay.Wallet.Network())
 		}
 	}
 

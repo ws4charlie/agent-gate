@@ -1,16 +1,16 @@
-// Package wallet holds the agent's key. Pay is the only code path that signs,
-// and it needs a policy.Allowed (I10).
+// Package wallet signs x402 payments. Pay is the only code path that signs,
+// and it needs a policy.Allowed (I10). On a real chain only QuorumVault signs
+// (VaultSigner); the local-key Wallet exists only for the in-process simulated
+// chain, where nothing has on-chain value.
 package wallet
 
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
-	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -24,15 +24,10 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/x402"
 )
 
-const (
-	EnvKey     = "AG_WALLET_KEY"      // hex private key
-	EnvKeyFile = "AG_WALLET_KEY_FILE" // path to a gitignored file holding it
-	// DefaultKeyFile is under data/, which is gitignored; *.key is too.
-	DefaultKeyFile = "data/wallet.key"
-)
-
-// ErrRefusedChain: the wallet only signs for Base Sepolia or the local simulated chain.
-var ErrRefusedChain = errors.New("wallet: refusing to start, chain id must be 84532 (Base Sepolia) or 1337 (local simulated chain)")
+// ErrRefusedChain: the signer refuses this chain id. A local key signs only
+// on the in-process simulated chain (1337); every real chain signs through
+// QuorumVault (84532, or 1337 in tests).
+var ErrRefusedChain = errors.New("wallet: refusing to start, chain id not allowed: a local key signs only on 1337 (simulated chain), QuorumVault on 84532 or 1337")
 
 // DefaultMaxTx is the wallet's own per-transaction cap, in Nanos ($1.00).
 // It is deliberately independent of policy (I10, defence in depth): if the
@@ -51,10 +46,11 @@ type Wallet struct {
 	now     func() time.Time
 }
 
-// New builds a wallet. The chain id check is the guard against a mainnet
-// config ever reaching a signer.
+// New builds a local-key wallet. The chain id check is the guard that keeps a
+// local key off every real chain, testnets included: only the simulated chain
+// (x402.LocalChainID) is accepted.
 func New(key *ecdsa.PrivateKey, chainID uint64) (*Wallet, error) {
-	if chainID != x402.BaseSepoliaChainID && chainID != x402.LocalChainID {
+	if chainID != x402.LocalChainID {
 		return nil, ErrRefusedChain
 	}
 	if key == nil {
@@ -226,49 +222,3 @@ func (w *Wallet) Pay(ctx context.Context, allowed policy.Allowed, holdID string,
 
 // Nanos converts USDC atomic units to Nanos (overflow checked).
 func Nanos(atomic *big.Int) (money.Nanos, bool) { return x402.NanosFromAtomic(atomic) }
-
-// LoadKey reads the key from $AG_WALLET_KEY, else the file named by
-// $AG_WALLET_KEY_FILE (default data/wallet.key).
-func LoadKey() (*ecdsa.PrivateKey, error) {
-	hexKey := strings.TrimSpace(os.Getenv(EnvKey))
-	if hexKey == "" {
-		path := os.Getenv(EnvKeyFile)
-		if path == "" {
-			path = DefaultKeyFile
-		}
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("wallet: no key: set %s or put one in %s (agentgate wallet new): %w", EnvKey, path, err)
-		}
-		hexKey = strings.TrimSpace(string(b))
-	}
-	return crypto.HexToECDSA(strings.TrimPrefix(hexKey, "0x"))
-}
-
-// NewKeyFile creates a testnet key at path (mode 0600, refuses to overwrite)
-// and returns only the address. The key is never printed.
-func NewKeyFile(path string) (common.Address, error) {
-	k, err := ecdsa.GenerateKey(crypto.S256(), rand.Reader)
-	if err != nil {
-		return common.Address{}, err
-	}
-	if err := os.MkdirAll(dirOf(path), 0o700); err != nil {
-		return common.Address{}, err
-	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return common.Address{}, fmt.Errorf("wallet: %w (refusing to overwrite an existing key)", err)
-	}
-	defer f.Close()
-	if _, err := f.WriteString(common.Bytes2Hex(crypto.FromECDSA(k)) + "\n"); err != nil {
-		return common.Address{}, err
-	}
-	return crypto.PubkeyToAddress(k.PublicKey), nil
-}
-
-func dirOf(p string) string {
-	if i := strings.LastIndex(p, "/"); i >= 0 {
-		return p[:i+1]
-	}
-	return "."
-}

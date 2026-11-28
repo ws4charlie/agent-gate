@@ -1,4 +1,4 @@
-AgentGate {{ include "agentgate.tag" . }} (signer: {{ .Values.signer }}, payments: {{ .Values.payments.enabled }}, paid tool: {{ .Values.paidtool.enabled }})
+AgentGate {{ include "agentgate.tag" . }} (signer: {{ if include "agentgate.vault" . }}QuorumVault{{ else if .Values.payments.enabled }}throw-away sim key{{ else }}none{{ end }}, payments: {{ .Values.payments.enabled }}, paid tool: {{ .Values.paidtool.enabled }})
 
 Gateway: http://{{ include "agentgate.fullname" . }}-gateway.{{ .Release.Namespace }}.svc:{{ .Values.gateway.port }}
 

@@ -1,6 +1,5 @@
 # CI render: vault signer with every optional setting, anvil, paid tool. Placeholders only.
 database: {existingSecret: agentgate-db}
-signer: vault
 chain: {rpcUrlSecret: {name: agentgate-rpc}}   # the Secret form; values-local.yaml uses the literal
 payments:
   enabled: true
