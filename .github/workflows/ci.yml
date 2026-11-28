@@ -92,6 +92,8 @@ jobs:
         run: pip install "./sdk/python[test]"
       - name: pytest
         run: python -m pytest sdk/python/tests -q
+      - name: runner unit tests
+        run: python3 -m unittest discover scripts/runners
 
   # Full end to end with no secrets and no network beyond loopback.
   #  - Payments: a real local anvil node (chain id 84532, the testnet's) over real JSON-RPC, with a mock USDC.
