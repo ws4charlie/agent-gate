@@ -183,15 +183,6 @@ func TestGenAIOtherMCPMethodKeepsPlainName(t *testing.T) {
 	wantAttrs(t, got, map[string]any{"agentgate.request.status": "ok"})
 }
 
-func absent(t *testing.T, got map[string]attribute.Value, keys ...string) {
-	t.Helper()
-	for _, k := range keys {
-		if v, ok := got[k]; ok {
-			t.Errorf("attribute %s set to %q, want absent", k, v.Emit())
-		}
-	}
-}
-
 func TestGenAIResponseModel(t *testing.T) {
 	for _, c := range []struct{ name, path, model, body string }{
 		{"openai-json", "/v1/chat/completions", "oa/m", chatBody("oa/m", false)},

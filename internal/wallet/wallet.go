@@ -224,9 +224,6 @@ func (w *Wallet) Pay(ctx context.Context, allowed policy.Allowed, holdID string,
 	return w.Sign(p)
 }
 
-// Atomic converts Nanos to USDC atomic units, rejecting fractions of a micro-USDC.
-func Atomic(n money.Nanos) (*big.Int, bool) { return x402.AtomicFromNanos(n) }
-
 // Nanos converts USDC atomic units to Nanos (overflow checked).
 func Nanos(atomic *big.Int) (money.Nanos, bool) { return x402.NanosFromAtomic(atomic) }
 
