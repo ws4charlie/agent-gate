@@ -1,0 +1,14 @@
+# Allowlist: the build context holds only what `go build ./cmd/agentgate`
+# needs. Keys, data/, .env and everything else stay out of the image.
+*
+!go.mod
+!go.sum
+!cmd/
+!console/
+!internal/
+!migrations/
+**/*_test.go
+**/*.key
+**/.env
+**/.env.*
+**/data/
