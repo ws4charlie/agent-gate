@@ -33,8 +33,7 @@ const (
 	// signed on it is valid on Base Sepolia. While QuorumVault moves its anvil
 	// lane over, an anvil node at BaseSepoliaChainID is still accepted (see
 	// AnvilChainIDs).
-	AnvilChainID      = 31337
-	NetworkAnvilLocal = "eip155:31337"
+	AnvilChainID = 31337
 
 	// USDC on Base Sepolia. Source: Circle, "USDC Contract Addresses",
 	// https://developers.circle.com/stablecoins/usdc-contract-addresses

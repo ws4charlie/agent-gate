@@ -163,35 +163,39 @@ jobs:
           python-version: "3.11"
       - name: install the SDK and pytest
         run: pip install "./sdk/python[test]"
-      # Two nodes, cheaper than a matrix: 8545 at 31337 (anvil's own id) runs the whole suite,
-      # 8546 at 84532 (accepted during the move) reruns only the anvil tests.
+      # Two nodes, cheaper than a matrix: 8545 at 31337 (anvil's own id) and 8546 at 84532
+      # (accepted during the move). Both get the same tests: the whole e2e package and the whole
+      # cmd/agentgate package, so no anvil test can run on one id only.
       - name: start anvil (chain ids 31337 and 84532)
         run: |
           anvil --chain-id 31337 --port 8545 --silent > anvil.log 2>&1 &
           anvil --chain-id 84532 --port 8546 --silent > anvil-84532.log 2>&1 &
-          for url in http://127.0.0.1:8545 http://127.0.0.1:8546; do
+          for node in 8545=0x7a69 8546=0x14a34; do
+            url=http://127.0.0.1:${node%%=*} want=${node#*=} got=
             for i in $(seq 1 50); do
-              curl -sf -X POST -H 'Content-Type: application/json' \
-                --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' "$url" && echo && continue 2
+              got=$(curl -sf -X POST -H 'Content-Type: application/json' \
+                --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' "$url" | jq -r .result) && [ -n "$got" ] && break
               sleep 0.2
             done
-            cat anvil.log anvil-84532.log; exit 1
+            echo "$url reports chain id $got"
+            [ "$got" = "$want" ] || { echo "$url: want chain id $want, got '$got'"; cat anvil.log anvil-84532.log; exit 1; }
           done
-      - name: e2e tests (anvil 31337 payments, fixture LLM traffic)
+      - name: e2e tests on anvil 31337 (payments, fixture LLM traffic)
         run: go test -count=1 -p 1 -timeout 20m -v ./e2e/...
-      - name: anvil e2e tests on an anvil at 84532
+      - name: e2e tests on anvil 84532
         env:
           AG_ANVIL_URL: http://127.0.0.1:8546
           AG_RPC_URL: http://127.0.0.1:8546
-        run: go test -count=1 -p 1 -timeout 10m -v -run '^(TestAnvil|TestGatewayVaultSignerStartup$)' ./e2e/...
-      # The paid tool with --token, on each anvil. AG_REQUIRE_ANVIL=1 (job env) makes it fail, not skip, without a node.
-      - name: paid tool accepts an existing token (anvil 31337)
-        run: go test -count=1 -timeout 5m -v -run 'TestPaidtoolUsesExistingToken$' ./cmd/agentgate
-      - name: paid tool accepts an existing token (anvil 84532)
+        run: go test -count=1 -p 1 -timeout 20m -v ./e2e/...
+      # The paid tool with --token, and every other anvil test in the package, on each node.
+      # AG_REQUIRE_ANVIL=1 (job env) makes them fail, not skip, without a node.
+      - name: cmd/agentgate on anvil 31337
+        run: go test -count=1 -timeout 5m ./cmd/agentgate
+      - name: cmd/agentgate on anvil 84532
         env:
           AG_ANVIL_URL: http://127.0.0.1:8546
           AG_RPC_URL: http://127.0.0.1:8546
-        run: go test -count=1 -timeout 5m -v -run 'TestPaidtoolUsesExistingToken$' ./cmd/agentgate
+        run: go test -count=1 -timeout 5m ./cmd/agentgate
       - name: Python agents on fixtures
         run: python -m pytest sdk/python/tests -q -k fixtures
       - name: anvil logs

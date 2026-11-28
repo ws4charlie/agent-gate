@@ -230,51 +230,80 @@ func policyVersion(cedarDir string, enforce bool) (string, error) {
 // After signing, the chain is the source of truth, so a gateway that has
 // payments configured must be able to read it.
 func paymentsLookup(ctx context.Context, f PaymentsFile) (ledger.UsageLookup, error) {
-	r, err := chainReader(ctx, f)
+	r, _, err := chainReader(ctx, f)
 	if err != nil {
 		return nil, err
 	}
 	return &x402.AuthLookup{Chain: r}, nil
 }
 
+// startPayments builds the gateway's signer and the reconciler's view of the
+// chain, and refuses to start unless both are on one chain: on anvil each
+// reads the node's chain id itself, and a node that changed between the two
+// (or a second node behind the same URL) must not leave the reconciler
+// reading a chain the signer does not sign on.
+func startPayments(ctx context.Context, f PaymentsFile) (*server.Payments, ledger.UsageLookup, error) {
+	var reported uint64 // anvil: the chain id the node reports is the one signed on
+	if f.Network == x402.NetworkAnvil {
+		var err error
+		if reported, err = anvilChainID(ctx); err != nil {
+			return nil, nil, err
+		}
+	}
+	pay, err := loadPayments(f, reported)
+	if err != nil {
+		return nil, nil, err
+	}
+	r, readerID, err := chainReader(ctx, f)
+	if err != nil {
+		return nil, nil, err
+	}
+	if want := pay.Wallet.Network(); want != "eip155:"+strconv.FormatUint(readerID, 10) {
+		return nil, nil, fmt.Errorf("payments config: the signer is on %s, but the reconciler's node reports chain id %d: refusing to start", want, readerID)
+	}
+	return pay, &x402.AuthLookup{Chain: r}, nil
+}
+
 // chainReader is the read-only view of the chain: the simulated one over HTTP,
 // the anvil node, or Base Sepolia over $AG_RPC_URL. It holds no key.
-func chainReader(ctx context.Context, f PaymentsFile) (x402.AuthReader, error) {
+// The chain id it returns is the one the node reported (sim: 1337).
+func chainReader(ctx context.Context, f PaymentsFile) (x402.AuthReader, uint64, error) {
 	var r x402.AuthReader
+	var id uint64
 	switch f.Network {
 	case "sim":
 		if f.ChainQueryURL == "" {
-			return nil, errors.New("payments config: sim needs chain_query_url (the paid tool's base URL)")
+			return nil, 0, errors.New("payments config: sim needs chain_query_url (the paid tool's base URL)")
 		}
-		r = &x402.RemoteChain{BaseURL: strings.TrimRight(f.ChainQueryURL, "/")}
+		r, id = &x402.RemoteChain{BaseURL: strings.TrimRight(f.ChainQueryURL, "/")}, x402.LocalChainID
 	case "anvil":
 		// The same node over real JSON-RPC (chainReader), not the paid tool's HTTP path.
 		n, err := x402.DialAnvil(ctx, envOr("AG_RPC_URL", x402.DefaultAnvilURL))
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-		r = &x402.EthChain{Client: n.Client} // read-only use: no facilitator key
+		r, id = &x402.EthChain{Client: n.Client}, n.ChainID // read-only use: no facilitator key
 	case "base-sepolia":
 		rpc := os.Getenv("AG_RPC_URL")
 		if rpc == "" {
-			return nil, errors.New("payments config: base-sepolia needs AG_RPC_URL for the reconciler")
+			return nil, 0, errors.New("payments config: base-sepolia needs AG_RPC_URL for the reconciler")
 		}
 		cl, err := ethclient.DialContext(ctx, rpc)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-		id, err := cl.ChainID(ctx)
+		bid, err := cl.ChainID(ctx)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-		if id.Uint64() != x402.BaseSepoliaChainID {
-			return nil, fmt.Errorf("payments config: RPC reports chain id %s, want %d", id, x402.BaseSepoliaChainID)
+		if bid.Uint64() != x402.BaseSepoliaChainID {
+			return nil, 0, fmt.Errorf("payments config: RPC reports chain id %s, want %d", bid, x402.BaseSepoliaChainID)
 		}
-		r = &x402.EthChain{Client: cl} // read-only use: no facilitator key
+		r, id = &x402.EthChain{Client: cl}, x402.BaseSepoliaChainID // read-only use: no facilitator key
 	default:
-		return nil, fmt.Errorf("unknown network %q", f.Network)
+		return nil, 0, fmt.Errorf("unknown network %q", f.Network)
 	}
-	return r, nil
+	return r, id, nil
 }
 
 // chainIDFor is the chain id a network signs on, and so the 402's network,

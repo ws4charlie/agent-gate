@@ -39,7 +39,6 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/server"
 	"github.com/ws4charlie/agent-gate/internal/telemetry"
 	"github.com/ws4charlie/agent-gate/internal/wallet"
-	"github.com/ws4charlie/agent-gate/internal/x402"
 )
 
 // common holds the flags every database-backed command shares.
@@ -234,17 +233,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		var reported uint64 // anvil: the chain id the node reports is the one signed on
-		if pf.Network == x402.NetworkAnvil {
-			if reported, err = anvilChainID(ctx); err != nil {
-				return err
-			}
-		}
-		pay, err := loadPayments(pf, reported)
-		if err != nil {
-			return err
-		}
-		pl, err := paymentsLookup(ctx, pf)
+		pay, pl, err := startPayments(ctx, pf)
 		if err != nil {
 			return err
 		}
@@ -536,7 +525,7 @@ func report(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		reader, err := chainReader(ctx, pf)
+		reader, _, err := chainReader(ctx, pf)
 		if err != nil {
 			return err
 		}

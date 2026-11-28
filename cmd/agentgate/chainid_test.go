@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ws4charlie/agent-gate/internal/x402"
@@ -54,6 +55,14 @@ func TestChainIDFor(t *testing.T) {
 // fakeRPC answers web3_clientVersion with client and eth_chainId with id.
 func fakeRPC(t *testing.T, client string, id uint64) string {
 	t.Helper()
+	return fakeRPCSeq(t, client, id)
+}
+
+// fakeRPCSeq answers the n-th eth_chainId with ids[n], then the last one again.
+func fakeRPCSeq(t *testing.T, client string, ids ...uint64) string {
+	t.Helper()
+	var mu sync.Mutex
+	calls := 0
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ID     json.RawMessage `json:"id"`
@@ -65,6 +74,10 @@ func fakeRPC(t *testing.T, client string, id uint64) string {
 		case "web3_clientVersion":
 			res = client
 		case "eth_chainId":
+			mu.Lock()
+			id := ids[min(calls, len(ids)-1)]
+			calls++
+			mu.Unlock()
 			res = "0x" + strconv.FormatUint(id, 16)
 		default:
 			http.Error(w, "no", http.StatusBadRequest)
@@ -98,9 +111,32 @@ func TestStartupChainIDFromNode(t *testing.T) {
 	}
 	for _, id := range []uint64{84532, 31337} {
 		t.Setenv("AG_RPC_URL", fakeRPC(t, "Geth/v1.14", id))
-		_, err := chainReader(ctx, PaymentsFile{Network: "base-sepolia"})
+		_, got, err := chainReader(ctx, PaymentsFile{Network: "base-sepolia"})
+		if err == nil && got != x402.BaseSepoliaChainID {
+			t.Errorf("base-sepolia reader reports %d", got)
+		}
 		if (id == x402.BaseSepoliaChainID) != (err == nil) {
 			t.Errorf("base-sepolia RPC at %d: %v", id, err)
+		}
+	}
+}
+
+// The signer and the reconciler's chain reader each ask the node; the gateway
+// starts only when both got the same chain id.
+func TestStartPaymentsOneChain(t *testing.T) {
+	vaultSignerEnv(t)
+	ctx := context.Background()
+	for _, ids := range [][]uint64{{31337, 31337}, {84532, 84532}} {
+		t.Setenv("AG_RPC_URL", fakeRPCSeq(t, "anvil/v1.0.0", ids...))
+		pay, pl, err := startPayments(ctx, PaymentsFile{Network: "anvil"})
+		if err != nil || pl == nil || pay.Wallet.Network() != "eip155:"+strconv.FormatUint(ids[0], 10) {
+			t.Fatalf("anvil at %d: %v", ids[0], err)
+		}
+	}
+	for _, ids := range [][]uint64{{31337, 84532}, {84532, 31337}} {
+		t.Setenv("AG_RPC_URL", fakeRPCSeq(t, "anvil/v1.0.0", ids...))
+		if _, _, err := startPayments(ctx, PaymentsFile{Network: "anvil"}); err == nil || !strings.Contains(err.Error(), "refusing to start") {
+			t.Fatalf("signer at %d, reader at %d: %v", ids[0], ids[1], err)
 		}
 	}
 }
