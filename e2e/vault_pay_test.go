@@ -51,6 +51,10 @@ func TestGatewayVaultSignerStartup(t *testing.T) {
 	if !strings.Contains(gw.log.String(), want) {
 		t.Fatalf("no signer line %q in:\n%s", want, gw.log.String())
 	}
+	// It signs on the chain id the node reports (31337, or 84532 during the move).
+	if node := "network=" + dialAnvil(t).Network(); !strings.Contains(gw.log.String(), node) {
+		t.Fatalf("no %q in:\n%s", node, gw.log.String())
+	}
 
 	// refused runs serve with env and wants it to exit, naming name.
 	refused := func(env []string, name string) {

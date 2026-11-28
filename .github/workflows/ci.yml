@@ -102,7 +102,8 @@ jobs:
         run: python3 -m unittest discover scripts/runners
 
   # Full end to end with no secrets and no network beyond loopback.
-  #  - Payments: a real local anvil node (chain id 84532, the testnet's) over real JSON-RPC, with a mock USDC.
+  #  - Payments: a real local anvil node over real JSON-RPC, with a mock USDC. anvil is a private chain
+  #    (31337); 84532 is still accepted while QuorumVault moves its anvil lane, so the anvil tests run on both.
   #  - Model traffic: recorded prompt fixtures (testdata/llm) replayed over real HTTP and SSE.
   # Proves the RPC, fee and receipt path and the gateway's accounting. It does not prove Circle's real
   # USDC contract or any provider's behaviour. See docs/testing.md.
@@ -162,25 +163,44 @@ jobs:
           python-version: "3.11"
       - name: install the SDK and pytest
         run: pip install "./sdk/python[test]"
-      - name: start anvil (chain id 84532)
+      # Two nodes, cheaper than a matrix: 8545 at 31337 (anvil's own id) and 8546 at 84532
+      # (accepted during the move). Both get the same tests: the whole e2e package and the whole
+      # cmd/agentgate package, so no anvil test can run on one id only.
+      - name: start anvil (chain ids 31337 and 84532)
         run: |
-          anvil --chain-id 84532 --silent > anvil.log 2>&1 &
-          for i in $(seq 1 50); do
-            curl -sf -X POST -H 'Content-Type: application/json' \
-              --data '{"jsonrpc":"2.0","id":1,"method":"web3_clientVersion","params":[]}' "$AG_ANVIL_URL" && echo && exit 0
-            sleep 0.2
+          anvil --chain-id 31337 --port 8545 --silent > anvil.log 2>&1 &
+          anvil --chain-id 84532 --port 8546 --silent > anvil-84532.log 2>&1 &
+          for node in 8545=0x7a69 8546=0x14a34; do
+            url=http://127.0.0.1:${node%%=*} want=${node#*=} got=
+            for i in $(seq 1 50); do
+              got=$(curl -sf -X POST -H 'Content-Type: application/json' \
+                --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' "$url" | jq -r .result) && [ -n "$got" ] && break
+              sleep 0.2
+            done
+            echo "$url reports chain id $got"
+            [ "$got" = "$want" ] || { echo "$url: want chain id $want, got '$got'"; cat anvil.log anvil-84532.log; exit 1; }
           done
-          cat anvil.log; exit 1
-      - name: e2e tests (anvil payments, fixture LLM traffic)
+      - name: e2e tests on anvil 31337 (payments, fixture LLM traffic)
         run: go test -count=1 -p 1 -timeout 20m -v ./e2e/...
-      # The paid tool with --token, on the same anvil. AG_REQUIRE_ANVIL=1 (job env) makes it fail, not skip, without a node.
-      - name: paid tool accepts an existing token (anvil)
-        run: go test -count=1 -timeout 5m -v -run 'TestPaidtoolUsesExistingToken$' ./cmd/agentgate
+      - name: e2e tests on anvil 84532
+        env:
+          AG_ANVIL_URL: http://127.0.0.1:8546
+          AG_RPC_URL: http://127.0.0.1:8546
+        run: go test -count=1 -p 1 -timeout 20m -v ./e2e/...
+      # The paid tool with --token, and every other anvil test in the package, on each node.
+      # AG_REQUIRE_ANVIL=1 (job env) makes them fail, not skip, without a node.
+      - name: cmd/agentgate on anvil 31337
+        run: go test -count=1 -timeout 5m ./cmd/agentgate
+      - name: cmd/agentgate on anvil 84532
+        env:
+          AG_ANVIL_URL: http://127.0.0.1:8546
+          AG_RPC_URL: http://127.0.0.1:8546
+        run: go test -count=1 -timeout 5m ./cmd/agentgate
       - name: Python agents on fixtures
         run: python -m pytest sdk/python/tests -q -k fixtures
-      - name: anvil log
+      - name: anvil logs
         if: failure()
-        run: cat anvil.log
+        run: cat anvil.log anvil-84532.log
 
   # The Helm chart, offline: lint and render on sim and on a chain (scripts/check-chart.sh).
   helm:

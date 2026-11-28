@@ -1,6 +1,6 @@
 # Example for the local kind cluster (Phase 2): AgentGate in namespace
 # agentgate next to QuorumVault's kind lane, signing through Vault, paying on
-# the lane's anvil (chain id 84532). The env repo creates the Secrets named
+# the lane's anvil (chain id 31337; 84532 while Vault moves). The env repo creates the Secrets named
 # here and fills the vault.* values from QuorumVault's onboarding output
 # directory (one file per value); nothing here is specific to one machine.
 #

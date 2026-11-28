@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -17,11 +18,25 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
-// Network name for a local anvil node started with --chain-id 84532. The
-// signed domain carries the Base Sepolia chain id, so the wallet, the verifier
-// and the 402 payload are byte-for-byte what they are on the testnet; only the
-// node and the token contract are local.
+// Network name for a local anvil node: a private chain, started with
+// --chain-id 31337 (AnvilChainID). 84532 is still accepted while QuorumVault
+// moves its anvil lane over. Whichever id the node reports is the one used
+// everywhere: the 402's network, the EIP-712 domain, the Gate credential.
 const NetworkAnvil = "anvil"
+
+// AnvilChainIDs are the chain ids an anvil node may report, in the order
+// error messages name them.
+var AnvilChainIDs = []uint64{AnvilChainID, BaseSepoliaChainID}
+
+// CheckAnvilChainID refuses any chain id an anvil node may not have.
+func CheckAnvilChainID(id uint64) error {
+	for _, ok := range AnvilChainIDs {
+		if id == ok {
+			return nil
+		}
+	}
+	return fmt.Errorf("anvil: node has chain id %d, want %d or %d (start it with --chain-id %d)", id, AnvilChainID, BaseSepoliaChainID, AnvilChainID)
+}
 
 // DefaultAnvilURL is where `anvil` listens unless told otherwise.
 const DefaultAnvilURL = "http://127.0.0.1:8545"
@@ -31,13 +46,14 @@ const DefaultAnvilURL = "http://127.0.0.1:8545"
 // refuses any node that does not identify itself as anvil, so those calls can
 // never reach a real network.
 type Node struct {
-	RPC    *rpc.Client
-	Client *ethclient.Client
-	URL    string
+	RPC     *rpc.Client
+	Client  *ethclient.Client
+	URL     string
+	ChainID uint64 // what the node reported at dial: one of AnvilChainIDs
 }
 
 // DialAnvil connects and checks, before returning anything usable:
-// web3_clientVersion names anvil, and eth_chainId is 84532.
+// web3_clientVersion names anvil, and eth_chainId is one of AnvilChainIDs.
 func DialAnvil(ctx context.Context, url string) (*Node, error) {
 	rc, err := rpc.DialContext(ctx, url)
 	if err != nil {
@@ -57,12 +73,19 @@ func DialAnvil(ctx context.Context, url string) (*Node, error) {
 		rc.Close()
 		return nil, fmt.Errorf("anvil: eth_chainId: %w", err)
 	}
-	if id.ToInt().Cmp(big.NewInt(BaseSepoliaChainID)) != 0 {
+	if !id.ToInt().IsUint64() {
 		rc.Close()
-		return nil, fmt.Errorf("anvil: node has chain id %s, want %d (start it with --chain-id %d)", id.ToInt(), BaseSepoliaChainID, BaseSepoliaChainID)
+		return nil, fmt.Errorf("anvil: node has chain id %s, want %d or %d", id.ToInt(), AnvilChainID, BaseSepoliaChainID)
 	}
-	return &Node{RPC: rc, Client: ethclient.NewClient(rc), URL: url}, nil
+	if err := CheckAnvilChainID(id.ToInt().Uint64()); err != nil {
+		rc.Close()
+		return nil, err
+	}
+	return &Node{RPC: rc, Client: ethclient.NewClient(rc), URL: url, ChainID: id.ToInt().Uint64()}, nil
 }
+
+// Network is the node's CAIP-2 id, e.g. eip155:31337.
+func (n *Node) Network() string { return "eip155:" + strconv.FormatUint(n.ChainID, 10) }
 
 func (n *Node) Close() { n.Client.Close() }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -44,15 +45,21 @@ func TestDialAnvilRefusesWhatIsNotAnvil(t *testing.T) {
 	if _, err := x402.DialAnvil(context.Background(), fakeNode(t, "Geth/v1.14.0-stable", "0x14a34", &other)); err == nil || !strings.Contains(err.Error(), "not anvil") {
 		t.Fatalf("a non-anvil node was accepted: %v", err)
 	}
-	if _, err := x402.DialAnvil(context.Background(), fakeNode(t, "anvil/v1.9.0", "0x7a69", &other)); err == nil || !strings.Contains(err.Error(), "chain id") {
-		t.Fatalf("anvil's default chain id was accepted: %v", err)
+	// Only anvil's own id (31337) and, during the move, 84532: any other chain
+	// id is refused, so a node that calls itself anvil cannot pass for mainnet.
+	for _, id := range []string{"0x1", "0x2105", "0x539", "0xaa36a7", "0x0", "0x7a6a"} {
+		if _, err := x402.DialAnvil(context.Background(), fakeNode(t, "anvil/v1.9.0", id, &other)); err == nil || !strings.Contains(err.Error(), "chain id") {
+			t.Fatalf("anvil at chain id %s was accepted: %v", id, err)
+		}
 	}
 	if other != 0 {
 		t.Fatalf("%d calls beyond the two identity checks reached the node", other)
 	}
-	n, err := x402.DialAnvil(context.Background(), fakeNode(t, "anvil/v1.9.0", "0x14a34", &other))
-	if err != nil {
-		t.Fatal(err)
+	for id, want := range map[string]uint64{"0x7a69": 31337, "0x14a34": 84532} {
+		n, err := x402.DialAnvil(context.Background(), fakeNode(t, "anvil/v1.9.0", id, &other))
+		if err != nil || n.ChainID != want || n.Network() != "eip155:"+strconv.FormatUint(want, 10) {
+			t.Fatalf("anvil at %s: %v", id, err)
+		}
+		n.Close()
 	}
-	n.Close()
 }

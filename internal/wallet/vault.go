@@ -103,10 +103,13 @@ type VaultSigner struct {
 	attempts atomic.Int64
 }
 
-// NewVaultSigner checks the configuration. The chain guard is the same as the
-// local wallet's.
+// NewVaultSigner checks the configuration. It signs only on Base Sepolia
+// (84532), a local anvil node (31337, or 84532 while QuorumVault moves its
+// anvil lane), or the simulated chain in tests (1337). The signer is bound to
+// that one chain: a request or credential naming another is refused
+// (checkAllowed compares the request's network with Network()).
 func NewVaultSigner(cfg VaultConfig) (*VaultSigner, error) {
-	if cfg.ChainID != x402.BaseSepoliaChainID && cfg.ChainID != x402.LocalChainID {
+	if cfg.ChainID != x402.BaseSepoliaChainID && cfg.ChainID != x402.AnvilChainID && cfg.ChainID != x402.LocalChainID {
 		return nil, ErrRefusedChain
 	}
 	if cfg.Client == nil {

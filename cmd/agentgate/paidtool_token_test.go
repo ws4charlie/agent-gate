@@ -38,7 +38,7 @@ func TestPaidtoolTokenFlagRefusals(t *testing.T) {
 	}
 }
 
-// localAnvil returns $AG_ANVIL_URL (a loopback node, chain id 84532) or skips,
+// localAnvil returns $AG_ANVIL_URL (a loopback node, chain id 31337 or 84532) or skips,
 // as the e2e chain tests do; AG_REQUIRE_ANVIL=1 turns the skip into a failure.
 func localAnvil(t *testing.T) string {
 	t.Helper()
@@ -47,7 +47,7 @@ func localAnvil(t *testing.T) string {
 		if os.Getenv("AG_REQUIRE_ANVIL") == "1" {
 			t.Fatal("AG_REQUIRE_ANVIL=1 but AG_ANVIL_URL is not set")
 		}
-		t.Skip("AG_ANVIL_URL not set: start `anvil --chain-id 84532` and set it to run this test")
+		t.Skip("AG_ANVIL_URL not set: start `anvil --chain-id 31337` (84532 is still accepted) and set it to run this test")
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "http" {
@@ -130,7 +130,7 @@ func TestPaidtoolUsesExistingToken(t *testing.T) {
 	if err != nil || ch == nil {
 		t.Fatalf("probe: challenge %v, err %v", ch, err)
 	}
-	req, err := ch.Pick("eip155:84532")
+	req, err := ch.Pick(node.Network()) // the 402 names the chain the node reports
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestPaidtoolUsesExistingToken(t *testing.T) {
 	}
 	a := x402.Auth{From: payerAddr, To: payTo, Value: amount, ValidAfter: big.NewInt(0),
 		ValidBefore: big.NewInt(time.Now().Unix() + 30), Nonce: nonce}
-	dom := x402.Domain{Name: req.Extra.Name, Version: req.Extra.Version, ChainID: big.NewInt(int64(x402.BaseSepoliaChainID)), Contract: ecommon.HexToAddress(req.Asset)}
+	dom := x402.Domain{Name: req.Extra.Name, Version: req.Extra.Version, ChainID: new(big.Int).SetUint64(node.ChainID), Contract: ecommon.HexToAddress(req.Asset)}
 	sig, err := x402.Sign(payer, x402.Digest(dom, a))
 	if err != nil {
 		t.Fatal(err)

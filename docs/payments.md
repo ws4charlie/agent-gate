@@ -56,4 +56,5 @@ This proves the payment path works on a public network. It doesn't prove it work
 - This runs on testnets only, and the wallet refuses mainnet.
 - An agent's balance is a number in our ledger, while the USDC in the wallet is the money itself. A payment needs both.
 - All agents share one wallet: budgets are separate, funds aren't.
+- A local anvil node is a private chain with its own id, 31337, so nothing signed on it is valid on Base Sepolia (84532). While QuorumVault moves its anvil lane, an anvil at 84532 is still accepted. The gateway and the paid tool read the id from the node at start-up and refuse any other.
 - On a local anvil chain the paid tool deploys its own mock USDC, unless `--token` (`AG_PAIDTOOL_TOKEN`) names a token that already exists there; the gateway pays in whatever token the tool asks for.

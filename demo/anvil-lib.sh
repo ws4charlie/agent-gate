@@ -1,5 +1,5 @@
-# Sourced by the demos for `--network anvil`: start a local anvil node with the
-# Base Sepolia chain id if none is running, and stop only what we started.
+# Sourced by the demos for `--network anvil`: start a local anvil node (its
+# own private chain id, 31337) if none is running, and stop only what we started.
 # Needs `anvil` from Foundry. Nothing here touches a real network: the
 # agentgate binary itself refuses a node that does not call itself anvil.
 
@@ -18,11 +18,11 @@ anvil_up() { # anvil_up <workdir>
   else
     command -v anvil >/dev/null || { echo "anvil not found: install Foundry (https://getfoundry.sh)" >&2; exit 2; }
     local port="${ANVIL_URL##*:}"
-    anvil --chain-id 84532 --port "${port%%/*}" --silent > "$1/anvil.log" 2>&1 &
+    anvil --chain-id 31337 --port "${port%%/*}" --silent > "$1/anvil.log" 2>&1 &
     ANVIL_PID=$!
     for _ in $(seq 100); do [ -n "$(anvil_rpc eth_chainId)" ] && break; sleep 0.1; done
     [ -n "$(anvil_rpc eth_chainId)" ] || { cat "$1/anvil.log" >&2; echo "anvil did not start" >&2; exit 1; }
-    echo "started anvil (chain id 84532) at $ANVIL_URL"
+    echo "started anvil (chain id 31337) at $ANVIL_URL"
   fi
 }
 

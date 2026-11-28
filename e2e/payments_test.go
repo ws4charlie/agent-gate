@@ -83,6 +83,7 @@ type rig struct {
 	toolLies atomic.Bool  // the tool keeps the signed payment, answers 402, and may submit it later
 	kept     atomic.Value // string: the PAYMENT-SIGNATURE header the lying tool kept
 	submit   http.Handler // the real paid handler: what the tool uses to cash the kept authorization
+	toolURL  string
 }
 
 // newRig builds the anvil rig.
@@ -120,14 +121,14 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 	if r.vs, err = wallet.NewVaultSigner(wallet.VaultConfig{Client: cli, CredKey: credKey, Audience: "qv-e2e", WalletID: r.qv.WalletID,
-		From: r.qv.From, ChainID: x402.BaseSepoliaChainID}); err != nil {
+		From: r.qv.From, ChainID: node.ChainID}); err != nil {
 		t.Fatal(err)
 	}
 	r.vs.SetClock(r.clock.Now)
 	payee, _ := crypto.GenerateKey() // an address nobody holds the key to
 	r.payTo = crypto.PubkeyToAddress(payee.PublicKey)
 
-	ver := x402.NewVerifier(x402.Config{Network: x402.NetworkBaseSepolia, Token: r.token, TokenName: "USDC", TokenVersion: "2",
+	ver := x402.NewVerifier(x402.Config{Network: node.Network(), Token: r.token, TokenName: "USDC", TokenVersion: "2",
 		PayTo: r.payTo, Chain: r.chain, Now: r.clock.Now})
 	inner := paidtool.Handler(ver)
 	r.submit = inner
@@ -147,6 +148,7 @@ func newRig(t *testing.T) *rig {
 		inner.ServeHTTP(rw, rq)
 	}))
 	t.Cleanup(tool.Close)
+	r.toolURL = tool.URL
 
 	r.pool = dbtest.New(t)
 	r.led = ledger.New(r.pool)
@@ -327,6 +329,27 @@ func TestAnvilPaymentSettles(t *testing.T) {
 	}
 	if r.qv.Signs() != 1 || r.vs.Attempts() != 1 || len(r.qv.Bodies()) != 1 {
 		t.Fatalf("vault signs %d, attempts %d, bodies %d", r.qv.Signs(), r.vs.Attempts(), len(r.qv.Bodies()))
+	}
+	// One chain end to end, the one the node reports: the paid tool's 402,
+	// the signer, the credential Vault checked and the domain it signed.
+	if r.vs.Network() != r.node.Network() || raw.ChainId().Uint64() != r.node.ChainID {
+		t.Fatalf("signer %s, transaction chain %s, node %s", r.vs.Network(), raw.ChainId(), r.node.Network())
+	}
+	var sent struct {
+		Payload struct {
+			Domain struct {
+				ChainID uint64 `json:"chainId"`
+			} `json:"domain"`
+		} `json:"payload"`
+		Credential struct {
+			Chain string `json:"chain"`
+		} `json:"credential"`
+	}
+	if err := json.Unmarshal(r.qv.Bodies()[0], &sent); err != nil || sent.Credential.Chain != r.node.Network() || sent.Payload.Domain.ChainID != r.node.ChainID {
+		t.Fatalf("Vault got credential chain %q, domain chain %d (%v); node is %s", sent.Credential.Chain, sent.Payload.Domain.ChainID, err, r.node.Network())
+	}
+	if ch, _, err := (&x402.Fetcher{}).Probe(ctx, http.MethodPost, r.toolURL+"/echo", []byte(`{"text":"hi"}`)); err != nil || ch == nil || len(ch.Required.Accepts) != 1 || ch.Required.Accepts[0].Network != r.node.Network() {
+		t.Fatalf("the 402 does not name the node's chain %s: %+v %v", r.node.Network(), ch, err)
 	}
 	if got := r.entryKinds(); got != "hold,settle" {
 		t.Fatalf("entries %s", got)

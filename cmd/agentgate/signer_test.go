@@ -43,17 +43,22 @@ func vaultSignerEnv(t *testing.T) map[string]string {
 	return env
 }
 
-// anvil and base-sepolia sign through QuorumVault, whatever else is set.
+// anvil and base-sepolia sign through QuorumVault, whatever else is set; on
+// anvil the signer's chain is the one the node reported.
 func TestVaultSignerFromEnv(t *testing.T) {
 	env := vaultSignerEnv(t)
-	for _, network := range []string{"anvil", "base-sepolia"} {
-		pay, err := loadPayments(PaymentsFile{Network: network, MaxTxUSD: "0.25"})
+	for _, c := range []struct {
+		network  string
+		reported uint64
+		want     string
+	}{{"anvil", 31337, "eip155:31337"}, {"anvil", 84532, "eip155:84532"}, {"base-sepolia", 0, "eip155:84532"}} {
+		pay, err := loadPayments(PaymentsFile{Network: c.network, MaxTxUSD: "0.25"}, c.reported)
 		if err != nil {
-			t.Fatalf("%s: %v", network, err)
+			t.Fatalf("%s: %v", c.network, err)
 		}
 		v, ok := pay.Wallet.(*wallet.VaultSigner)
-		if !ok || !strings.EqualFold(v.Address().Hex(), env[EnvVaultWalletAddress]) || v.Network() != "eip155:84532" || v.Audience() != "qv-test" {
-			t.Fatalf("%s: signer %#v", network, pay.Wallet)
+		if !ok || !strings.EqualFold(v.Address().Hex(), env[EnvVaultWalletAddress]) || v.Network() != c.want || v.Audience() != "qv-test" {
+			t.Fatalf("%s at %d: signer %#v", c.network, c.reported, pay.Wallet)
 		}
 	}
 }
@@ -65,11 +70,11 @@ func TestSimSignerIsEphemeral(t *testing.T) {
 		if withVault {
 			vaultSignerEnv(t)
 		}
-		a, err := loadPayments(PaymentsFile{Network: "sim", MaxTxUSD: "0.25"})
+		a, err := loadPayments(PaymentsFile{Network: "sim", MaxTxUSD: "0.25"}, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		b, err := loadPayments(PaymentsFile{Network: "sim"})
+		b, err := loadPayments(PaymentsFile{Network: "sim"}, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -119,7 +124,7 @@ func TestVaultSignerRefusesIncompleteSetup(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			vaultSignerEnv(t)
 			t.Setenv(name, "")
-			_, err := loadPayments(PaymentsFile{Network: "anvil"})
+			_, err := loadPayments(PaymentsFile{Network: "anvil"}, 31337)
 			if err == nil || !strings.Contains(err.Error(), name) {
 				t.Fatalf("missing %s: %v", name, err)
 			}
@@ -137,14 +142,14 @@ func TestVaultSignerRefusesIncompleteSetup(t *testing.T) {
 		t.Run(b.name+"="+b.val, func(t *testing.T) {
 			vaultSignerEnv(t)
 			t.Setenv(b.name, b.val)
-			if _, err := loadPayments(PaymentsFile{Network: "anvil"}); err == nil || !strings.Contains(err.Error(), b.want) {
+			if _, err := loadPayments(PaymentsFile{Network: "anvil"}, 31337); err == nil || !strings.Contains(err.Error(), b.want) {
 				t.Fatalf("got %v, want it to mention %q", err, b.want)
 			}
 		})
 	}
 	t.Run("mainnet", func(t *testing.T) {
 		vaultSignerEnv(t)
-		if _, err := loadPayments(PaymentsFile{Network: "base"}); err == nil {
+		if _, err := loadPayments(PaymentsFile{Network: "base"}, 0); err == nil {
 			t.Fatal("unknown network accepted")
 		}
 	})
@@ -176,7 +181,7 @@ func TestPolicyVersionOnlyForVault(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "broken.cedar"), 0o700); err != nil { // a *.cedar that cannot be read
 		t.Fatal(err)
 	}
-	pay, err := loadPayments(PaymentsFile{Network: "sim"})
+	pay, err := loadPayments(PaymentsFile{Network: "sim"}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +190,7 @@ func TestPolicyVersionOnlyForVault(t *testing.T) {
 	}
 
 	vaultSignerEnv(t)
-	vpay, err := loadPayments(PaymentsFile{Network: "anvil"})
+	vpay, err := loadPayments(PaymentsFile{Network: "anvil"}, 31337)
 	if err != nil {
 		t.Fatal(err)
 	}

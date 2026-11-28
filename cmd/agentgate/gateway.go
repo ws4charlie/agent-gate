@@ -233,11 +233,7 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		pay, err := loadPayments(pf)
-		if err != nil {
-			return err
-		}
-		pl, err := paymentsLookup(ctx, pf)
+		pay, pl, err := startPayments(ctx, pf)
 		if err != nil {
 			return err
 		}
@@ -529,7 +525,7 @@ func report(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		reader, err := chainReader(ctx, pf)
+		reader, _, err := chainReader(ctx, pf)
 		if err != nil {
 			return err
 		}
