@@ -1,6 +1,5 @@
-# CI render: wallet signer, sim network, paid tool, NetworkPolicy. Secret names only.
+# CI render: sim network (throw-away key, no Vault), paid tool, NetworkPolicy. Secret names only.
 database: {existingSecret: agentgate-db}
-signer: wallet
 providerKeys: {existingSecret: agentgate-provider-keys}
 gateway:
   registryEnforce: true
@@ -14,12 +13,9 @@ payments:
   network: sim
   maxTxUSD: "0.5"
   paidtoolTools: [echo, premium]
-wallet: {existingSecret: agentgate-wallet}
 paidtool:
   enabled: true
   payTo: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
-  fund: "5"
-  fundAddress: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 networkPolicy:
   enabled: true
   egress:

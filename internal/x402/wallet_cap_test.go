@@ -52,7 +52,7 @@ func TestWalletCapCannotBeSwitchedOff(t *testing.T) {
 
 func TestWalletRefusesEveryOtherChain(t *testing.T) {
 	key, _ := crypto.GenerateKey()
-	for _, id := range []uint64{0, 1, 10, 137, 8453, 84531, 11155111} {
+	for _, id := range []uint64{0, 1, 10, 137, 8453, 84531, x402.BaseSepoliaChainID, 31337, 11155111} {
 		if _, err := wallet.New(key, id); !errors.Is(err, wallet.ErrRefusedChain) {
 			t.Errorf("chain %d accepted", id)
 		}

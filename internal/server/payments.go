@@ -47,8 +47,8 @@ const (
 // policy.Evaluate. Tools maps names to URLs for the first door only: clients
 // name tools, they never supply URLs (no SSRF).
 //
-// Wallet is the signer: the local key (*wallet.Wallet, the default) or
-// QuorumVault (*wallet.VaultSigner, AG_SIGNER=vault). Either way only a
+// Wallet is the signer: QuorumVault (*wallet.VaultSigner) on a real chain, or
+// a throw-away local key (*wallet.Wallet) on the simulated chain. Either way only a
 // policy.Allowed gets an authorization prepared (I10).
 type Payments struct {
 	Wallet  wallet.Signer

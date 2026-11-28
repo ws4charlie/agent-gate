@@ -49,7 +49,6 @@ AG="$WORK/agentgate"
 createdb "$DB"
 export DATABASE_URL="postgres:///$DB?host=$PGHOST" AG_LISTEN="127.0.0.1:$PORT"
 export FAKE_API_KEY=demo-upstream-key UPSTREAM_MCP_AUTH="Bearer demo-mcp-credential"
-export AG_WALLET_KEY_FILE="$WORK/wallet.key"
 
 # Model upstream: calls take 300 ms and streams are long (100 events, 100 ms apart), so overlap and kill are visible.
 "$WORK/fakeupstream" -latency 300ms -chunk-delay 100ms -chunks 100 > "$WORK/fake.out" &
@@ -68,12 +67,9 @@ echo "{\"models\": {\"chat\": $row}}" > "$WORK/prices.json"
 echo "{\"servers\": {\"up\": {\"url\": \"$MCPURL\", \"auth_env\": \"UPSTREAM_MCP_AUTH\"}}}" > "$WORK/mcp.json"
 export AG_PROVIDERS="$WORK/providers.json" AG_PRICES="$WORK/prices.json"
 
-# A simulated chain with a paid tool; the wallet key stays in a 0600 file.
-WALLET="$("$AG" wallet new --file "$AG_WALLET_KEY_FILE")"
+# A simulated chain with a paid tool. On sim the gateway signs with a throw-away
+# key it makes at start, so the paid tool starts after it and funds that address.
 PAYEE=0x70997970C51812dc3A010C7d01b50e0d17dc79C8   # a public test address, not a secret
-"$AG" paidtool --network sim --listen "127.0.0.1:$TOOLPORT" --pay-to "$PAYEE" --fund 5 --fund-address "$WALLET" > "$WORK/tool.log" 2>&1 &
-PIDS+=($!)
-for _ in $(seq 100); do curl -sf "http://127.0.0.1:$TOOLPORT/healthz" >/dev/null 2>&1 && break; sleep 0.1; done
 cat > "$WORK/payments.json" <<JSON
 {"network": "sim", "chain_query_url": "http://127.0.0.1:$TOOLPORT",
  "tools": {"echo": "http://127.0.0.1:$TOOLPORT/echo", "premium": "http://127.0.0.1:$TOOLPORT/premium"}}
@@ -86,6 +82,12 @@ ACCT="$("$AG" account create --name demo)"
 PIDS+=($!)
 for _ in $(seq 100); do curl -sf "$AG_URL/healthz" >/dev/null 2>&1 && break; sleep 0.1; done
 curl -sf "$AG_URL/healthz" >/dev/null || { cat "$WORK/gw.log"; fail "the gateway did not start"; }
+WALLET="$(sed -n 's/.*x402 signer: ephemeral sim key.* wallet=\(0x[0-9a-fA-F]\{40\}\).*/\1/p' "$WORK/gw.log" | head -n1)"
+[ -n "$WALLET" ] || { cat "$WORK/gw.log"; fail "no sim signer address in the gateway log"; }
+"$AG" paidtool --network sim --listen "127.0.0.1:$TOOLPORT" --pay-to "$PAYEE" --fund 5 --fund-address "$WALLET" > "$WORK/tool.log" 2>&1 &
+PIDS+=($!)
+for _ in $(seq 100); do curl -sf "http://127.0.0.1:$TOOLPORT/healthz" >/dev/null 2>&1 && break; sleep 0.1; done
+curl -sf "http://127.0.0.1:$TOOLPORT/healthz" >/dev/null || { cat "$WORK/tool.log"; fail "the paid tool did not start"; }
 mkkey() { "$AG" agent create --account "$ACCT" --name "$1" "${@:2}" 2>/dev/null; }
 agent() { local key="$1"; shift; AG_KEY="$key" "$PY" "demo/agents/$@"; }   # agent <key> <script> [args]
 

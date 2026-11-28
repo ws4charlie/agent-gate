@@ -64,11 +64,19 @@ app.kubernetes.io/component: {{ .component }}
 http://{{ include "agentgate.paidtoolHost" . }}:{{ .Values.paidtool.port }}
 {{- end -}}
 
+{{/* "true" when QuorumVault signs: payments on a chain (anvil, base-sepolia).
+On sim the gateway signs with a throw-away key; there is no other signer. */}}
+{{- define "agentgate.vault" -}}
+{{- if and .Values.payments.enabled (has .Values.payments.network (list "anvil" "base-sepolia")) -}}true{{- end -}}
+{{- end -}}
+
 {{/* Fails the render on settings that cannot work. */}}
 {{- define "agentgate.validate" -}}
 {{- $_ := required "database.existingSecret is required (a Secret holding the Postgres URL)" .Values.database.existingSecret -}}
-{{- if not (has .Values.signer (list "wallet" "vault")) -}}
-{{- fail (printf "signer is %q: want wallet or vault" .Values.signer) -}}
+{{- range $old := list "signer" "wallet" -}}
+{{- if hasKey $.Values $old -}}
+{{- fail (printf "%s was removed: the gateway signs on anvil and base-sepolia only through QuorumVault (the vault.* and gateCred.* values replace it) and on sim with a throw-away key; delete %s from your values" $old $old) -}}
+{{- end -}}
 {{- end -}}
 {{- if and .Values.image.digest (not (regexMatch "^sha256:[0-9a-f]{64}$" .Values.image.digest)) -}}
 {{- fail "image.digest must be sha256:<64 hex>" -}}
@@ -83,9 +91,6 @@ http://{{ include "agentgate.paidtoolHost" . }}:{{ .Values.paidtool.port }}
 {{- end -}}
 {{- if and .Values.paidtool.enabled .Values.payments.enabled .Values.payments.paidtoolTools (ne .Values.payments.network .Values.paidtool.network) -}}
 {{- fail (printf "payments.network (%s) and paidtool.network (%s) differ, but payments.paidtoolTools sends payments to this paid tool" .Values.payments.network .Values.paidtool.network) -}}
-{{- end -}}
-{{- if not (regexMatch "^[A-Za-z0-9._-]+$" .Values.wallet.key) -}}
-{{- fail "wallet.key must be a plain file name" -}}
 {{- end -}}
 {{- if not (regexMatch "^[A-Za-z0-9._-]+$" .Values.gateCred.key) -}}
 {{- fail "gateCred.key must be a plain file name" -}}
@@ -106,10 +111,13 @@ http://{{ include "agentgate.paidtoolHost" . }}:{{ .Values.paidtool.port }}
 {{- if and .Values.paidtool.fund (not .Values.paidtool.fundAddress) -}}
 {{- fail "paidtool.fund needs paidtool.fundAddress" -}}
 {{- end -}}
+{{- if and (eq .Values.paidtool.network "sim") (or .Values.paidtool.fund .Values.paidtool.fundAddress) -}}
+{{- fail "paidtool.fund/fundAddress on sim: the gateway's sim key is made at start and never known in advance, so no address can be funded and sim payments are not payable in Kubernetes; to pay, use network anvil or base-sepolia, where QuorumVault signs (vault.*, gateCred.*)" -}}
+{{- end -}}
 {{- if .Values.networkPolicy.enabled -}}
 {{- $eg := .Values.networkPolicy.egress -}}
 {{- $groups := list "postgres" -}}
-{{- if eq .Values.signer "vault" -}}{{- $groups = append $groups "vault" -}}{{- $groups = append $groups "tokenProvider" -}}{{- end -}}
+{{- if include "agentgate.vault" $ -}}{{- $groups = append $groups "vault" -}}{{- $groups = append $groups "tokenProvider" -}}{{- end -}}
 {{- range $g := $groups -}}
 {{- $rules := index $eg $g -}}
 {{- if not $rules -}}
@@ -132,22 +140,16 @@ http://{{ include "agentgate.paidtoolHost" . }}:{{ .Values.paidtool.port }}
 {{- if and (eq .Values.payments.network "sim") (not .Values.payments.chainQueryURL) (not .Values.paidtool.enabled) -}}
 {{- fail "payments.network=sim needs payments.chainQueryURL or paidtool.enabled" -}}
 {{- end -}}
-{{- if eq .Values.signer "wallet" -}}
-{{- $_ := required "wallet.existingSecret is required with payments.enabled and signer=wallet" .Values.wallet.existingSecret -}}
 {{- end -}}
-{{- end -}}
-{{- if eq .Values.signer "vault" -}}
-{{- if not .Values.payments.enabled -}}
-{{- fail "signer=vault needs payments.enabled (the signer only signs payments)" -}}
-{{- end -}}
+{{- if include "agentgate.vault" . -}}
 {{- $v := .Values.vault -}}
 {{- range $k := list "url" "walletId" "walletAddress" "tokenUrl" "clientId" "audience" "existingSecret" -}}
 {{- if not (index $v $k) -}}
-{{- fail (printf "vault.%s is required with signer=vault" $k) -}}
+{{- fail (printf "vault.%s is required with payments on %s (only QuorumVault signs on a chain)" $k $.Values.payments.network) -}}
 {{- end -}}
 {{- end -}}
-{{- $_ := required "gateCred.existingSecret is required with signer=vault" .Values.gateCred.existingSecret -}}
-{{- $_ := required "gateCred.kid is required with signer=vault" .Values.gateCred.kid -}}
+{{- $_ := required "gateCred.existingSecret is required with payments on anvil or base-sepolia" .Values.gateCred.existingSecret -}}
+{{- $_ := required "gateCred.kid is required with payments on anvil or base-sepolia" .Values.gateCred.kid -}}
 {{- end -}}
 {{- if and .Values.gateway.cedarEnforce (not .Values.gateway.cedarPolicies) -}}
 {{- fail "gateway.cedarEnforce needs gateway.cedarPolicies" -}}

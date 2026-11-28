@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,9 +14,7 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/wallet"
 )
 
-// vaultSignerEnv sets a complete AG_SIGNER=vault environment against a fake
-// Vault, plus a local wallet key that must never be read: an unreadable key
-// file and a garbage AG_WALLET_KEY.
+// vaultSignerEnv sets a complete QuorumVault environment against a fake Vault.
 func vaultSignerEnv(t *testing.T) map[string]string {
 	t.Helper()
 	f := vaulttest.New(t, vaulttest.Options{})
@@ -23,7 +23,6 @@ func vaultSignerEnv(t *testing.T) map[string]string {
 		t.Fatal(err)
 	}
 	env := map[string]string{
-		EnvSigner:                     "vault",
 		vaultsign.EnvURL:              f.URL,
 		vaultsign.EnvWalletID:         f.WalletID,
 		vaultsign.EnvCert:             f.ClientCert,
@@ -37,8 +36,6 @@ func vaultSignerEnv(t *testing.T) map[string]string {
 		gatecred.EnvKid:               "gate-test-1",
 		EnvVaultAudience:              "qv-test",
 		EnvVaultWalletAddress:         f.From.Hex(),
-		wallet.EnvKey:                 "not-a-key",
-		wallet.EnvKeyFile:             filepath.Join(t.TempDir(), "missing.key"),
 	}
 	for k, v := range env {
 		t.Setenv(k, v)
@@ -46,21 +43,73 @@ func vaultSignerEnv(t *testing.T) map[string]string {
 	return env
 }
 
+// anvil and base-sepolia sign through QuorumVault, whatever else is set.
 func TestVaultSignerFromEnv(t *testing.T) {
 	env := vaultSignerEnv(t)
-	pay, err := loadPayments(PaymentsFile{Network: "sim", MaxTxUSD: "0.25"})
-	if err != nil {
-		t.Fatalf("vault mode must not need AG_WALLET_KEY: %v", err)
+	for _, network := range []string{"anvil", "base-sepolia"} {
+		pay, err := loadPayments(PaymentsFile{Network: network, MaxTxUSD: "0.25"})
+		if err != nil {
+			t.Fatalf("%s: %v", network, err)
+		}
+		v, ok := pay.Wallet.(*wallet.VaultSigner)
+		if !ok || !strings.EqualFold(v.Address().Hex(), env[EnvVaultWalletAddress]) || v.Network() != "eip155:84532" || v.Audience() != "qv-test" {
+			t.Fatalf("%s: signer %#v", network, pay.Wallet)
+		}
 	}
-	v, ok := pay.Wallet.(*wallet.VaultSigner)
-	if !ok || !strings.EqualFold(v.Address().Hex(), env[EnvVaultWalletAddress]) || v.Network() != "eip155:1337" || v.Audience() != "qv-test" {
-		t.Fatalf("signer %#v", pay.Wallet)
+}
+
+// sim signs with a throw-away key made at start: nothing to configure, a new
+// address every start, and never a Vault signer even when Vault is set up.
+func TestSimSignerIsEphemeral(t *testing.T) {
+	for _, withVault := range []bool{false, true} {
+		if withVault {
+			vaultSignerEnv(t)
+		}
+		a, err := loadPayments(PaymentsFile{Network: "sim", MaxTxUSD: "0.25"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := loadPayments(PaymentsFile{Network: "sim"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w, ok := a.Wallet.(*wallet.Wallet)
+		if !ok || w.Network() != "eip155:1337" || w.MaxTx() != 250_000_000 {
+			t.Fatalf("vault set %v: signer %#v", withVault, a.Wallet)
+		}
+		if a.Wallet.Address() == b.Wallet.Address() {
+			t.Fatal("two starts reused one sim key")
+		}
 	}
-	// The same environment in wallet mode does read the (bad) key: proof that
-	// vault mode skipped it rather than tolerating it.
-	t.Setenv(EnvSigner, "wallet")
-	if _, err := loadPayments(PaymentsFile{Network: "sim"}); err == nil {
-		t.Fatal("wallet mode accepted a garbage AG_WALLET_KEY")
+}
+
+// The local-key signer's settings are gone: each one, set to anything, stops
+// the gateway with its name and a pointer to the Vault settings.
+func TestRetiredSignerEnvRefused(t *testing.T) {
+	if len(retiredEnv) != 3 {
+		t.Fatalf("retiredEnv = %v", retiredEnv)
+	}
+	for _, name := range retiredEnv {
+		t.Setenv(name, "")
+	}
+	if err := refuseRetiredEnv(); err != nil {
+		t.Fatalf("nothing set: %v", err)
+	}
+	for _, name := range retiredEnv {
+		for _, val := range []string{"wallet", "vault", " ", "/tmp/w.key"} {
+			t.Run(name+"="+val, func(t *testing.T) {
+				t.Setenv(name, val)
+				err := refuseRetiredEnv()
+				if err == nil || !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "AG_VAULT_") {
+					t.Fatalf("got %v", err)
+				}
+				// serve refuses before it touches the database or anything else.
+				t.Setenv("DATABASE_URL", "postgres://127.0.0.1:1/none")
+				if err := serve(context.Background(), nil, io.Discard); err == nil || !strings.Contains(err.Error(), name) {
+					t.Fatalf("serve: %v", err)
+				}
+			})
+		}
 	}
 }
 
@@ -70,14 +119,13 @@ func TestVaultSignerRefusesIncompleteSetup(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			vaultSignerEnv(t)
 			t.Setenv(name, "")
-			_, err := loadPayments(PaymentsFile{Network: "sim"})
+			_, err := loadPayments(PaymentsFile{Network: "anvil"})
 			if err == nil || !strings.Contains(err.Error(), name) {
 				t.Fatalf("missing %s: %v", name, err)
 			}
 		})
 	}
 	bad := []struct{ name, val, want string }{
-		{EnvSigner, "hsm", "want wallet or vault"},
 		{EnvVaultWalletAddress, "0x1234", "not a 0x address"},
 		{EnvVaultCredTTL, "5s", EnvVaultCredTTL},
 		{EnvVaultCredTTL, "120s", EnvVaultCredTTL},
@@ -89,7 +137,7 @@ func TestVaultSignerRefusesIncompleteSetup(t *testing.T) {
 		t.Run(b.name+"="+b.val, func(t *testing.T) {
 			vaultSignerEnv(t)
 			t.Setenv(b.name, b.val)
-			if _, err := loadPayments(PaymentsFile{Network: "sim"}); err == nil || !strings.Contains(err.Error(), b.want) {
+			if _, err := loadPayments(PaymentsFile{Network: "anvil"}); err == nil || !strings.Contains(err.Error(), b.want) {
 				t.Fatalf("got %v, want it to mention %q", err, b.want)
 			}
 		})
@@ -121,29 +169,23 @@ func TestPolicyVersion(t *testing.T) {
 	}
 }
 
-// fix1 #4: only the Vault signer needs a policy version; the default startup
+// fix1 #4: only the Vault signer needs a policy version; the sim startup
 // reads no policy files for it, so a policy dir it cannot hash changes nothing.
 func TestPolicyVersionOnlyForVault(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, "broken.cedar"), 0o700); err != nil { // a *.cedar that cannot be read
 		t.Fatal(err)
 	}
-	t.Setenv(wallet.EnvKey, "")
-	keyFile := filepath.Join(t.TempDir(), "wallet.key")
-	if _, err := wallet.NewKeyFile(keyFile); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv(wallet.EnvKeyFile, keyFile)
 	pay, err := loadPayments(PaymentsFile{Network: "sim"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := setPolicyVersion(pay, dir, true); err != nil || pay.PolicyVersion != "" {
-		t.Fatalf("wallet mode: %v %q", err, pay.PolicyVersion)
+		t.Fatalf("sim: %v %q", err, pay.PolicyVersion)
 	}
 
 	vaultSignerEnv(t)
-	vpay, err := loadPayments(PaymentsFile{Network: "sim"})
+	vpay, err := loadPayments(PaymentsFile{Network: "anvil"})
 	if err != nil {
 		t.Fatal(err)
 	}

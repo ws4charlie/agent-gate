@@ -78,14 +78,32 @@ func checkNetwork(network string) error {
 	return fmt.Errorf(`payments config: "network" is %q: want sim, anvil or base-sepolia`, network)
 }
 
-// Signer selection. AG_SIGNER=wallet (the default) signs with the local key
-// in AG_WALLET_KEY; AG_SIGNER=vault asks QuorumVault, and never loads that key.
+// Signer selection follows the network, and no setting can change it: on a
+// real chain (anvil, base-sepolia) only QuorumVault signs; on the in-process
+// simulated chain the gateway signs with a throw-away key it makes at start.
 const (
-	EnvSigner             = "AG_SIGNER"
 	EnvVaultAudience      = "AG_VAULT_AUDIENCE"
 	EnvVaultWalletAddress = "AG_VAULT_WALLET_ADDRESS"
 	EnvVaultCredTTL       = "AG_VAULT_CRED_TTL" // Go duration, e.g. 60s; default and most 90s
 )
+
+// retiredEnv are the settings of the local-key signer the gateway once used
+// on real chains. A deployment that still sets one must fail loudly, never
+// start with a different signer than it asked for.
+var retiredEnv = []string{"AG_SIGNER", "AG_WALLET_KEY", "AG_WALLET_KEY_FILE"}
+
+// refuseRetiredEnv stops the gateway when any retired setting is non-empty.
+func refuseRetiredEnv() error {
+	for _, n := range retiredEnv {
+		if os.Getenv(n) != "" {
+			return fmt.Errorf("%s is set, but the gateway no longer has a local-key signer: on anvil and base-sepolia it signs only through QuorumVault (the AG_VAULT_* settings replace it), on sim with a throw-away key; unset %s", n, n)
+		}
+	}
+	return nil
+}
+
+// vaultErr prefixes every QuorumVault setup error.
+const vaultErr = "x402 signer (QuorumVault)"
 
 func loadPayments(f PaymentsFile) (*server.Payments, error) {
 	chainID, err := chainIDFor(f.Network)
@@ -100,31 +118,27 @@ func loadPayments(f PaymentsFile) (*server.Payments, error) {
 		}
 		maxTx = n
 	}
-	switch mode := strings.TrimSpace(os.Getenv(EnvSigner)); mode {
-	case "", "wallet":
-		key, err := wallet.LoadKey()
+	if f.Network == "sim" {
+		key, err := crypto.GenerateKey() // lives in this process only; never read from env or file
 		if err != nil {
 			return nil, err
 		}
-		w, err := wallet.New(key, chainID) // refuses any chain but 84532 and the local sim
+		w, err := wallet.New(key, chainID) // refuses every chain but the simulated one
 		if err != nil {
 			return nil, err
 		}
 		w.SetMaxTx(maxTx)
 		return &server.Payments{Wallet: w, Tools: f.Tools}, nil
-	case "vault":
-		v, err := loadVaultSigner(chainID)
-		if err != nil {
-			return nil, err
-		}
-		v.SetMaxTx(maxTx)
-		return &server.Payments{Wallet: v, Tools: f.Tools}, nil
-	default:
-		return nil, fmt.Errorf("%s=%q: want wallet or vault", EnvSigner, mode)
 	}
+	v, err := loadVaultSigner(chainID)
+	if err != nil {
+		return nil, err
+	}
+	v.SetMaxTx(maxTx)
+	return &server.Payments{Wallet: v, Tools: f.Tools}, nil
 }
 
-// vaultEnv is every setting AG_SIGNER=vault needs, in the order it is reported.
+// vaultEnv is every setting the QuorumVault signer needs, in the order it is reported.
 var vaultEnv = []string{vaultsign.EnvURL, vaultsign.EnvWalletID, vaultsign.EnvCert, vaultsign.EnvKey, vaultsign.EnvCA,
 	vaultsign.EnvTokenURL, vaultsign.EnvClientID, vaultsign.EnvClientSecretFile, gatecred.EnvKid, EnvVaultAudience, EnvVaultWalletAddress}
 
@@ -138,45 +152,45 @@ func loadVaultSigner(chainID uint64) (*wallet.VaultSigner, error) {
 		}
 	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("%s=vault: missing %s", EnvSigner, strings.Join(missing, ", "))
+		return nil, fmt.Errorf("%s: missing %s", vaultErr, strings.Join(missing, ", "))
 	}
 	addr := strings.TrimSpace(os.Getenv(EnvVaultWalletAddress))
 	if !ecommon.IsHexAddress(addr) {
-		return nil, fmt.Errorf("%s=vault: %s is not a 0x address", EnvSigner, EnvVaultWalletAddress)
+		return nil, fmt.Errorf("%s: %s is not a 0x address", vaultErr, EnvVaultWalletAddress)
 	}
 	var ttl time.Duration
 	if s := strings.TrimSpace(os.Getenv(EnvVaultCredTTL)); s != "" {
 		d, err := time.ParseDuration(s)
 		if err != nil || d < wallet.MinVaultTTL || d > gatecred.DefaultTTL {
-			return nil, fmt.Errorf("%s=vault: %s=%q: want a duration from %s to %s", EnvSigner, EnvVaultCredTTL, s, wallet.MinVaultTTL, gatecred.DefaultTTL)
+			return nil, fmt.Errorf("%s: %s=%q: want a duration from %s to %s", vaultErr, EnvVaultCredTTL, s, wallet.MinVaultTTL, gatecred.DefaultTTL)
 		}
 		ttl = d
 	}
 	cfg, err := vaultsign.ConfigFromEnv()
 	if err != nil {
-		return nil, fmt.Errorf("%s=vault: %w", EnvSigner, err)
+		return nil, fmt.Errorf("%s: %w", vaultErr, err)
 	}
 	client, err := vaultsign.New(*cfg)
 	if err != nil {
-		return nil, fmt.Errorf("%s=vault: %w", EnvSigner, err)
+		return nil, fmt.Errorf("%s: %w", vaultErr, err)
 	}
 	key, err := gatecred.LoadKey() // $AG_GATE_CRED_KEY_FILE (default data/gate-cred.key) and $AG_GATE_CRED_KID
 	if err != nil {
-		return nil, fmt.Errorf("%s=vault: Gate credential key (%s, %s): %w", EnvSigner, gatecred.EnvKeyFile, gatecred.EnvKid, err)
+		return nil, fmt.Errorf("%s: Gate credential key (%s, %s): %w", vaultErr, gatecred.EnvKeyFile, gatecred.EnvKid, err)
 	}
 	return wallet.NewVaultSigner(wallet.VaultConfig{Client: client, CredKey: key, Audience: strings.TrimSpace(os.Getenv(EnvVaultAudience)),
 		WalletID: cfg.WalletID, From: ecommon.HexToAddress(addr), ChainID: chainID, TTL: ttl})
 }
 
 // setPolicyVersion fills pay.PolicyVersion when the signer is Vault, the only
-// thing that uses it: the default (wallet) startup reads nothing more than before.
+// thing that uses it: the sim startup reads no policy files for it.
 func setPolicyVersion(pay *server.Payments, cedarDir string, enforce bool) error {
 	if _, ok := pay.Wallet.(*wallet.VaultSigner); !ok {
 		return nil
 	}
 	v, err := policyVersion(cedarDir, enforce)
 	if err != nil {
-		return fmt.Errorf("%s=vault: policy version: %w", EnvSigner, err)
+		return fmt.Errorf("%s: policy version: %w", vaultErr, err)
 	}
 	pay.PolicyVersion = v
 	return nil
@@ -269,36 +283,6 @@ func chainIDFor(network string) (uint64, error) {
 		return x402.BaseSepoliaChainID, nil // anvil runs with the testnet's chain id: the signing path is unchanged
 	}
 	return 0, fmt.Errorf("unknown network %q (want sim, anvil or base-sepolia)", network)
-}
-
-// walletCmd: `agentgate wallet new [--file PATH]` and `wallet address`.
-func walletCmd(args []string, stdout io.Writer) error {
-	if len(args) == 0 {
-		return errors.New("wallet: need new | address")
-	}
-	fs := flag.NewFlagSet("wallet "+args[0], flag.ContinueOnError)
-	file := fs.String("file", envOr(wallet.EnvKeyFile, wallet.DefaultKeyFile), "key file (gitignored)")
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
-	}
-	switch args[0] {
-	case "new":
-		addr, err := wallet.NewKeyFile(*file)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(stdout, addr.Hex()) // the address only; the key never leaves the file
-		return nil
-	case "address":
-		os.Setenv(wallet.EnvKeyFile, *file)
-		k, err := wallet.LoadKey()
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(stdout, crypto.PubkeyToAddress(k.PublicKey).Hex())
-		return nil
-	}
-	return fmt.Errorf("wallet: unknown subcommand %q", args[0])
 }
 
 // EnvPaidtoolToken names the token the paid tool accepts on anvil (--token).

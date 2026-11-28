@@ -10,7 +10,7 @@ Some tools charge per use, typically a few cents a call. The gateway can pay on 
 
 - **USDC:** a digital dollar. One USDC is meant to be worth one US dollar.
 - **Blockchain:** a public record of who holds what, which anyone can read.
-- **Wallet:** holds the private key that authorizes spending. Ours sits inside the gateway, away from the agents.
+- **Wallet:** holds the private key that authorizes spending. On a chain, ours sits in QuorumVault, a separate wallet service, away from the agents and from the gateway: the gateway asks it to sign each approved payment. On the simulated chain used by the demo and fast tests, the gateway signs with a throw-away key it makes at start, since nothing there has value.
 - **x402:** an open standard for charging over the web. The tool answers with HTTP 402 and a price, and the caller repeats the request with payment attached.
 
 USDC also lets a wallet pay by signature. The wallet doesn't send the money itself. It signs a note that says "pay this tool three cents", much like writing a check. The tool cashes it on the blockchain and covers the network fee.

@@ -14,8 +14,6 @@ image:
 database:
   existingSecret: agentgate-db # key DATABASE_URL (e.g. built from the CloudNativePG app Secret)
 
-signer: vault
-
 chain:
   rpcUrl: http://anvil.qv.svc:8545   # onboarding output: rpc_url
 

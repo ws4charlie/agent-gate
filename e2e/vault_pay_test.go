@@ -2,9 +2,7 @@ package e2e
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"math/big"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,69 +10,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
-
 	"github.com/ws4charlie/agent-gate/internal/db/dbtest"
 	"github.com/ws4charlie/agent-gate/internal/gatecred"
-	"github.com/ws4charlie/agent-gate/internal/vaultsign"
 	"github.com/ws4charlie/agent-gate/internal/vaultsign/vaulttest"
-	"github.com/ws4charlie/agent-gate/internal/wallet"
-	"github.com/ws4charlie/agent-gate/internal/x402"
 )
 
-// AG_SIGNER=vault on a real EVM: the fake QuorumVault signs for its wallet,
-// the mock USDC contract accepts that authorization on anvil, and the ledger
-// charges exactly what moved. The local wallet never signs.
-func TestAnvilVaultPaymentSettles(t *testing.T) {
-	f := vaulttest.New(t, vaulttest.Options{})
-	var vs *wallet.VaultSigner
-	r := newRigWith(t, func(r *rig) wallet.Signer {
-		if err := r.chain.Mint(context.Background(), r.token, f.From, big.NewInt(5_000_000)); err != nil {
-			t.Fatal(err)
-		}
-		cli, err := vaultsign.New(vaultsign.Config{BaseURL: f.URL, WalletID: f.WalletID, ClientCert: f.ClientCert, ClientKey: f.ClientKey, CAFile: f.CAFile,
-			Token: &vaultsign.ClientCredentials{TokenURL: f.TokenURL, ClientID: vaulttest.ClientID, SecretFile: f.SecretFile, HTTPClient: f.HTTPClient()}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, priv, _ := ed25519.GenerateKey(rand.Reader)
-		key, err := gatecred.NewKey("gate-e2e", priv)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if vs, err = wallet.NewVaultSigner(wallet.VaultConfig{Client: cli, CredKey: key, Audience: "qv-e2e", WalletID: f.WalletID,
-			From: f.From, ChainID: x402.BaseSepoliaChainID}); err != nil {
-			t.Fatal(err)
-		}
-		vs.SetClock(r.clock.Now)
-		return vs
-	})
-	code, m := r.pay("echo", "vault-1")
-	if code != 200 {
-		t.Fatalf("%d %v", code, m)
-	}
-	rc, err := r.node.Client.TransactionReceipt(context.Background(), common.HexToHash(m["transaction"].(string)))
-	if err != nil || rc.Status != types.ReceiptStatusSuccessful {
-		t.Fatalf("receipt %v %v", rc, err)
-	}
-	if r.tokenBalance(r.payTo) != 10_000 || r.tokenBalance(f.From) != 5_000_000-10_000 || r.tokenBalance(r.w.Address()) != 5_000_000 {
-		t.Fatalf("payee %d vault %d local %d", r.tokenBalance(r.payTo), r.tokenBalance(f.From), r.tokenBalance(r.w.Address()))
-	}
-	if r.w.SignCount() != 0 || f.Signs() != 1 || vs.Attempts() != 1 || len(f.Bodies()) != 1 {
-		t.Fatalf("local signs %d, vault signs %d, attempts %d, bodies %d", r.w.SignCount(), f.Signs(), vs.Attempts(), len(f.Bodies()))
-	}
-	if got := r.entryKinds(); got != "hold,settle" {
-		t.Fatalf("entries %s", got)
-	}
-	r.noActiveHolds()
-}
-
-// The gateway binary with AG_SIGNER=vault: starts with a complete setup (and
-// an unusable AG_WALLET_KEY it must not load), and refuses to start, naming
-// the setting, when one is missing.
+// The gateway binary on anvil: it signs through QuorumVault with a complete
+// setup, refuses to start, naming the setting, when one is missing, and
+// refuses to start when a retired local-key setting is still set. On sim it
+// starts with nothing to configure and a throw-away key.
 func TestGatewayVaultSignerStartup(t *testing.T) {
 	pool := dbtest.New(t)
+	rpc := anvilURL(t)
 	f := vaulttest.New(t, vaulttest.Options{})
 	dir := t.TempDir()
 	keyFile := filepath.Join(dir, "cred", "gate-cred.key")
@@ -82,18 +29,17 @@ func TestGatewayVaultSignerStartup(t *testing.T) {
 		t.Fatal(err)
 	}
 	pay := filepath.Join(dir, "payments.json")
-	if err := os.WriteFile(pay, []byte(`{"network":"sim","tools":{},"chain_query_url":"http://127.0.0.1:9"}`), 0o600); err != nil {
+	if err := os.WriteFile(pay, []byte(`{"network":"anvil","tools":{}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	providers := mockProviders(t, "http://127.0.0.1:9")
 	prices, _ := filepath.Abs(filepath.Join(repoRoot, "configs", "prices.mock.json"))
-	vaultEnv := []string{"AG_SIGNER=vault", "AG_PAYMENTS=" + pay,
+	vaultEnv := []string{"AG_PAYMENTS=" + pay, "AG_RPC_URL=" + rpc,
 		"AG_VAULT_URL=" + f.URL, "AG_VAULT_WALLET_ID=" + f.WalletID, "AG_VAULT_CERT=" + f.ClientCert, "AG_VAULT_KEY=" + f.ClientKey,
 		"AG_VAULT_CA=" + f.CAFile, "AG_VAULT_TOKEN_URL=" + f.TokenURL, "AG_VAULT_CLIENT_ID=" + vaulttest.ClientID,
 		"AG_VAULT_CLIENT_SECRET_FILE=" + f.SecretFile, "AG_VAULT_TOKEN_CA=" + f.CAFile,
 		"AG_GATE_CRED_KEY_FILE=" + keyFile, "AG_GATE_CRED_KID=gate-e2e",
-		"AG_VAULT_AUDIENCE=qv-e2e", "AG_VAULT_WALLET_ADDRESS=" + f.From.Hex(),
-		"AG_WALLET_KEY=not-a-key", "AG_WALLET_KEY_FILE=" + filepath.Join(dir, "missing.key")}
+		"AG_VAULT_AUDIENCE=qv-e2e", "AG_VAULT_WALLET_ADDRESS=" + f.From.Hex()}
 
 	listen := freeAddr(t)
 	gw := startGateway(t, append(gatewayEnv(dbURL(pool), listen, providers, prices), vaultEnv...), listen)
@@ -106,6 +52,18 @@ func TestGatewayVaultSignerStartup(t *testing.T) {
 		t.Fatalf("no signer line %q in:\n%s", want, gw.log.String())
 	}
 
+	// refused runs serve with env and wants it to exit, naming name.
+	refused := func(env []string, name string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, binary(t), "serve")
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		if err == nil || ctx.Err() != nil || !strings.Contains(string(out), name) {
+			t.Fatalf("%s: err %v, output:\n%s", name, err, out)
+		}
+	}
 	without := func(name string) []string {
 		var env []string
 		for _, kv := range append(gatewayEnv(dbURL(pool), freeAddr(t), providers, prices), vaultEnv...) {
@@ -116,14 +74,35 @@ func TestGatewayVaultSignerStartup(t *testing.T) {
 		return env
 	}
 	for _, name := range []string{"AG_VAULT_AUDIENCE", "AG_VAULT_WALLET_ADDRESS", "AG_VAULT_URL", "AG_GATE_CRED_KID"} {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		cmd := exec.CommandContext(ctx, binary(t), "serve")
-		cmd.Env = without(name)
-		out, err := cmd.CombinedOutput()
-		timedOut := ctx.Err() != nil
-		cancel()
-		if err == nil || timedOut || !strings.Contains(string(out), name) {
-			t.Fatalf("without %s: err %v, output:\n%s", name, err, out)
-		}
+		refused(without(name), name)
+	}
+	// An old deployment's settings stop the gateway even beside a complete
+	// Vault setup: it must never start with a signer it did not ask for.
+	for _, kv := range []string{"AG_SIGNER=wallet", "AG_SIGNER=vault", "AG_WALLET_KEY=not-a-key", "AG_WALLET_KEY_FILE=" + filepath.Join(dir, "w.key")} {
+		refused(append(without(""), kv), strings.SplitN(kv, "=", 2)[0])
+	}
+
+	// sim: no Vault, no key file; one log line with the throw-away address,
+	// and the key is never written: the gateway's working directory and temp
+	// directory (both empty at start) stay empty.
+	simPay := filepath.Join(dir, "sim.json")
+	if err := os.WriteFile(simPay, []byte(`{"network":"sim","tools":{},"chain_query_url":"http://127.0.0.1:9"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	work, tmp := t.TempDir(), t.TempDir()
+	listen = freeAddr(t)
+	gw = startGatewayIn(t, work, append(gatewayEnv(dbURL(pool), listen, providers, prices), "AG_PAYMENTS="+simPay, "TMPDIR="+tmp), listen)
+	_ = gw.cmd.Process.Kill()
+	_ = gw.cmd.Wait()
+	if l := gw.log.String(); !strings.Contains(l, "x402 signer: ephemeral sim key (no on-chain value)") || !strings.Contains(l, "network=eip155:1337") {
+		t.Fatalf("no sim signer line in:\n%s", l)
+	}
+	for _, d := range []string{work, tmp} {
+		_ = filepath.WalkDir(d, func(p string, _ fs.DirEntry, err error) error {
+			if err == nil && p != d {
+				t.Errorf("the sim gateway wrote %s", p)
+			}
+			return nil
+		})
 	}
 }

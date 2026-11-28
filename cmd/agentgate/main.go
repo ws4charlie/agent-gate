@@ -50,8 +50,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		err = killCmd(ctx, args[1:], stdout)
 	case "run":
 		err = runCmd(ctx, args[1:], stdout)
-	case "wallet":
-		err = walletCmd(args[1:], stdout)
 	case "paidtool":
 		err = paidtoolCmd(ctx, args[1:], stdout)
 	case "cedar":
@@ -94,7 +92,6 @@ commands:
   report      --since 24h --by model|account|agent
   reconcile   close expired holds once
   prices      sync: refresh configs/prices.json from OpenRouter
-  wallet      new | address: the agent wallet key (testnet only)
   paidtool    run the paid x402 endpoint (--network sim | anvil | base-sepolia)
   cedar       check DIR | shadow [--since 24h]: Cedar policies in shadow mode
   bank        list | show | simulate-return: Mercury ACH payments and their audit chain

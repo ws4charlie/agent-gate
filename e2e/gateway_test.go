@@ -131,9 +131,16 @@ func gatewayEnv(dburl, listen, providers, prices string) []string {
 
 func startGateway(t testing.TB, env []string, listen string, args ...string) *proc {
 	t.Helper()
+	return startGatewayIn(t, "", env, listen, args...)
+}
+
+// startGatewayIn is startGateway with the working directory dir ("" for this one).
+func startGatewayIn(t testing.TB, dir string, env []string, listen string, args ...string) *proc {
+	t.Helper()
 	p := &proc{URL: "http://" + listen, env: env, log: &bytes.Buffer{}}
 	p.cmd = exec.Command(binary(t), append([]string{"serve"}, args...)...)
 	p.cmd.Env = env
+	p.cmd.Dir = dir
 	p.cmd.Stdout, p.cmd.Stderr = p.log, p.log
 	if err := p.cmd.Start(); err != nil {
 		t.Fatal(err)

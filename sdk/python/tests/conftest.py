@@ -9,6 +9,7 @@ import re
 import shutil
 import socket
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -29,6 +30,27 @@ def _port() -> int:
 
 def _first_line(proc: subprocess.Popen) -> str:
     return proc.stdout.readline().strip()
+
+
+def _sim_wallet(gw: subprocess.Popen, timeout: float = 15) -> str:
+    """The throw-away address the gateway logs when it starts on sim. Fails with
+    the log so far if the line does not come within timeout seconds."""
+    seen, found = [], []
+
+    def read():
+        for line in gw.stdout:
+            seen.append(line)
+            m = re.search(r"x402 signer: ephemeral sim key.* wallet=(0x[0-9a-fA-F]{40})", line)
+            if m:
+                found.append(m.group(1))
+                return
+
+    t = threading.Thread(target=read, daemon=True)
+    t.start()
+    t.join(timeout)
+    if not found:
+        raise RuntimeError(f"no sim signer line from the gateway within {timeout:g}s; log so far:\n" + "".join(seen))
+    return found[0]
 
 
 class Stack:
@@ -90,12 +112,9 @@ def stack(tmp_path_factory):
         (work / "mcp.json").write_text(json.dumps({"servers": {"up": {
             "url": mcp_url, "auth_env": "UPSTREAM_MCP_AUTH", "prices": {"paid": 5_000_000}}}}))
 
-        # Simulated chain + paid tool + wallet (no network, key in a 0600 file).
-        s.env["AG_WALLET_KEY_FILE"] = str(work / "wallet.key")
-        wallet = s.cli("wallet", "new", "--file", s.env["AG_WALLET_KEY_FILE"]).split()[-1]
+        # Simulated chain + paid tool (no network). On sim the gateway signs with a
+        # throw-away key it makes at start; the paid tool starts after it and funds that address.
         tport = _port()
-        s.start([s.ag, "paidtool", "--network", "sim", "--listen", f"127.0.0.1:{tport}", "--pay-to", PAYEE,
-                 "--fund", "5", "--fund-address", wallet])
         (work / "payments.json").write_text(json.dumps({
             "network": "sim", "chain_query_url": f"http://127.0.0.1:{tport}",
             "tools": {"echo": f"http://127.0.0.1:{tport}/echo", "premium": f"http://127.0.0.1:{tport}/premium"}}))
@@ -105,7 +124,8 @@ def stack(tmp_path_factory):
         s.cli("migrate")
         s.acct = s.cli("account", "create", "--name", "pytest-" + uuid.uuid4().hex[:6])
         s.cli("account", "deposit", "--account", s.acct, "--amount", "50")
-        s.start([s.ag, "serve", "--mcp", str(work / "mcp.json"), "--payments", str(work / "payments.json"), "--reconcile-every", "1s"])
+        gw = s.start([s.ag, "serve", "--mcp", str(work / "mcp.json"), "--payments", str(work / "payments.json"), "--reconcile-every", "1s"])
+        wallet = _sim_wallet(gw)
         s.url = f"http://127.0.0.1:{port}"
         import httpx
         for _ in range(100):
@@ -116,6 +136,16 @@ def stack(tmp_path_factory):
                 time.sleep(0.1)
         else:
             raise RuntimeError("gateway did not start")
+        s.start([s.ag, "paidtool", "--network", "sim", "--listen", f"127.0.0.1:{tport}", "--pay-to", PAYEE,
+                 "--fund", "5", "--fund-address", wallet])
+        for _ in range(100):
+            try:
+                if httpx.get(f"http://127.0.0.1:{tport}/healthz", timeout=1).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.1)
+        else:
+            raise RuntimeError("paid tool did not start")
         yield s
     finally:
         s.close()

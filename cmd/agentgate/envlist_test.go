@@ -37,6 +37,9 @@ func TestEnvExampleListsEveryEnvVar(t *testing.T) {
 	for _, n := range providerKeyNames(t) {
 		read[n] = "configs/providers.example.json"
 	}
+	for _, n := range retiredEnv { // named only to refuse them; not configuration
+		delete(read, n)
+	}
 	listed := envExampleNames(t)
 	script := scriptEnvNames(t, "../../scripts/agentgate-local")
 

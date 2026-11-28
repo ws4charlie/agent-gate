@@ -2,6 +2,8 @@ package e2e
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io"
@@ -23,6 +25,7 @@ import (
 
 	"github.com/ws4charlie/agent-gate/internal/audit"
 	"github.com/ws4charlie/agent-gate/internal/db/dbtest"
+	"github.com/ws4charlie/agent-gate/internal/gatecred"
 	"github.com/ws4charlie/agent-gate/internal/ledger"
 	"github.com/ws4charlie/agent-gate/internal/money"
 	"github.com/ws4charlie/agent-gate/internal/paidtool"
@@ -30,6 +33,8 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/pricing"
 	"github.com/ws4charlie/agent-gate/internal/provider"
 	"github.com/ws4charlie/agent-gate/internal/server"
+	"github.com/ws4charlie/agent-gate/internal/vaultsign"
+	"github.com/ws4charlie/agent-gate/internal/vaultsign/vaulttest"
 	"github.com/ws4charlie/agent-gate/internal/wallet"
 	"github.com/ws4charlie/agent-gate/internal/x402"
 )
@@ -55,14 +60,16 @@ func (l *lossyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 // rig is the assembled gateway (in process, real Postgres) paying a paid tool
-// that settles on a real anvil node over JSON-RPC.
+// that settles on a real anvil node over JSON-RPC. The gateway signs through a
+// fake QuorumVault, as on every real chain: a local key never signs here.
 type rig struct {
 	t      *testing.T
 	node   *x402.Node
 	chain  *x402.EthChain
 	clock  *x402.Clock
 	token  common.Address
-	w      *wallet.Wallet
+	qv     *vaulttest.Vault    // the fake QuorumVault; its wallet holds the test USDC
+	vs     *wallet.VaultSigner // the gateway's signer
 	payTo  common.Address
 	pool   *pgxpool.Pool
 	led    *ledger.Postgres
@@ -78,15 +85,12 @@ type rig struct {
 	submit   http.Handler // the real paid handler: what the tool uses to cash the kept authorization
 }
 
-func newRig(t *testing.T) *rig { t.Helper(); return newRigWith(t, nil) }
-
-// newRigWith builds the anvil rig; signer (may be nil: the local wallet r.w)
-// picks what the gateway signs with.
-func newRigWith(t *testing.T, signer func(r *rig) wallet.Signer) *rig {
+// newRig builds the anvil rig.
+func newRig(t *testing.T) *rig {
 	t.Helper()
 	node := dialAnvil(t)
 	ctx := context.Background()
-	r := &rig{t: t, node: node, net: &lossyTransport{}}
+	r := &rig{t: t, node: node, net: &lossyTransport{}, qv: vaulttest.New(t, vaulttest.Options{})}
 	var err error
 	if r.clock, err = node.NewClock(ctx); err != nil {
 		t.Fatal(err)
@@ -102,14 +106,24 @@ func newRigWith(t *testing.T, signer func(r *rig) wallet.Signer) *rig {
 	if r.token, err = r.chain.DeployMockUSDC(ctx); err != nil {
 		t.Fatal(err)
 	}
-	wkey, _ := crypto.GenerateKey() // run-time keys only: nothing in the repo
-	if r.w, err = wallet.New(wkey, x402.BaseSepoliaChainID); err != nil {
+	if err := r.chain.Mint(ctx, r.token, r.qv.From, big.NewInt(5_000_000)); err != nil { // 5 USDC to the Vault's wallet
 		t.Fatal(err)
 	}
-	r.w.SetClock(r.clock.Now)
-	if err := r.chain.Mint(ctx, r.token, r.w.Address(), big.NewInt(5_000_000)); err != nil { // 5 USDC
+	cli, err := vaultsign.New(vaultsign.Config{BaseURL: r.qv.URL, WalletID: r.qv.WalletID, ClientCert: r.qv.ClientCert, ClientKey: r.qv.ClientKey, CAFile: r.qv.CAFile,
+		Token: &vaultsign.ClientCredentials{TokenURL: r.qv.TokenURL, ClientID: vaulttest.ClientID, SecretFile: r.qv.SecretFile, HTTPClient: r.qv.HTTPClient()}})
+	if err != nil {
 		t.Fatal(err)
 	}
+	_, priv, _ := ed25519.GenerateKey(rand.Reader) // run-time keys only: nothing in the repo
+	credKey, err := gatecred.NewKey("gate-e2e", priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.vs, err = wallet.NewVaultSigner(wallet.VaultConfig{Client: cli, CredKey: credKey, Audience: "qv-e2e", WalletID: r.qv.WalletID,
+		From: r.qv.From, ChainID: x402.BaseSepoliaChainID}); err != nil {
+		t.Fatal(err)
+	}
+	r.vs.SetClock(r.clock.Now)
 	payee, _ := crypto.GenerateKey() // an address nobody holds the key to
 	r.payTo = crypto.PubkeyToAddress(payee.PublicKey)
 
@@ -134,10 +148,6 @@ func newRigWith(t *testing.T, signer func(r *rig) wallet.Signer) *rig {
 	}))
 	t.Cleanup(tool.Close)
 
-	var sg wallet.Signer = r.w
-	if signer != nil {
-		sg = signer(r)
-	}
 	r.pool = dbtest.New(t)
 	r.led = ledger.New(r.pool)
 	r.audit = audit.NewStore(r.pool)
@@ -149,7 +159,7 @@ func newRigWith(t *testing.T, signer func(r *rig) wallet.Signer) *rig {
 		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		MaxHold:   5 * usd, DefaultMaxTokens: 100,
 		Payments: &server.Payments{
-			Wallet:  sg,
+			Wallet:  r.vs,
 			Tools:   map[string]string{"echo": tool.URL + "/echo", "premium": tool.URL + "/premium"},
 			Fetcher: x402.Fetcher{HTTP: &http.Client{Transport: r.net}},
 		},
@@ -274,8 +284,9 @@ func (r *rig) advance(d time.Duration) {
 const echoNanos = money.Nanos(10_000_000) // $0.01
 const echoAtomic = 10_000
 
-// One payment: a real EIP-1559 transaction, receipt status 1, and the payee's
-// on-chain balance moved by exactly what the ledger charged.
+// One payment: QuorumVault signs once, a real EIP-1559 transaction, receipt
+// status 1, and the payee's on-chain balance moved by exactly what the ledger
+// charged, out of the Vault's wallet.
 func TestAnvilPaymentSettles(t *testing.T) {
 	r := newRig(t)
 	code, m := r.pay("echo", "pay-1")
@@ -311,6 +322,12 @@ func TestAnvilPaymentSettles(t *testing.T) {
 	if b := r.balance(); b.Balance != 10*usd-moved || b.Held != 0 || moved != echoNanos {
 		t.Fatalf("ledger charge %+v does not equal the on-chain movement %d", b, moved)
 	}
+	if r.tokenBalance(r.qv.From) != 5_000_000-echoAtomic {
+		t.Fatalf("vault wallet has %d", r.tokenBalance(r.qv.From))
+	}
+	if r.qv.Signs() != 1 || r.vs.Attempts() != 1 || len(r.qv.Bodies()) != 1 {
+		t.Fatalf("vault signs %d, attempts %d, bodies %d", r.qv.Signs(), r.vs.Attempts(), len(r.qv.Bodies()))
+	}
 	if got := r.entryKinds(); got != "hold,settle" {
 		t.Fatalf("entries %s", got)
 	}
@@ -325,8 +342,8 @@ func TestAnvilOverPolicyPaymentSendsNothing(t *testing.T) {
 	if code != 429 {
 		t.Fatalf("%d %v", code, m)
 	}
-	if r.w.SignCount() != 0 {
-		t.Fatalf("signer ran %d times", r.w.SignCount())
+	if r.qv.Signs() != 0 || r.vs.Attempts() != 0 || len(r.qv.Bodies()) != 0 {
+		t.Fatalf("QuorumVault was asked: signs %d, attempts %d", r.qv.Signs(), r.vs.Attempts())
 	}
 	if r.head() != before || r.tokenBalance(r.payTo) != 0 {
 		t.Fatal("a transaction reached the node")

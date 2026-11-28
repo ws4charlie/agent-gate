@@ -2,7 +2,7 @@
 {{- $np := .Values.networkPolicy -}}
 {{- $eg := $np.egress -}}
 # Gateway: default deny, then its callers, DNS, Postgres, Vault and the
-# identity provider (signer=vault), the chain RPC and the paid tool.
+# identity provider (when QuorumVault signs), the chain RPC and the paid tool.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -26,7 +26,7 @@ spec:
     {{- with $eg.postgres }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
-    {{- if eq .Values.signer "vault" }}
+    {{- if include "agentgate.vault" . }}
     {{- with $eg.vault }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

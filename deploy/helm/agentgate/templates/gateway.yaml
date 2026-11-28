@@ -1,5 +1,4 @@
-{{- $vault := eq .Values.signer "vault" -}}
-{{- $wallet := and .Values.payments.enabled (eq .Values.signer "wallet") -}}
+{{- $vault := include "agentgate.vault" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -89,10 +88,6 @@ spec:
             {{- end }}
             {{- if .Values.payments.enabled }}
             - {name: AG_PAYMENTS, value: /etc/agentgate/config/payments.json}
-            - {name: AG_SIGNER, value: {{ .Values.signer | quote }}}
-            {{- end }}
-            {{- if $wallet }}
-            - {name: AG_WALLET_KEY_FILE, value: /etc/agentgate/wallet/{{ .Values.wallet.key }}}
             {{- end }}
             {{- if $vault }}
             {{- $v := .Values.vault }}
@@ -150,9 +145,6 @@ spec:
             {{- if .Values.gateway.cedarPolicies }}
             - {name: cedar, mountPath: /etc/agentgate/cedar, readOnly: true}
             {{- end }}
-            {{- if $wallet }}
-            - {name: wallet, mountPath: /etc/agentgate/wallet, readOnly: true}
-            {{- end }}
             {{- if $vault }}
             - {name: vault, mountPath: /etc/agentgate/vault, readOnly: true}
             - {name: gate-cred, mountPath: /run/gate, readOnly: true}
@@ -165,13 +157,6 @@ spec:
         {{- if .Values.gateway.cedarPolicies }}
         - name: cedar
           configMap: {name: {{ include "agentgate.fullname" . }}-cedar}
-        {{- end }}
-        {{- if $wallet }}
-        - name: wallet
-          secret:
-            secretName: {{ .Values.wallet.existingSecret | quote }}
-            defaultMode: 0440
-            items: [{key: {{ .Values.wallet.key | quote }}, path: {{ .Values.wallet.key | quote }}}]
         {{- end }}
         {{- if $vault }}
         - name: vault

@@ -29,7 +29,7 @@ docker build --build-arg VERSION=$(git rev-parse --short HEAD) -t agentgate:loca
 
 The chart in `deploy/helm/agentgate` runs that image twice: the gateway (`agentgate serve`) and, when `paidtool.enabled`, the x402 paid tool (`agentgate paidtool`). The gateway applies migrations at start and answers `/healthz` (process up) and `/readyz` (database reachable). Logs are JSON.
 
-The chart is configured only through values that become env vars and mounted files. It never creates a secret: the database URL, the wallet key, the QuorumVault certificates and client secret, the Gate credential key, the facilitator key, the provider keys and a chain RPC URL that carries an API key each come from a Secret you name in the values. `signer: wallet` or `signer: vault` picks the signer; in vault mode the chart sets every `AG_VAULT_*` setting and mounts the files, and in wallet mode it sets none of them. The gateway accepts the Gate credential key only as a private file it owns, so an init container copies it from its Secret into an in-memory directory first. `networkPolicy.enabled` denies all traffic except DNS, the egress groups you list (Postgres, Vault, the token endpoint, the chain RPC) and gateway to paid tool.
+The chart is configured only through values that become env vars and mounted files. It never creates a secret: the database URL, the QuorumVault certificates and client secret, the Gate credential key, the facilitator key, the provider keys and a chain RPC URL that carries an API key each come from a Secret you name in the values. There is no signer to pick: with payments on anvil or base-sepolia, QuorumVault signs, so the chart requires the `vault.*` and `gateCred.*` values, sets every `AG_VAULT_*` setting and mounts the files; on sim the gateway signs with a throw-away key and the chart sets none of them. Old `signer` or `wallet.*` values stop the render. The gateway accepts the Gate credential key only as a private file it owns, so an init container copies it from its Secret into an in-memory directory first. `networkPolicy.enabled` denies all traffic except DNS, the egress groups you list (Postgres, Vault, the token endpoint, the chain RPC) and gateway to paid tool.
 
 To try it in kind, load the image and install with your own values file. `values-local.yaml` is the example for the local cluster next to QuorumVault.
 
@@ -38,4 +38,4 @@ kind load docker-image agentgate:local --name <cluster>
 helm upgrade --install agentgate deploy/helm/agentgate -n agentgate --create-namespace -f <your values>
 ```
 
-`scripts/check-chart.sh` lints and renders the chart with both signers and checks that every env var it sets is listed in `.env.example`. CI runs it in the `helm` job.
+`scripts/check-chart.sh` lints and renders the chart on sim and on a chain and checks that every env var it sets is listed in `.env.example`. CI runs it in the `helm` job.
