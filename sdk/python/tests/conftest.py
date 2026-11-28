@@ -17,7 +17,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 PAYEE = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"  # a public test address
-# $1000 / $2000 per 1M tokens, so one call is real money against small budgets (as in demo/phase2-policy.sh).
+# $1000 / $2000 per 1M tokens, so one call is real money against small budgets.
 ROW = {"input": 10**12, "output": 2 * 10**12, "cache_read": 0, "cache_write": 10**12}
 
 

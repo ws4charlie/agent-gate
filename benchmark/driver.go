@@ -73,13 +73,13 @@ var cedarEnforce bool
 func newRig(ctx context.Context, pool *pgxpool.Pool, root string) (*rig, error) {
 	r := &rig{pool: pool, led: ledger.New(pool), root: root}
 	// Model upstream. $1000/$2000 per 1M tokens: one call is real money against small budgets,
-	// so a budget of cents is reached in a few calls (same trick as demo/phase2-policy.sh).
+	// so a budget of cents is reached in a few calls.
 	fake := fakeupstream.New()
 	r.close = append(r.close, fake.Close)
 	const upKey = "bench-upstream-key"
 	fake.Key = upKey
 	// A call takes 200 ms, so calls fired together overlap and are all "in flight" while
-	// the velocity window counts their worst case (the same trick as the policy demo).
+	// the velocity window counts their worst case.
 	fake.SetDefault(fakeupstream.Script{Latency: 200 * time.Millisecond})
 	row := pricing.Price{Input: 1_000 * usd, Output: 2_000 * usd, CacheWrite: 1_000 * usd}
 
