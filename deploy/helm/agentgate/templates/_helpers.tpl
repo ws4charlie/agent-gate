@@ -87,9 +87,20 @@ http://{{ include "agentgate.paidtoolHost" . }}:{{ .Values.paidtool.port }}
 {{- if not (regexMatch "^[A-Za-z0-9._-]+$" .Values.wallet.key) -}}
 {{- fail "wallet.key must be a plain file name" -}}
 {{- end -}}
+{{- if not (regexMatch "^[A-Za-z0-9._-]+$" .Values.gateCred.key) -}}
+{{- fail "gateCred.key must be a plain file name" -}}
+{{- end -}}
 {{- range $name, $_ := .Values.gateway.cedarPolicies -}}
 {{- if not (hasSuffix ".cedar" $name) -}}
 {{- fail (printf "gateway.cedarPolicies: %q must end in .cedar (the gateway loads only *.cedar)" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.paidtool.token -}}
+{{- if ne .Values.paidtool.network "anvil" -}}
+{{- fail "paidtool.token is for paidtool.network=anvil only" -}}
+{{- end -}}
+{{- if not (regexMatch "^0x[0-9a-fA-F]{40}$" .Values.paidtool.token) -}}
+{{- fail "paidtool.token must be a 0x address" -}}
 {{- end -}}
 {{- end -}}
 {{- if and .Values.paidtool.fund (not .Values.paidtool.fundAddress) -}}

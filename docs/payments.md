@@ -56,3 +56,4 @@ This proves the payment path works on a public network. It doesn't prove it work
 - This runs on testnets only, and the wallet refuses mainnet.
 - An agent's balance is a number in our ledger, while the USDC in the wallet is the money itself. A payment needs both.
 - All agents share one wallet: budgets are separate, funds aren't.
+- On a local anvil chain the paid tool deploys its own mock USDC, unless `--token` (`AG_PAIDTOOL_TOKEN`) names a token that already exists there; the gateway pays in whatever token the tool asks for.

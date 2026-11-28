@@ -45,6 +45,7 @@ gateCred:
 paidtool:
   enabled: true
   network: anvil
+  token: ""                    # onboarding output: usdc_address (the token QuorumVault funds the wallet with)
   payTo: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"   # a public anvil test address, not a secret
 
 networkPolicy:

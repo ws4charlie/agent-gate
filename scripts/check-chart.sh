@@ -65,11 +65,19 @@ must_fail wallet "image.digest must be" --set image.digest=latest
 must_fail wallet "wallet.key must be a plain file name" --set wallet.key=../x.key
 must_fail wallet "must end in .cedar" --set gateway.cedarPolicies.policy=x
 must_fail wallet "paidtool.fund needs paidtool.fundAddress" --set paidtool.fundAddress=
+must_fail wallet "paidtool.token is for paidtool.network=anvil only" --set paidtool.token=0x00000000000000000000000000000000000000aa
+must_fail vault "paidtool.token must be a 0x address" --set paidtool.token=usdc
+must_fail vault "gateCred.key must be a plain file name" --set gateCred.key=../k
 
 # The settings that pass: the literal RPC URL, and the image by digest.
 lit=$(helm template t "$chart" -f "$chart/ci/vault-values.yaml" --set chain.rpcUrlSecret.name=,chain.rpcUrl=http://anvil.qv.svc:8545) ||
   bad "vault with a literal chain.rpcUrl does not render"
 grep -q 'name: AG_RPC_URL, value: "http://anvil.qv.svc:8545"' <<<"$lit" || bad "literal chain.rpcUrl is not rendered"
+tok=0x00000000000000000000000000000000000000aa
+withtok=$(helm template t "$chart" -f "$chart/ci/vault-values.yaml" --set paidtool.token=$tok) || bad "paidtool.token does not render"
+grep -q -- "- --token=$tok" <<<"$withtok" || bad "paidtool.token is not passed as --token"
+# The Gate credential init container runs this chart's own image, not another one.
+grep -A3 'name: gate-cred$' "$tmp/vault.yaml" | grep -q 'image: "agentgate:' || bad "the gate-cred init container does not use the agentgate image"
 d=sha256:$(printf '%064d' 0)
 helm template t "$chart" -f "$chart/ci/wallet-values.yaml" --set image.digest=$d | grep -q "image: \"agentgate@$d\"" ||
   bad "image.digest is not rendered as repository@digest"

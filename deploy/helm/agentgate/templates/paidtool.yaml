@@ -42,6 +42,9 @@ spec:
             - --listen=0.0.0.0:{{ $p.port }}
             - --network={{ $p.network }}
             - --pay-to={{ $p.payTo }}
+            {{- with $p.token }}
+            - --token={{ . }}
+            {{- end }}
             {{- if $p.fund }}
             - --fund={{ $p.fund }}
             - --fund-address={{ $p.fundAddress }}
