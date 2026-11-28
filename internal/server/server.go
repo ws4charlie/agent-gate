@@ -180,7 +180,35 @@ func (s *Server) Handler() http.Handler {
 	// With MCP nil the route answers 404: the gateway has no MCP servers.
 	mux.HandleFunc("/mcp/{server}", s.handleMCP)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok\n") })
+	mux.HandleFunc("GET /readyz", s.handleReady)
 	return mux
+}
+
+// readyTimeout bounds the database ping behind /readyz.
+const readyTimeout = time.Second
+
+// handleReady is the readiness probe: 200 only when the database answers a
+// ping within readyTimeout, else 503 with a short JSON reason. /healthz stays
+// the liveness probe and does not touch the database.
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	reason := ""
+	if s.Pool == nil {
+		reason = "no database"
+	} else {
+		ctx, cancel := context.WithTimeout(r.Context(), readyTimeout)
+		defer cancel()
+		if err := s.Pool.Ping(ctx); err != nil {
+			reason = "database unreachable"
+			s.Log.Warn("readyz: database ping failed", "err", err)
+		}
+	}
+	if reason != "" {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "not ready", "reason": reason})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
 }
 
 // ---- errors ----

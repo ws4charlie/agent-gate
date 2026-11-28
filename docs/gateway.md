@@ -34,3 +34,7 @@ Keys stay as the fallback for clients that cannot get a certificate. You can tur
 ## Where prices come from
 
 The provider's own figure comes first, then our price table, then an estimate that is clearly marked as one.
+
+## Probes and logs
+
+`/healthz` answers while the process runs; `/readyz` answers 200 only when the database replies within a second, else 503. Set `AG_LOG_FORMAT=json` (or `--log-format json`) for one JSON object per log line; the default is text.

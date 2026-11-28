@@ -68,6 +68,18 @@ func envOr(k, d string) string {
 	return d
 }
 
+// newLogger builds the gateway's logger: "text" (the default) or "json", one
+// JSON object per line for log collectors.
+func newLogger(w io.Writer, format string) (*slog.Logger, error) {
+	switch format {
+	case "", "text":
+		return slog.New(slog.NewTextHandler(w, nil)), nil
+	case "json":
+		return slog.New(slog.NewJSONHandler(w, nil)), nil
+	}
+	return nil, fmt.Errorf("--log-format %q: want text or json", format)
+}
+
 // parseAll parses flags that may sit before, between or after positional
 // words, and returns the positional words in order.
 func (c *common) parseAll(args []string) ([]string, error) {
@@ -118,11 +130,16 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	spiffeID := c.fs.String("spiffe-id", os.Getenv("AG_SPIFFE_ID"), "the SPIFFE ID of the gateway's own SVID, when the Workload API returns several (default $AG_SPIFFE_ID; empty: the first one)")
 	mf := addMercuryFlags(c)
 	reconcileEvery := c.fs.Duration("reconcile-every", 30*time.Second, "background reconcile interval")
+	logFormat := c.fs.String("log-format", envOr("AG_LOG_FORMAT", "text"), "log format on stderr: text or json (default $AG_LOG_FORMAT, text)")
 	cfg, pool, err := c.open(ctx, args)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
+	log, err := newLogger(os.Stderr, *logFormat)
+	if err != nil {
+		return err
+	}
 	if *cedarEnforce && *cedarDir == "" {
 		return errors.New("--cedar-enforce needs --cedar-policies (or AG_CEDAR_POLICIES)")
 	}
@@ -155,7 +172,6 @@ func serve(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	defer shutdown(context.Background())
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	led := ledger.New(pool)
 	srv := &server.Server{Pool: pool, Ledger: led, Audit: audit.NewStore(pool), Providers: pc, Prices: prices,
 		Keys: config.ProviderKey, Tracer: tracer, Log: log, MaxHold: cfg.MaxHoldNanos,
