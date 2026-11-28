@@ -15,6 +15,8 @@ Some tools charge per use, typically a few cents a call. The gateway can pay on 
 
 USDC also lets a wallet pay by signature. The wallet doesn't send the money itself. It signs a note that says "pay this tool three cents", much like writing a check. The tool cashes it on the blockchain and covers the network fee.
 
+Payments are off until the gateway gets a payments config (`--payments`); start from [demo/payments.example.json](../demo/payments.example.json).
+
 ## One payment, step by step
 
 1. The gateway calls the tool. The tool answers with 402 and a price.

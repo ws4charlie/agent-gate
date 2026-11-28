@@ -6,8 +6,6 @@ The code was written after the deployment existed, so it adopts the live resourc
 
 ## What the policies guard
 
-
-
 - the VM may have a public address only while every inbound rule admits Google's IAP range alone;
 - nothing accepts traffic from the whole internet, and SSH comes only through the IAP range;
 - the VM stays a Shielded VM;
