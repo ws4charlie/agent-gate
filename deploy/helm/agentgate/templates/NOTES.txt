@@ -7,3 +7,15 @@ Gateway: http://{{ include "agentgate.fullname" . }}-gateway.{{ .Release.Namespa
 
 Admin commands run in the gateway container (no shell needed):
   kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "agentgate.fullname" . }}-gateway -- /agentgate account create --name demo
+{{- if and (not .Values.image.digest) (eq (include "agentgate.tag" .) "dev") }}
+
+WARNING: image tag is "dev" and no image.digest is set: you cannot tell which build runs. Set image.tag to a version or image.digest.
+{{- end }}
+{{- if not .Values.gateway.providers.providers }}
+
+NOTE: no model providers are configured (gateway.providers): model routes answer nothing until you add some.
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+
+NOTE: networkPolicy is on. Model providers and MCP upstreams are blocked unless listed in networkPolicy.egress.extra.
+{{- end }}

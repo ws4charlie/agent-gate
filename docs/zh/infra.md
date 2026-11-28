@@ -31,7 +31,7 @@ docker build --build-arg VERSION=$(git rev-parse --short HEAD) -t agentgate:loca
 
 `deploy/helm/agentgate` 中的 chart 用这个镜像跑两个程序:网关(`agentgate serve`),以及在 `paidtool.enabled` 时的 x402 付费工具(`agentgate paidtool`)。网关启动时执行迁移,提供 `/healthz`(进程在运行)和 `/readyz`(数据库可达)。日志为 JSON。
 
-chart 只通过 values 配置,values 变成环境变量和挂载的文件。它从不创建 secret:数据库 URL、钱包密钥、QuorumVault 的证书和 client secret、Gate 凭证密钥、facilitator 密钥和模型提供方密钥,都来自你在 values 里写名字的 Secret。`signer: wallet` 或 `signer: vault` 选择签名方式;vault 模式下 chart 设置全部 `AG_VAULT_*` 并挂载文件,wallet 模式下一个都不设置。网关只接受自己拥有的私有文件作为 Gate 凭证密钥,所以先由一个 init 容器把它从 Secret 复制到内存目录。`networkPolicy.enabled` 拒绝所有流量,只放行 DNS、你列出的出站组(Postgres、Vault、令牌端点、链 RPC)和网关到付费工具。
+chart 只通过 values 配置,values 变成环境变量和挂载的文件。它从不创建 secret:数据库 URL、钱包密钥、QuorumVault 的证书和 client secret、Gate 凭证密钥、facilitator 密钥、模型提供方密钥,以及带 API key 的链 RPC URL,都来自你在 values 里写名字的 Secret。`signer: wallet` 或 `signer: vault` 选择签名方式;vault 模式下 chart 设置全部 `AG_VAULT_*` 并挂载文件,wallet 模式下一个都不设置。网关只接受自己拥有的私有文件作为 Gate 凭证密钥,所以先由一个 init 容器把它从 Secret 复制到内存目录。`networkPolicy.enabled` 拒绝所有流量,只放行 DNS、你列出的出站组(Postgres、Vault、令牌端点、链 RPC)和网关到付费工具。
 
 在 kind 中试用:加载镜像,用你自己的 values 文件安装。`values-local.yaml` 是与 QuorumVault 同在本地集群时的示例。
 

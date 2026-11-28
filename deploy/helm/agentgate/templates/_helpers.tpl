@@ -30,7 +30,22 @@ app.kubernetes.io/component: {{ .component }}
 {{- end -}}
 
 {{- define "agentgate.image" -}}
+{{- if .Values.image.digest -}}
+{{ .Values.image.repository }}@{{ .Values.image.digest }}
+{{- else -}}
 {{ .Values.image.repository }}:{{ include "agentgate.tag" . }}
+{{- end -}}
+{{- end -}}
+
+{{/* AG_RPC_URL env entry, literal or from a Secret; empty when neither is set. */}}
+{{- define "agentgate.rpcEnv" -}}
+{{- if .Values.chain.rpcUrlSecret.name -}}
+- name: AG_RPC_URL
+  valueFrom:
+    secretKeyRef: {name: {{ .Values.chain.rpcUrlSecret.name | quote }}, key: {{ .Values.chain.rpcUrlSecret.key | quote }}}
+{{- else if .Values.chain.rpcUrl -}}
+- {name: AG_RPC_URL, value: {{ .Values.chain.rpcUrl | quote }}}
+{{- end -}}
 {{- end -}}
 
 {{- define "agentgate.serviceAccountName" -}}
@@ -54,6 +69,47 @@ http://{{ include "agentgate.paidtoolHost" . }}:{{ .Values.paidtool.port }}
 {{- $_ := required "database.existingSecret is required (a Secret holding the Postgres URL)" .Values.database.existingSecret -}}
 {{- if not (has .Values.signer (list "wallet" "vault")) -}}
 {{- fail (printf "signer is %q: want wallet or vault" .Values.signer) -}}
+{{- end -}}
+{{- if and .Values.image.digest (not (regexMatch "^sha256:[0-9a-f]{64}$" .Values.image.digest)) -}}
+{{- fail "image.digest must be sha256:<64 hex>" -}}
+{{- end -}}
+{{- if and .Values.chain.rpcUrl .Values.chain.rpcUrlSecret.name -}}
+{{- fail "set chain.rpcUrl or chain.rpcUrlSecret.name, not both" -}}
+{{- end -}}
+{{- $chains := list "anvil" "base-sepolia" -}}
+{{- $needRPC := or (and .Values.payments.enabled (has .Values.payments.network $chains)) (and .Values.paidtool.enabled (has .Values.paidtool.network $chains)) -}}
+{{- if and $needRPC (not .Values.chain.rpcUrl) (not .Values.chain.rpcUrlSecret.name) -}}
+{{- fail "chain.rpcUrl or chain.rpcUrlSecret.name is required when payments.network or paidtool.network is anvil or base-sepolia" -}}
+{{- end -}}
+{{- if and .Values.paidtool.enabled .Values.payments.enabled .Values.payments.paidtoolTools (ne .Values.payments.network .Values.paidtool.network) -}}
+{{- fail (printf "payments.network (%s) and paidtool.network (%s) differ, but payments.paidtoolTools sends payments to this paid tool" .Values.payments.network .Values.paidtool.network) -}}
+{{- end -}}
+{{- if not (regexMatch "^[A-Za-z0-9._-]+$" .Values.wallet.key) -}}
+{{- fail "wallet.key must be a plain file name" -}}
+{{- end -}}
+{{- range $name, $_ := .Values.gateway.cedarPolicies -}}
+{{- if not (hasSuffix ".cedar" $name) -}}
+{{- fail (printf "gateway.cedarPolicies: %q must end in .cedar (the gateway loads only *.cedar)" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Values.paidtool.fund (not .Values.paidtool.fundAddress) -}}
+{{- fail "paidtool.fund needs paidtool.fundAddress" -}}
+{{- end -}}
+{{- if .Values.networkPolicy.enabled -}}
+{{- $eg := .Values.networkPolicy.egress -}}
+{{- $groups := list "postgres" -}}
+{{- if eq .Values.signer "vault" -}}{{- $groups = append $groups "vault" -}}{{- $groups = append $groups "tokenProvider" -}}{{- end -}}
+{{- range $g := $groups -}}
+{{- $rules := index $eg $g -}}
+{{- if not $rules -}}
+{{- fail (printf "networkPolicy.egress.%s is required with networkPolicy.enabled (else the gateway cannot reach it)" $g) -}}
+{{- end -}}
+{{- range $rules -}}
+{{- if not .ports -}}
+{{- fail (printf "networkPolicy.egress.%s: every rule needs ports" $g) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- if .Values.payments.enabled -}}
 {{- if not (has .Values.payments.network (list "sim" "anvil" "base-sepolia")) -}}

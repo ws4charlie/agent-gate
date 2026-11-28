@@ -83,8 +83,8 @@ spec:
             {{- with .Values.gateway.otelExporter }}
             - {name: AG_OTEL_EXPORTER, value: {{ . | quote }}}
             {{- end }}
-            {{- with .Values.chain.rpcUrl }}
-            - {name: AG_RPC_URL, value: {{ . | quote }}}
+            {{- with include "agentgate.rpcEnv" . }}
+            {{- . | nindent 12 }}
             {{- end }}
             {{- if .Values.payments.enabled }}
             - {name: AG_PAYMENTS, value: /etc/agentgate/config/payments.json}

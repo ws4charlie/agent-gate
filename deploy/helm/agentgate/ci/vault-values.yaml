@@ -1,7 +1,7 @@
 # CI render: vault signer with every optional setting, anvil, paid tool. Placeholders only.
 database: {existingSecret: agentgate-db}
 signer: vault
-chain: {rpcUrl: "http://anvil.qv.svc:8545"}
+chain: {rpcUrlSecret: {name: agentgate-rpc}}   # the Secret form; values-local.yaml uses the literal
 payments:
   enabled: true
   network: anvil
@@ -23,4 +23,7 @@ paidtool:
 networkPolicy:
   enabled: true
   egress:
-    vault: [{to: [{namespaceSelector: {}}]}]
+    postgres: [{to: [{podSelector: {matchLabels: {cnpg.io/cluster: agentgate-db}}}], ports: [{port: 5432}]}]
+    vault: [{to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: qv}}}], ports: [{port: 8443}]}]
+    tokenProvider: [{to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: qv}}}], ports: [{port: 8443}]}]
+    chainRpc: [{to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: qv}}}], ports: [{port: 8545}]}]

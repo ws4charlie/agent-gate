@@ -52,8 +52,8 @@ spec:
           ports:
             - {name: http, containerPort: {{ $p.port }}}
           env:
-            {{- with .Values.chain.rpcUrl }}
-            - {name: AG_RPC_URL, value: {{ . | quote }}}
+            {{- with include "agentgate.rpcEnv" . }}
+            {{- . | nindent 12 }}
             {{- end }}
             {{- with $p.facilitatorKey.existingSecret }}
             - name: AG_FACILITATOR_KEY

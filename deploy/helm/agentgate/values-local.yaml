@@ -53,11 +53,16 @@ networkPolicy:
     postgres:
       - to: [{podSelector: {matchLabels: {cnpg.io/cluster: agentgate-db}}}]
         ports: [{port: 5432}]
-    vault:                     # QuorumVault's core, in the signing namespace of the kind lane
-      - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: qv-signing}}}]
-    tokenProvider:             # Keycloak; the env repo narrows this to its namespace
-      - to: [{namespaceSelector: {}}]
-        ports: [{port: 443}, {port: 8443}]
+    vault:                     # QuorumVault's core (qv-business chart, business zone, namespace qv, port 8443)
+      - to:
+          - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: qv}}
+            podSelector: {matchLabels: {app.kubernetes.io/part-of: quorum-vault, app.kubernetes.io/component: core}}
+        ports: [{port: 8443}]
+    tokenProvider:             # the kind lane's Keycloak (ci/kind/deps/keycloak.yaml)
+      - to:
+          - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: qv}}
+            podSelector: {matchLabels: {app: keycloak}}
+        ports: [{port: 8443}]
     chainRpc:
       - to:
           - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: qv}}

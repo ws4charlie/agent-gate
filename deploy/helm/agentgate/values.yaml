@@ -5,6 +5,7 @@
 image:
   repository: agentgate
   tag: ""            # default: the chart's appVersion
+  digest: ""         # sha256:...; when set, the image is repository@digest and tag is ignored
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
@@ -28,9 +29,15 @@ providerKeys:
   existingSecret: ""
 
 # Chain JSON-RPC URL (AG_RPC_URL) for the gateway's reconciler and the paid
-# tool. Needed for anvil and base-sepolia; sim ignores it.
+# tool. Required when payments.network or paidtool.network is anvil or
+# base-sepolia; sim ignores it. Set exactly one: rpcUrl for a URL that holds
+# no secret (in-cluster anvil), rpcUrlSecret for one that carries a provider
+# API key.
 chain:
   rpcUrl: ""
+  rpcUrlSecret:
+    name: ""
+    key: AG_RPC_URL
 
 gateway:
   replicas: 1
@@ -76,7 +83,7 @@ payments:
 # AG_SIGNER=wallet: the key file comes from a Secret.
 wallet:
   existingSecret: ""           # required with payments.enabled and signer=wallet
-  key: wallet.key
+  key: wallet.key             # a plain file name
 
 # AG_SIGNER=vault. Non-secret settings as values; files from Secrets.
 vault:
@@ -144,6 +151,8 @@ securityContext:
 
 # Default deny for both pods, then only what is listed. Each egress group is a
 # list of NetworkPolicyEgressRule (to + ports). DNS to kube-dns is always allowed.
+# When enabled, postgres is required, and with signer=vault so are vault and
+# tokenProvider, each rule with ports. Model providers and MCP upstreams go in extra.
 networkPolicy:
   enabled: false
   # Who may call the gateway. Default: any pod in the release namespace.
