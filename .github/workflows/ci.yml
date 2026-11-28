@@ -183,6 +183,23 @@ jobs:
         if: failure()
         run: cat anvil.log
 
+  # The Helm chart, offline: lint and render with both signers (scripts/check-chart.sh).
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # A pinned release, checked against its pinned SHA-256 (the release's own .sha256sum file).
+      - name: install helm v4.3.2
+        run: |
+          set -euo pipefail
+          h=helm-v4.3.2-linux-amd64.tar.gz
+          curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/$h" "https://get.helm.sh/$h"
+          echo "d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983  $RUNNER_TEMP/$h" | sha256sum -c -
+          sudo tar -xzf "$RUNNER_TEMP/$h" -C /usr/local/bin --strip-components=1 linux-amd64/helm
+          helm version
+      - name: chart lint, render, env names
+        run: scripts/check-chart.sh
+
   # Terraform and policy checks, offline. CI never touches GCP: no credentials, no plan.
   # The lead runs `terraform plan` locally. See docs/infra.md.
   infra:

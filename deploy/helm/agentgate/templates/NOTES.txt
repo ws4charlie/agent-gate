@@ -1,0 +1,9 @@
+AgentGate {{ include "agentgate.tag" . }} (signer: {{ .Values.signer }}, payments: {{ .Values.payments.enabled }}, paid tool: {{ .Values.paidtool.enabled }})
+
+Gateway: http://{{ include "agentgate.fullname" . }}-gateway.{{ .Release.Namespace }}.svc:{{ .Values.gateway.port }}
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "agentgate.fullname" . }}-gateway {{ .Values.gateway.port }}
+  curl -s localhost:{{ .Values.gateway.port }}/readyz
+
+Admin commands run in the gateway container (no shell needed):
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "agentgate.fullname" . }}-gateway -- /agentgate account create --name demo

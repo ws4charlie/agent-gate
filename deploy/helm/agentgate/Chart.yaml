@@ -1,0 +1,6 @@
+apiVersion: v2
+name: agentgate
+description: AgentGate gateway and its x402 paid tool. Configured only by env and mounted files; every secret comes from an existing Secret.
+type: application
+version: 0.1.0
+appVersion: "dev"

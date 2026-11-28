@@ -1,0 +1,199 @@
+{{- $vault := eq .Values.signer "vault" -}}
+{{- $wallet := and .Values.payments.enabled (eq .Values.signer "wallet") -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentgate.fullname" . }}-gateway
+  labels:
+    {{- include "agentgate.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  selector:
+    matchLabels:
+      {{- include "agentgate.selector" (dict "ctx" . "component" "gateway") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentgate.labels" . | nindent 8 }}
+        app.kubernetes.io/component: gateway
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.gateway.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "agentgate.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if $vault }}
+      initContainers:
+        # The gateway refuses a key file it does not own, with a group or
+        # other bit, or behind a symlink; a Secret volume has all three. Copy it
+        # into a private in-memory directory as the gateway's own user.
+        - name: gate-cred
+          image: "{{ .Values.gateCred.initImage.repository }}:{{ .Values.gateCred.initImage.tag }}"
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -ec
+            - umask 077; mkdir -p /run/gate/key; cp /run/gate-src/{{ .Values.gateCred.key }} /run/gate/key/gate-cred.key; chmod 600 /run/gate/key/gate-cred.key
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            requests: {cpu: 10m, memory: 8Mi}
+            limits: {memory: 32Mi}
+          volumeMounts:
+            - {name: gate-cred-src, mountPath: /run/gate-src, readOnly: true}
+            - {name: gate-cred, mountPath: /run/gate}
+      {{- end }}
+      containers:
+        - name: gateway
+          image: {{ include "agentgate.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [serve]
+          ports:
+            - {name: http, containerPort: {{ .Values.gateway.port }}}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: {name: {{ .Values.database.existingSecret | quote }}, key: {{ .Values.database.key | quote }}}
+            - {name: AG_LISTEN, value: "0.0.0.0:{{ .Values.gateway.port }}"}
+            - {name: AG_LOG_FORMAT, value: {{ .Values.gateway.logFormat | quote }}}
+            - {name: AG_PROVIDERS, value: /etc/agentgate/config/providers.json}
+            - {name: AG_PRICES, value: /etc/agentgate/config/prices.json}
+            {{- if .Values.gateway.config }}
+            - {name: AG_CONFIG, value: /etc/agentgate/config/config.json}
+            {{- end }}
+            {{- if .Values.gateway.mcp }}
+            - {name: AG_MCP, value: /etc/agentgate/config/mcp.json}
+            {{- end }}
+            {{- if .Values.gateway.registryEnforce }}
+            - {name: AG_REGISTRY_ENFORCE, value: "true"}
+            {{- end }}
+            {{- if .Values.gateway.cedarPolicies }}
+            - {name: AG_CEDAR_POLICIES, value: /etc/agentgate/cedar}
+            - {name: AG_CEDAR_ENFORCE, value: {{ .Values.gateway.cedarEnforce | quote }}}
+            {{- end }}
+            {{- with .Values.gateway.otelExporter }}
+            - {name: AG_OTEL_EXPORTER, value: {{ . | quote }}}
+            {{- end }}
+            {{- with .Values.chain.rpcUrl }}
+            - {name: AG_RPC_URL, value: {{ . | quote }}}
+            {{- end }}
+            {{- if .Values.payments.enabled }}
+            - {name: AG_PAYMENTS, value: /etc/agentgate/config/payments.json}
+            - {name: AG_SIGNER, value: {{ .Values.signer | quote }}}
+            {{- end }}
+            {{- if $wallet }}
+            - {name: AG_WALLET_KEY_FILE, value: /etc/agentgate/wallet/{{ .Values.wallet.key }}}
+            {{- end }}
+            {{- if $vault }}
+            {{- $v := .Values.vault }}
+            - {name: AG_VAULT_URL, value: {{ $v.url | quote }}}
+            - {name: AG_VAULT_WALLET_ID, value: {{ $v.walletId | quote }}}
+            - {name: AG_VAULT_WALLET_ADDRESS, value: {{ $v.walletAddress | quote }}}
+            - {name: AG_VAULT_TOKEN_URL, value: {{ $v.tokenUrl | quote }}}
+            - {name: AG_VAULT_CLIENT_ID, value: {{ $v.clientId | quote }}}
+            - {name: AG_VAULT_AUDIENCE, value: {{ $v.audience | quote }}}
+            {{- with $v.credTTL }}
+            - {name: AG_VAULT_CRED_TTL, value: {{ . | quote }}}
+            {{- end }}
+            - {name: AG_VAULT_CERT, value: /etc/agentgate/vault/{{ $v.keys.cert }}}
+            - {name: AG_VAULT_KEY, value: /etc/agentgate/vault/{{ $v.keys.key }}}
+            - {name: AG_VAULT_CA, value: /etc/agentgate/vault/{{ $v.keys.ca }}}
+            - {name: AG_VAULT_CLIENT_SECRET_FILE, value: /etc/agentgate/vault/{{ $v.keys.clientSecret }}}
+            {{- with $v.keys.tokenCA }}
+            - {name: AG_VAULT_TOKEN_CA, value: /etc/agentgate/vault/{{ . }}}
+            {{- end }}
+            - {name: AG_GATE_CRED_KEY_FILE, value: /run/gate/key/gate-cred.key}
+            - {name: AG_GATE_CRED_KID, value: {{ .Values.gateCred.kid | quote }}}
+            {{- end }}
+            {{- with .Values.gateway.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if or .Values.providerKeys.existingSecret .Values.gateway.extraEnvFrom }}
+          envFrom:
+            {{- with .Values.providerKeys.existingSecret }}
+            - secretRef: {name: {{ . | quote }}}
+            {{- end }}
+            {{- with .Values.gateway.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          startupProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          volumeMounts:
+            - {name: config, mountPath: /etc/agentgate/config, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+            {{- if .Values.gateway.cedarPolicies }}
+            - {name: cedar, mountPath: /etc/agentgate/cedar, readOnly: true}
+            {{- end }}
+            {{- if $wallet }}
+            - {name: wallet, mountPath: /etc/agentgate/wallet, readOnly: true}
+            {{- end }}
+            {{- if $vault }}
+            - {name: vault, mountPath: /etc/agentgate/vault, readOnly: true}
+            - {name: gate-cred, mountPath: /run/gate, readOnly: true}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap: {name: {{ include "agentgate.fullname" . }}-config}
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+        {{- if .Values.gateway.cedarPolicies }}
+        - name: cedar
+          configMap: {name: {{ include "agentgate.fullname" . }}-cedar}
+        {{- end }}
+        {{- if $wallet }}
+        - name: wallet
+          secret:
+            secretName: {{ .Values.wallet.existingSecret | quote }}
+            defaultMode: 0440
+            items: [{key: {{ .Values.wallet.key | quote }}, path: {{ .Values.wallet.key | quote }}}]
+        {{- end }}
+        {{- if $vault }}
+        - name: vault
+          secret:
+            secretName: {{ .Values.vault.existingSecret | quote }}
+            defaultMode: 0440
+        - name: gate-cred-src
+          secret:
+            secretName: {{ .Values.gateCred.existingSecret | quote }}
+            defaultMode: 0440
+            items: [{key: {{ .Values.gateCred.key | quote }}, path: {{ .Values.gateCred.key | quote }}}]
+        - name: gate-cred
+          emptyDir: {medium: Memory, sizeLimit: 1Mi}
+        {{- end }}
+      {{- with .Values.gateway.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gateway.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gateway.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,157 @@
+# AgentGate chart. Safe defaults: payments off, paid tool off, no NetworkPolicy.
+# Secrets are never generated here: every secret is the name of a Secret that
+# already exists in the release namespace. See docs/infra.md.
+
+image:
+  repository: agentgate
+  tag: ""            # default: the chart's appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: ""           # default: the release's full name
+
+# Postgres. The gateway runs the embedded migrations at start (advisory lock,
+# safe with several replicas).
+database:
+  existingSecret: "" # required: Secret holding the Postgres URL
+  key: DATABASE_URL
+
+# How the gateway signs x402 payments: wallet (a local key, test chains only)
+# or vault (QuorumVault). Only matters when payments.enabled.
+signer: wallet
+
+# Model provider keys: a Secret whose keys are the env names the gateway
+# reads (<NAME>_API_KEY, e.g. OPENROUTER_API_KEY). Empty: none.
+providerKeys:
+  existingSecret: ""
+
+# Chain JSON-RPC URL (AG_RPC_URL) for the gateway's reconciler and the paid
+# tool. Needed for anvil and base-sepolia; sim ignores it.
+chain:
+  rpcUrl: ""
+
+gateway:
+  replicas: 1
+  port: 8080
+  logFormat: json              # AG_LOG_FORMAT
+  registryEnforce: false       # AG_REGISTRY_ENFORCE
+  # Cedar policies as files (name.cedar: content), mounted as a directory
+  # (AG_CEDAR_POLICIES). Empty: Cedar off.
+  cedarPolicies: {}
+  cedarEnforce: false          # AG_CEDAR_ENFORCE (needs cedarPolicies)
+  otelExporter: ""             # AG_OTEL_EXPORTER: stdout | otlp; empty: off
+  # Optional JSON config file (AG_CONFIG); listen and database_url are set by
+  # the chart and must not be given here.
+  config: {}                   # e.g. {max_hold_nanos: 1000000000, default_max_tokens: 4096}
+  # Providers and routes (AG_PROVIDERS) and the price table (AG_PRICES),
+  # written to a ConfigMap and mounted. The defaults route nothing.
+  providers: {providers: {}, routes: []}
+  prices: {models: {}}
+  # MCP upstream servers (AG_MCP). Empty: /mcp/{server} is off.
+  mcp: {}
+  extraEnv: []                 # plain env entries, added last
+  extraEnvFrom: []
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {memory: 512Mi}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+# x402 payments (AG_PAYMENTS). Off by default.
+payments:
+  enabled: false
+  network: ""                  # required when enabled: sim | anvil | base-sepolia
+  maxTxUSD: ""                 # the signer's own per-transaction cap; empty: $1
+  tools: {}                    # tool name -> URL
+  # Tools served by this release's paid tool (when paidtool.enabled): each
+  # name becomes http://<paidtool service>:<port>/<name>.
+  paidtoolTools: []            # e.g. [echo, premium]
+  # sim only: the paid tool's base URL; default this release's paid tool.
+  chainQueryURL: ""
+
+# AG_SIGNER=wallet: the key file comes from a Secret.
+wallet:
+  existingSecret: ""           # required with payments.enabled and signer=wallet
+  key: wallet.key
+
+# AG_SIGNER=vault. Non-secret settings as values; files from Secrets.
+vault:
+  url: ""                      # AG_VAULT_URL
+  walletId: ""                 # AG_VAULT_WALLET_ID
+  walletAddress: ""            # AG_VAULT_WALLET_ADDRESS
+  tokenUrl: ""                 # AG_VAULT_TOKEN_URL
+  clientId: ""                 # AG_VAULT_CLIENT_ID
+  audience: ""                 # AG_VAULT_AUDIENCE
+  credTTL: ""                  # AG_VAULT_CRED_TTL, default 90s
+  # One Secret with the mTLS files, the CA and the client secret, e.g.
+  # made from QuorumVault's onboarding output directory.
+  existingSecret: ""
+  keys:
+    cert: tls.crt              # AG_VAULT_CERT
+    key: tls.key               # AG_VAULT_KEY
+    ca: ca.crt                 # AG_VAULT_CA
+    clientSecret: client_secret  # AG_VAULT_CLIENT_SECRET_FILE
+    tokenCA: token_ca.crt      # AG_VAULT_TOKEN_CA; empty: system roots
+
+# The Gate credential key (signer=vault). The gateway accepts only a regular
+# file owned by its own user, mode 0600, in a directory no one else can write.
+# A Secret volume is none of these, so an init container copies it into a
+# private in-memory directory first.
+gateCred:
+  existingSecret: ""           # required with signer=vault
+  key: gate-cred.key
+  kid: ""                      # AG_GATE_CRED_KID, required with signer=vault
+  initImage:
+    repository: busybox
+    tag: "1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec"
+
+# The x402 seller with its own facilitator (`agentgate paidtool`).
+paidtool:
+  enabled: false
+  port: 9402
+  network: sim                 # sim | anvil | base-sepolia
+  payTo: ""                    # required when enabled: address that receives payment
+  fund: ""                     # sim and anvil: mint this many USDC at start
+  fundAddress: ""              # to this payer address
+  # base-sepolia: Secret holding AG_FACILITATOR_KEY (pays gas to settle).
+  facilitatorKey:
+    existingSecret: ""
+    key: AG_FACILITATOR_KEY
+  extraArgs: []
+  extraEnv: []
+  resources:
+    requests: {cpu: 20m, memory: 32Mi}
+    limits: {memory: 256Mi}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile: {type: RuntimeDefault}
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities: {drop: [ALL]}
+
+# Default deny for both pods, then only what is listed. Each egress group is a
+# list of NetworkPolicyEgressRule (to + ports). DNS to kube-dns is always allowed.
+networkPolicy:
+  enabled: false
+  # Who may call the gateway. Default: any pod in the release namespace.
+  gatewayIngressFrom:
+    - podSelector: {}
+  egress:
+    postgres: []               # e.g. [{to: [{podSelector: {matchLabels: {cnpg.io/cluster: gate-db}}}], ports: [{port: 5432}]}]
+    vault: []                  # QuorumVault core (signer=vault)
+    tokenProvider: []          # the identity provider's token endpoint (signer=vault)
+    chainRpc: []               # gateway reconciler and paid tool
+    extra: []                  # anything else, e.g. model providers

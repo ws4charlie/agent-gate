@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentgate.fullname" . }}-gateway
+  labels:
+    {{- include "agentgate.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agentgate.selector" (dict "ctx" . "component" "gateway") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.gateway.port }}
+      targetPort: http
+{{- if .Values.paidtool.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentgate.paidtoolHost" . }}
+  labels:
+    {{- include "agentgate.labels" . | nindent 4 }}
+    app.kubernetes.io/component: paidtool
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agentgate.selector" (dict "ctx" . "component" "paidtool") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.paidtool.port }}
+      targetPort: http
+{{- end }}

@@ -1,0 +1,26 @@
+# CI render: vault signer with every optional setting, anvil, paid tool. Placeholders only.
+database: {existingSecret: agentgate-db}
+signer: vault
+chain: {rpcUrl: "http://anvil.qv.svc:8545"}
+payments:
+  enabled: true
+  network: anvil
+  paidtoolTools: [echo]
+vault:
+  url: https://core.example.invalid
+  walletId: w-test
+  walletAddress: "0x0000000000000000000000000000000000000001"
+  tokenUrl: https://idp.example.invalid/token
+  clientId: agentgate
+  audience: quorumvault
+  credTTL: 60s
+  existingSecret: agentgate-vault
+gateCred: {existingSecret: agentgate-gate-cred, kid: gate-test}
+paidtool:
+  enabled: true
+  network: anvil
+  payTo: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+networkPolicy:
+  enabled: true
+  egress:
+    vault: [{to: [{namespaceSelector: {}}]}]

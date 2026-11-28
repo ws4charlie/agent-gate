@@ -1,0 +1,65 @@
+# Example for the local kind cluster (Phase 2): AgentGate in namespace
+# agentgate next to QuorumVault's kind lane, signing through Vault, paying on
+# the lane's anvil (chain id 84532). The env repo creates the Secrets named
+# here and fills the vault.* values from QuorumVault's onboarding output
+# directory (one file per value); nothing here is specific to one machine.
+#
+#   helm upgrade --install agentgate deploy/helm/agentgate -n agentgate \
+#     -f deploy/helm/agentgate/values-local.yaml -f <env repo>/agentgate-vault.yaml
+
+image:
+  repository: agentgate
+  tag: local                   # docker build -t agentgate:local . && kind load docker-image agentgate:local
+
+database:
+  existingSecret: agentgate-db # key DATABASE_URL (e.g. built from the CloudNativePG app Secret)
+
+signer: vault
+
+chain:
+  rpcUrl: http://anvil.qv.svc:8545   # onboarding output: rpc_url
+
+payments:
+  enabled: true
+  network: anvil
+  paidtoolTools: [echo, premium]
+
+vault:
+  # From the onboarding output directory (files of the same name):
+  url: ""                      # vault_url
+  walletId: ""                 # wallet_id
+  walletAddress: ""            # wallet_address
+  tokenUrl: ""                 # token_url
+  clientId: ""                 # client_id
+  audience: ""                 # audience
+  # kubectl -n agentgate create secret generic agentgate-vault \
+  #   --from-file=tls.crt --from-file=tls.key --from-file=ca.crt \
+  #   --from-file=client_secret --from-file=token_ca.crt   (run in the output directory)
+  existingSecret: agentgate-vault
+
+gateCred:
+  # kubectl -n agentgate create secret generic agentgate-gate-cred --from-file=gate-cred.key=<seed file>
+  existingSecret: agentgate-gate-cred
+  kid: ""                      # the kid given to the onboarding script
+
+paidtool:
+  enabled: true
+  network: anvil
+  payTo: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"   # a public anvil test address, not a secret
+
+networkPolicy:
+  enabled: true
+  egress:
+    postgres:
+      - to: [{podSelector: {matchLabels: {cnpg.io/cluster: agentgate-db}}}]
+        ports: [{port: 5432}]
+    vault:                     # QuorumVault's core, in the signing namespace of the kind lane
+      - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: qv-signing}}}]
+    tokenProvider:             # Keycloak; the env repo narrows this to its namespace
+      - to: [{namespaceSelector: {}}]
+        ports: [{port: 443}, {port: 8443}]
+    chainRpc:
+      - to:
+          - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: qv}}
+            podSelector: {matchLabels: {app: chain-stub, chain: anvil}}
+        ports: [{port: 8545}]
