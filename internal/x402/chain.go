@@ -238,3 +238,51 @@ func rejectedBySend(err error) bool {
 	}
 	return false
 }
+
+// TokenDomain reads the EIP-712 domain of an EIP-3009 token that is already
+// deployed: name() and version() from the contract, the chain id from the
+// node. It refuses an address without code, a contract that does not answer
+// name/version, and one whose DOMAIN_SEPARATOR() is not the separator those
+// values give, so signatures made for the returned domain verify on chain.
+func (c *EthChain) TokenDomain(ctx context.Context, token common.Address) (Domain, error) {
+	code, err := c.Client.CodeAt(ctx, token, nil)
+	if err != nil {
+		return Domain{}, fmt.Errorf("token %s: %w", token.Hex(), err)
+	}
+	if len(code) == 0 {
+		return Domain{}, fmt.Errorf("token %s: no contract at that address", token.Hex())
+	}
+	str := func(method string) (string, error) {
+		r, err := c.call(ctx, token, method)
+		if err != nil {
+			return "", fmt.Errorf("token %s: %s(): %w", token.Hex(), method, err)
+		}
+		s, ok := r[0].(string)
+		if !ok || s == "" {
+			return "", fmt.Errorf("token %s: %s() returned no name", token.Hex(), method)
+		}
+		return s, nil
+	}
+	name, err := str("name")
+	if err != nil {
+		return Domain{}, err
+	}
+	version, err := str("version")
+	if err != nil {
+		return Domain{}, err
+	}
+	id, err := c.Client.ChainID(ctx)
+	if err != nil {
+		return Domain{}, err
+	}
+	d := Domain{Name: name, Version: version, ChainID: id, Contract: token}
+	r, err := c.call(ctx, token, "DOMAIN_SEPARATOR")
+	if err != nil {
+		return Domain{}, fmt.Errorf("token %s: DOMAIN_SEPARATOR(): %w", token.Hex(), err)
+	}
+	sep, ok := r[0].([32]byte)
+	if !ok || common.Hash(sep) != d.Separator() {
+		return Domain{}, fmt.Errorf("token %s: DOMAIN_SEPARATOR() does not match name %q, version %q, chain %s", token.Hex(), name, version, id)
+	}
+	return d, nil
+}

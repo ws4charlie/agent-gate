@@ -34,20 +34,21 @@ spec:
       {{- if $vault }}
       initContainers:
         # The gateway refuses a key file it does not own, with a group or
-        # other bit, or behind a symlink; a Secret volume has all three. Copy it
-        # into a private in-memory directory as the gateway's own user.
+        # other bit, or behind a symlink; a Secret volume has all three.
+        # `agentgate gatecred install` copies it into a private in-memory
+        # directory as the gateway's own user, then loads it with the
+        # gateway's own checks.
         - name: gate-cred
-          image: "{{ .Values.gateCred.initImage.repository }}:{{ .Values.gateCred.initImage.tag }}"
-          imagePullPolicy: IfNotPresent
-          command:
-            - sh
-            - -ec
-            - umask 077; mkdir -p /run/gate/key; cp /run/gate-src/{{ .Values.gateCred.key }} /run/gate/key/gate-cred.key; chmod 600 /run/gate/key/gate-cred.key
+          image: {{ include "agentgate.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [gatecred, install, --from=/run/gate-src/{{ .Values.gateCred.key }}, --to=/run/gate/key/gate-cred.key]
+          env:
+            - {name: AG_GATE_CRED_KID, value: {{ .Values.gateCred.kid | quote }}}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           resources:
             requests: {cpu: 10m, memory: 8Mi}
-            limits: {memory: 32Mi}
+            limits: {memory: 64Mi}
           volumeMounts:
             - {name: gate-cred-src, mountPath: /run/gate-src, readOnly: true}
             - {name: gate-cred, mountPath: /run/gate}

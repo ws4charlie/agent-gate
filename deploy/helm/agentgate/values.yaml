@@ -106,15 +106,12 @@ vault:
 
 # The Gate credential key (signer=vault). The gateway accepts only a regular
 # file owned by its own user, mode 0600, in a directory no one else can write.
-# A Secret volume is none of these, so an init container copies it into a
-# private in-memory directory first.
+# A Secret volume is none of these, so an init container (this image,
+# `agentgate gatecred install`) copies it into a private in-memory directory.
 gateCred:
   existingSecret: ""           # required with signer=vault
   key: gate-cred.key
   kid: ""                      # AG_GATE_CRED_KID, required with signer=vault
-  initImage:
-    repository: busybox
-    tag: "1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec"
 
 # The x402 seller with its own facilitator (`agentgate paidtool`).
 paidtool:
@@ -124,6 +121,9 @@ paidtool:
   payTo: ""                    # required when enabled: address that receives payment
   fund: ""                     # sim and anvil: mint this many USDC at start
   fundAddress: ""              # to this payer address
+  # anvil: accept this already deployed EIP-3009 token (e.g. QuorumVault's
+  # mock USDC, onboarding output usdc_address) instead of deploying a mock.
+  token: ""
   # base-sepolia: Secret holding AG_FACILITATOR_KEY (pays gas to settle).
   facilitatorKey:
     existingSecret: ""

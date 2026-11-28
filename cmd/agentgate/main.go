@@ -100,7 +100,8 @@ commands:
   bank        list | show | simulate-return: Mercury ACH payments and their audit chain
   registry    add | list | status | remove | gaps: the catalogue of allowed models, tools and agents
   console     the local web console: overview, controls, research tasks
-  gatecred    keygen [--file F] [--kid K]: the key Gate signs QuorumVault credentials with`)
+  gatecred    keygen [--file F] [--kid K]: the key Gate signs QuorumVault credentials with
+              install --from F --to T: copy that key (e.g. from a Secret volume) into the form the gateway loads`)
 }
 
 func migrate(ctx context.Context, args []string, stdout io.Writer) error {
