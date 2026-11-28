@@ -3,6 +3,8 @@ module github.com/ws4charlie/agent-gate
 go 1.26.0
 
 require (
+	github.com/MercuryTechnologies/mercury-go v0.16.1
+	github.com/cedar-policy/cedar-go v1.9.2
 	github.com/ethereum/go-ethereum v1.17.10
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.12.0
@@ -17,7 +19,6 @@ require (
 
 require (
 	github.com/DataDog/zstd v1.5.7 // indirect
-	github.com/MercuryTechnologies/mercury-go v0.16.1 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20251001021608-1fe7b43fc4d6 // indirect
 	github.com/RaduBerinde/axisds v0.1.0 // indirect
@@ -26,7 +27,6 @@ require (
 	github.com/VictoriaMetrics/fastcache v1.13.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.20.0 // indirect
-	github.com/cedar-policy/cedar-go v1.9.2 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cockroachdb/crlib v0.0.0-20241112164430-1264a2edc35b // indirect
