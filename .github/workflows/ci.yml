@@ -25,6 +25,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: no real emails or secrets in tracked files
         run: scripts/check-leaks.sh
+      - name: no file over 1 MB and no executable binary added
+        run: |
+          base=${{ github.event_name == 'pull_request' && github.base_ref || github.event.before }}
+          case $base in 0000000000000000000000000000000000000000) exit 0 ;; esac
+          git fetch --no-tags --depth=1 origin "$base"
+          scripts/check-added-files.sh FETCH_HEAD
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
