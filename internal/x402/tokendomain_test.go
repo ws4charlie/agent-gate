@@ -31,7 +31,7 @@ func TestTokenDomain(t *testing.T) {
 	}
 	for _, bad := range []common.Address{
 		common.HexToAddress("0x00000000000000000000000000000000000000ff"), // nothing there
-		crypto.PubkeyToAddress(sim.Deployer.PublicKey),                     // an account, not a contract
+		crypto.PubkeyToAddress(sim.Deployer.PublicKey),                    // an account, not a contract
 	} {
 		if _, err := sim.Chain.TokenDomain(ctx, bad); err == nil || !strings.Contains(err.Error(), "no contract") {
 			t.Errorf("%s: err = %v, want no contract", bad.Hex(), err)
