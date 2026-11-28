@@ -10,6 +10,8 @@ Agents use tools through MCP, the standard protocol for connecting them to outsi
 
 Other tools don't show up in the list, and calling one anyway is refused. Tool credentials stay on the gateway, out of the agent's reach.
 
+The upstream MCP servers and their tool prices are set in a config file given with `--mcp`; see [demo/mcp.example.json](../demo/mcp.example.json).
+
 Most MCP clients today still speak an older version of the protocol, with a handshake at the start. The gateway answers the handshake itself and upgrades each message, so those clients work unchanged.
 
 ## Free and priced tools
