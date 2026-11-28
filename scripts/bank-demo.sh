@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Bank rail demo against Mercury's SANDBOX (fake money). Needs a Postgres
 # (DATABASE_URL) and these in the environment:
-#   MERCURY_API_TOKEN (or AG_MERCURY_TOKEN)  the sandbox token; never printed here
+#   AG_MERCURY_TOKEN                         the sandbox token; never printed here
 #   AG_MERCURY_ACCOUNT                       checking account id to pay from
 #   DEMO_RECIPIENT_ID                        an ACH recipient id in that sandbox org
 # Optional: DEMO_WAIT (seconds to wait for a human at Mercury, default 60),
@@ -17,7 +17,7 @@ cd "$(dirname "$0")/.."
 : "${DATABASE_URL:?set DATABASE_URL}"
 : "${AG_MERCURY_ACCOUNT:?set AG_MERCURY_ACCOUNT}"
 : "${DEMO_RECIPIENT_ID:?set DEMO_RECIPIENT_ID}"
-[ -n "${MERCURY_API_TOKEN:-}${AG_MERCURY_TOKEN:-}" ] || { echo "set MERCURY_API_TOKEN (sandbox token)"; exit 1; }
+[ -n "${AG_MERCURY_TOKEN:-}" ] || { echo "set AG_MERCURY_TOKEN (sandbox token)"; exit 1; }
 WAIT=${DEMO_WAIT:-60}
 PORT=${DEMO_PORT:-18095}
 WORK=$(mktemp -d)
