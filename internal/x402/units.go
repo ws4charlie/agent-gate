@@ -17,11 +17,3 @@ func NanosFromAtomic(a *big.Int) (money.Nanos, bool) {
 	}
 	return money.Nanos(a.Int64()) * nanosPerAtomic, true
 }
-
-// AtomicFromNanos is the inverse; it rejects fractions of a micro-USDC.
-func AtomicFromNanos(n money.Nanos) (*big.Int, bool) {
-	if n < 0 || n%nanosPerAtomic != 0 {
-		return nil, false
-	}
-	return big.NewInt(int64(n / nanosPerAtomic)), true
-}
