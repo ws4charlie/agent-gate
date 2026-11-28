@@ -8,7 +8,7 @@ payments:
   paidtoolTools: [echo]
 vault:
   url: https://core.example.invalid
-  walletId: w-test
+  walletId: 00000000-0000-4000-8000-000000000001
   walletAddress: "0x0000000000000000000000000000000000000001"
   tokenUrl: https://idp.example.invalid/token
   clientId: agentgate
