@@ -48,7 +48,7 @@ agentgate bank show <payment_id>
 ## Turn it on
 
 ```bash
-export MERCURY_API_TOKEN=...        # or AG_MERCURY_TOKEN; the sandbox token, from the environment only
+export AG_MERCURY_TOKEN=...         # the sandbox token, from the environment only
 export AG_MERCURY_ACCOUNT=<checking account id>
 agentgate registry add tool mercury/ach --owner <team> --purpose "ACH through Mercury" --status approved
 agentgate serve --mercury           # or AG_MERCURY=true

@@ -3,3 +3,8 @@ data/
 *.key
 bin/
 .DS_Store
+
+# go build ./cmd/<name> at the repo root
+/agentgate
+/fakemcp
+/fakeupstream

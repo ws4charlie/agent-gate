@@ -20,7 +20,7 @@ import (
 )
 
 // mercuryFlags are the gateway flags and env vars of the bank rail. The token
-// is read from the environment only (AG_MERCURY_TOKEN or MERCURY_API_TOKEN):
+// is read from the environment only (AG_MERCURY_TOKEN):
 // a flag would show up in the process list.
 type mercuryFlags struct {
 	on                      *bool
@@ -45,18 +45,11 @@ func envDuration(k string, d time.Duration) time.Duration {
 	return d
 }
 
-func mercuryToken() string {
-	if v := os.Getenv("AG_MERCURY_TOKEN"); v != "" {
-		return v
-	}
-	return os.Getenv("MERCURY_API_TOKEN")
-}
-
 // newBankService wires the bank rail for the gateway.
 func newBankService(f mercuryFlags, pool *pgxpool.Pool, led *ledger.Postgres, ag *agents.Store, q *approval.Queue, log *slog.Logger) (*bank.Service, error) {
-	rail, err := bank.NewMercury(bank.MercuryConfig{BaseURL: *f.baseURL, AccountID: *f.account, Token: mercuryToken(), Proxy: *f.proxy})
+	rail, err := bank.NewMercury(bank.MercuryConfig{BaseURL: *f.baseURL, AccountID: *f.account, Token: os.Getenv("AG_MERCURY_TOKEN"), Proxy: *f.proxy})
 	if err != nil {
-		return nil, fmt.Errorf("--mercury: %w (set AG_MERCURY_TOKEN or MERCURY_API_TOKEN, and --mercury-account)", err)
+		return nil, fmt.Errorf("--mercury: %w (set AG_MERCURY_TOKEN and --mercury-account)", err)
 	}
 	env := "production"
 	if bank.IsSandbox(*f.baseURL) {

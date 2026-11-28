@@ -44,7 +44,7 @@ agentgate bank show <payment_id>
 ## 开启
 
 ```bash
-export MERCURY_API_TOKEN=...        # 或 AG_MERCURY_TOKEN；沙盒 token，只从环境变量读取
+export AG_MERCURY_TOKEN=...         # 沙盒 token，只从环境变量读取
 export AG_MERCURY_ACCOUNT=<支票账户 id>
 agentgate registry add tool mercury/ach --owner <团队> --purpose "ACH through Mercury" --status approved
 agentgate serve --mercury           # 或 AG_MERCURY=true

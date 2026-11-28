@@ -1,6 +1,6 @@
 package vaultsign_test
 
-// Tests for the T18-fix1 review findings. Each fails on 99c910b.
+// Edge cases of the Vault client: expiry, token refresh, certificates, status mapping, log injection.
 
 import (
 	"context"
@@ -19,7 +19,7 @@ import (
 	"github.com/ws4charlie/agent-gate/internal/vaultsign/vaulttest"
 )
 
-// Finding 1: retries never run past the credential's expiry.
+// Retries never run past the credential's expiry.
 func TestCredentialExpiry(t *testing.T) {
 	t.Run("expired credential is never sent", func(t *testing.T) {
 		e := newEnv(t, vaulttest.Options{})
@@ -73,7 +73,7 @@ func TestCredentialExpiry(t *testing.T) {
 	})
 }
 
-// Finding 2: N concurrent 401s cost exactly one token fetch.
+// N concurrent 401s cost exactly one token fetch.
 func TestTokenRefreshStorm(t *testing.T) {
 	e := newEnv(t, vaulttest.Options{})
 	mustSign(t, e, e.request())
@@ -152,7 +152,7 @@ func TestShortLivedToken(t *testing.T) {
 	}
 }
 
-// Finding 3: redirects, token CA, expires_in clamp.
+// Redirects, token CA, expires_in clamp.
 func TestTokenEndpointHardening(t *testing.T) {
 	t.Run("redirect is refused, secret not sent on", func(t *testing.T) {
 		e := newEnv(t, vaulttest.Options{})
@@ -213,7 +213,7 @@ func mustRead(t *testing.T, p string) []byte {
 	return b
 }
 
-// Finding 4: certificate validation and reloads.
+// Certificate validation and reloads.
 func TestClientCertificate(t *testing.T) {
 	t.Run("New refuses another identity", func(t *testing.T) {
 		e := newEnv(t, vaulttest.Options{})
@@ -276,7 +276,7 @@ func TestClientCertificate(t *testing.T) {
 	})
 }
 
-// Finding 5: status/code mapping.
+// Status/code mapping.
 func TestStatusMapping(t *testing.T) {
 	retried := map[string]vaulttest.Step{
 		"429":                   {Status: 429, Body: `{"message":"slow down"}`},
@@ -309,7 +309,7 @@ func TestStatusMapping(t *testing.T) {
 	}
 }
 
-// Finding 6: uint256 range and window.
+// uint256 range and window.
 func TestAuthRange(t *testing.T) {
 	e := newEnv(t, vaulttest.Options{})
 	over := new(big.Int).Lsh(big.NewInt(1), 256)
@@ -336,7 +336,7 @@ func TestAuthRange(t *testing.T) {
 	}
 }
 
-// Finding 7: Vault-supplied text cannot forge log lines or error lines.
+// Vault-supplied text cannot forge log lines or error lines.
 func TestNoLogInjection(t *testing.T) {
 	f := vaulttest.New(t, vaulttest.Options{})
 	logs := &syncBuf{}

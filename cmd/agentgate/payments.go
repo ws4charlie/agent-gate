@@ -37,7 +37,7 @@ import (
 // PaymentsFile is the JSON the gateway reads with --payments / $AG_PAYMENTS.
 // Absent file: the payments route is off.
 type PaymentsFile struct {
-	Network string            `json:"network"` // sim | anvil | base-sepolia
+	Network string            `json:"network"` // required: sim | anvil | base-sepolia
 	Tools   map[string]string `json:"tools"`   // tool name -> URL
 	// ChainQueryURL (sim only): base URL of the paid tool, which hosts the
 	// simulated chain; the reconciler asks it whether an authorization was used.
@@ -59,7 +59,23 @@ func readPaymentsFile(path string) (PaymentsFile, error) {
 	if err := dec.Decode(&f); err != nil {
 		return f, fmt.Errorf("payments config: %w", err)
 	}
+	if err := checkNetwork(f.Network); err != nil {
+		return f, err
+	}
 	return f, nil
+}
+
+// checkNetwork refuses an empty or unknown network. There is no default: an
+// empty network once meant the simulated chain, which a real deployment must
+// never fall into by leaving the setting out.
+func checkNetwork(network string) error {
+	switch network {
+	case "sim", x402.NetworkAnvil, "base-sepolia":
+		return nil
+	case "":
+		return errors.New(`payments config: "network" is required: sim, anvil or base-sepolia`)
+	}
+	return fmt.Errorf(`payments config: "network" is %q: want sim, anvil or base-sepolia`, network)
 }
 
 // Signer selection. AG_SIGNER=wallet (the default) signs with the local key
@@ -210,7 +226,7 @@ func paymentsLookup(ctx context.Context, f PaymentsFile) (ledger.UsageLookup, er
 func chainReader(ctx context.Context, f PaymentsFile) (x402.AuthReader, error) {
 	var r x402.AuthReader
 	switch f.Network {
-	case "sim", "":
+	case "sim":
 		if f.ChainQueryURL == "" {
 			return nil, errors.New("payments config: sim needs chain_query_url (the paid tool's base URL)")
 		}
@@ -247,7 +263,7 @@ func chainReader(ctx context.Context, f PaymentsFile) (x402.AuthReader, error) {
 
 func chainIDFor(network string) (uint64, error) {
 	switch network {
-	case "sim", "":
+	case "sim":
 		return x402.LocalChainID, nil
 	case "base-sepolia", x402.NetworkAnvil:
 		return x402.BaseSepoliaChainID, nil // anvil runs with the testnet's chain id: the signing path is unchanged
