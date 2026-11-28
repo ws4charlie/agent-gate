@@ -72,7 +72,10 @@ must_fail vault "vault.audience is required" --set vault.audience=
 must_fail vault "signer was removed" --set signer=wallet
 must_fail sim "wallet was removed" --set wallet.existingSecret=agentgate-wallet
 must_fail sim "must end in .cedar" --set gateway.cedarPolicies.policy=x
-must_fail sim "paidtool.fund needs paidtool.fundAddress" --set paidtool.fundAddress=
+must_fail vault "paidtool.fund needs paidtool.fundAddress" --set paidtool.fund=5
+# sim in k8s cannot be funded: the gateway's sim key is ephemeral.
+must_fail sim "sim payments are not payable in Kubernetes" --set paidtool.fund=5,paidtool.fundAddress=0x70997970C51812dc3A010C7d01b50e0d17dc79C8
+must_fail sim "sim payments are not payable in Kubernetes" --set paidtool.fundAddress=0x70997970C51812dc3A010C7d01b50e0d17dc79C8
 must_fail sim "paidtool.token is for paidtool.network=anvil only" --set paidtool.token=0x00000000000000000000000000000000000000aa
 must_fail vault "paidtool.token must be a 0x address" --set paidtool.token=usdc
 must_fail vault "gateCred.key must be a plain file name" --set gateCred.key=../k

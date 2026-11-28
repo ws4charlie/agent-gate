@@ -16,8 +16,6 @@ payments:
 paidtool:
   enabled: true
   payTo: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
-  fund: "5"
-  fundAddress: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 networkPolicy:
   enabled: true
   egress:

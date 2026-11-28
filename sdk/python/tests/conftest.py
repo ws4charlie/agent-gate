@@ -9,6 +9,7 @@ import re
 import shutil
 import socket
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -31,13 +32,25 @@ def _first_line(proc: subprocess.Popen) -> str:
     return proc.stdout.readline().strip()
 
 
-def _sim_wallet(gw: subprocess.Popen) -> str:
-    """The throw-away address the gateway logs when it starts on sim."""
-    for line in gw.stdout:
-        m = re.search(r"x402 signer: ephemeral sim key.* wallet=(0x[0-9a-fA-F]{40})", line)
-        if m:
-            return m.group(1)
-    raise RuntimeError("gateway exited without logging its sim signer")
+def _sim_wallet(gw: subprocess.Popen, timeout: float = 15) -> str:
+    """The throw-away address the gateway logs when it starts on sim. Fails with
+    the log so far if the line does not come within timeout seconds."""
+    seen, found = [], []
+
+    def read():
+        for line in gw.stdout:
+            seen.append(line)
+            m = re.search(r"x402 signer: ephemeral sim key.* wallet=(0x[0-9a-fA-F]{40})", line)
+            if m:
+                found.append(m.group(1))
+                return
+
+    t = threading.Thread(target=read, daemon=True)
+    t.start()
+    t.join(timeout)
+    if not found:
+        raise RuntimeError(f"no sim signer line from the gateway within {timeout:g}s; log so far:\n" + "".join(seen))
+    return found[0]
 
 
 class Stack:

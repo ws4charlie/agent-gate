@@ -113,8 +113,8 @@ paidtool:
   port: 9402
   network: sim                 # sim | anvil | base-sepolia
   payTo: ""                    # required when enabled: address that receives payment
-  fund: ""                     # sim and anvil: mint this many USDC at start
-  fundAddress: ""              # to this payer address
+  fund: ""                     # anvil only: mint this many USDC at start (on sim the
+  fundAddress: ""              # gateway's key is made at start, so there is nothing to fund)
   # anvil: accept this already deployed EIP-3009 token (e.g. QuorumVault's
   # mock USDC, onboarding output usdc_address) instead of deploying a mock.
   token: ""

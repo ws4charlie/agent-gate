@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -81,16 +82,27 @@ func TestGatewayVaultSignerStartup(t *testing.T) {
 		refused(append(without(""), kv), strings.SplitN(kv, "=", 2)[0])
 	}
 
-	// sim: no Vault, no key file; one log line with the throw-away address.
+	// sim: no Vault, no key file; one log line with the throw-away address,
+	// and the key is never written: the gateway's working directory and temp
+	// directory (both empty at start) stay empty.
 	simPay := filepath.Join(dir, "sim.json")
 	if err := os.WriteFile(simPay, []byte(`{"network":"sim","tools":{},"chain_query_url":"http://127.0.0.1:9"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	work, tmp := t.TempDir(), t.TempDir()
 	listen = freeAddr(t)
-	gw = startGateway(t, append(gatewayEnv(dbURL(pool), listen, providers, prices), "AG_PAYMENTS="+simPay), listen)
+	gw = startGatewayIn(t, work, append(gatewayEnv(dbURL(pool), listen, providers, prices), "AG_PAYMENTS="+simPay, "TMPDIR="+tmp), listen)
 	_ = gw.cmd.Process.Kill()
 	_ = gw.cmd.Wait()
 	if l := gw.log.String(); !strings.Contains(l, "x402 signer: ephemeral sim key (no on-chain value)") || !strings.Contains(l, "network=eip155:1337") {
 		t.Fatalf("no sim signer line in:\n%s", l)
+	}
+	for _, d := range []string{work, tmp} {
+		_ = filepath.WalkDir(d, func(p string, _ fs.DirEntry, err error) error {
+			if err == nil && p != d {
+				t.Errorf("the sim gateway wrote %s", p)
+			}
+			return nil
+		})
 	}
 }

@@ -111,6 +111,9 @@ On sim the gateway signs with a throw-away key; there is no other signer. */}}
 {{- if and .Values.paidtool.fund (not .Values.paidtool.fundAddress) -}}
 {{- fail "paidtool.fund needs paidtool.fundAddress" -}}
 {{- end -}}
+{{- if and (eq .Values.paidtool.network "sim") (or .Values.paidtool.fund .Values.paidtool.fundAddress) -}}
+{{- fail "paidtool.fund/fundAddress on sim: the gateway's sim key is made at start and never known in advance, so no address can be funded and sim payments are not payable in Kubernetes; to pay, use network anvil or base-sepolia, where QuorumVault signs (vault.*, gateCred.*)" -}}
+{{- end -}}
 {{- if .Values.networkPolicy.enabled -}}
 {{- $eg := .Values.networkPolicy.egress -}}
 {{- $groups := list "postgres" -}}
