@@ -36,3 +36,7 @@ Agent 可以用短期的 SPIFFE 证书证明身份，不必再带密钥。网关
 优先用供应商给的数字，其次用我们的价格表，最后才用估算值，并明确标记为估算。
 
 上手时复制 [configs/prices.example.json](../../configs/prices.example.json)（`--prices`）和 [configs/providers.example.json](../../configs/providers.example.json)（`--providers`）。监听地址、数据库 URL 和预留上限可以写在 [configs/agentgate.example.json](../../configs/agentgate.example.json)（`--config`）里，环境变量会覆盖它。
+
+## 探针和日志
+
+进程在跑，`/healthz` 就回应；`/readyz` 只有在数据库一秒内回应时才返回 200，否则返回 503。设 `AG_LOG_FORMAT=json`（或 `--log-format json`）每行日志输出一个 JSON 对象；默认是文本。

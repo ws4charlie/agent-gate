@@ -36,3 +36,7 @@ Keys stay as the fallback for clients that cannot get a certificate. You can tur
 The provider's own figure comes first, then our price table, then an estimate that is clearly marked as one.
 
 To start, copy [configs/prices.example.json](../configs/prices.example.json) (`--prices`) and [configs/providers.example.json](../configs/providers.example.json) (`--providers`). The listen address, database URL and hold limits can come from [configs/agentgate.example.json](../configs/agentgate.example.json) (`--config`); environment variables override it.
+
+## Probes and logs
+
+`/healthz` answers while the process runs; `/readyz` answers 200 only when the database replies within a second, else 503. Set `AG_LOG_FORMAT=json` (or `--log-format json`) for one JSON object per log line; the default is text.
