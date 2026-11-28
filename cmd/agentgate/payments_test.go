@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ws4charlie/agent-gate/internal/x402"
 )
 
 // The payments file must name its network: an empty one no longer means the
@@ -33,7 +35,11 @@ func TestPaymentsNetworkRequired(t *testing.T) {
 				if err != nil {
 					t.Fatalf("got %v, want ok", err)
 				}
-				if _, err := chainIDFor(f.Network); err != nil {
+				var reported uint64 // what an anvil node reports; sim and base-sepolia ask none here
+				if f.Network == x402.NetworkAnvil {
+					reported = x402.AnvilChainID
+				}
+				if _, err := chainIDFor(f.Network, reported); err != nil {
 					t.Fatalf("chainIDFor(%q): %v", f.Network, err)
 				}
 				return
@@ -43,7 +49,7 @@ func TestPaymentsNetworkRequired(t *testing.T) {
 			}
 		})
 	}
-	if _, err := chainIDFor(""); err == nil {
+	if _, err := chainIDFor("", x402.AnvilChainID); err == nil {
 		t.Fatal(`chainIDFor(""): want an error, not the simulated chain`)
 	}
 }

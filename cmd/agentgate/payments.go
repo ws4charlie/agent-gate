@@ -105,8 +105,10 @@ func refuseRetiredEnv() error {
 // vaultErr prefixes every QuorumVault setup error.
 const vaultErr = "x402 signer (QuorumVault)"
 
-func loadPayments(f PaymentsFile) (*server.Payments, error) {
-	chainID, err := chainIDFor(f.Network)
+// loadPayments builds the signer. reported is the chain id the anvil node
+// reported at start-up (anvilChainID); sim and base-sepolia take 0.
+func loadPayments(f PaymentsFile, reported uint64) (*server.Payments, error) {
+	chainID, err := chainIDFor(f.Network, reported)
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +238,7 @@ func paymentsLookup(ctx context.Context, f PaymentsFile) (ledger.UsageLookup, er
 }
 
 // chainReader is the read-only view of the chain: the simulated one over HTTP,
-// or Base Sepolia over $AG_RPC_URL. It holds no key.
+// the anvil node, or Base Sepolia over $AG_RPC_URL. It holds no key.
 func chainReader(ctx context.Context, f PaymentsFile) (x402.AuthReader, error) {
 	var r x402.AuthReader
 	switch f.Network {
@@ -275,14 +277,39 @@ func chainReader(ctx context.Context, f PaymentsFile) (x402.AuthReader, error) {
 	return r, nil
 }
 
-func chainIDFor(network string) (uint64, error) {
+// chainIDFor is the chain id a network signs on, and so the 402's network,
+// the EIP-712 domain and the Gate credential's chain. sim and base-sepolia
+// are fixed (1337, 84532). anvil is a private local chain: its id is the one
+// the node reports (reported, from anvilChainID), and it must be 31337 or,
+// while QuorumVault moves its anvil lane, 84532. reported is 0 when no node
+// was asked; for base-sepolia anything else but 84532 is refused.
+func chainIDFor(network string, reported uint64) (uint64, error) {
 	switch network {
 	case "sim":
 		return x402.LocalChainID, nil
-	case "base-sepolia", x402.NetworkAnvil:
-		return x402.BaseSepoliaChainID, nil // anvil runs with the testnet's chain id: the signing path is unchanged
+	case "base-sepolia":
+		if reported != 0 && reported != x402.BaseSepoliaChainID {
+			return 0, fmt.Errorf("payments config: RPC reports chain id %d, want %d", reported, x402.BaseSepoliaChainID)
+		}
+		return x402.BaseSepoliaChainID, nil
+	case x402.NetworkAnvil:
+		if err := x402.CheckAnvilChainID(reported); err != nil {
+			return 0, fmt.Errorf("payments config: %w", err)
+		}
+		return reported, nil
 	}
 	return 0, fmt.Errorf("unknown network %q (want sim, anvil or base-sepolia)", network)
+}
+
+// anvilChainID asks the anvil node ($AG_RPC_URL or http://127.0.0.1:8545)
+// for its chain id, through the same guard as every other anvil connection.
+func anvilChainID(ctx context.Context) (uint64, error) {
+	n, err := x402.DialAnvil(ctx, envOr("AG_RPC_URL", x402.DefaultAnvilURL))
+	if err != nil {
+		return 0, err
+	}
+	defer n.Close()
+	return n.ChainID, nil
 }
 
 // EnvPaidtoolToken names the token the paid tool accepts on anvil (--token).
@@ -356,8 +383,9 @@ func paidtoolCmd(ctx context.Context, args []string, stdout io.Writer) error {
 			}
 		}
 	case x402.NetworkAnvil:
-		// A local anvil node (--chain-id 84532), $AG_RPC_URL or http://127.0.0.1:8545. The
-		// guard in DialAnvil refuses anything that is not anvil before a single mint.
+		// A local anvil node (chain id 31337, or 84532 during the move), $AG_RPC_URL or
+		// http://127.0.0.1:8545. The guard in DialAnvil refuses anything that is not
+		// anvil, or has another chain id, before a single mint.
 		node, err := x402.DialAnvil(ctx, envOr("AG_RPC_URL", x402.DefaultAnvilURL))
 		if err != nil {
 			return err
@@ -371,7 +399,7 @@ func paidtoolCmd(ctx context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		cfg.Network, cfg.Token, cfg.Chain = x402.NetworkBaseSepolia, token, chain
+		cfg.Network, cfg.Token, cfg.Chain = node.Network(), token, chain // the id the node reported
 		if *fund != "" {
 			if !ecommon.IsHexAddress(*fundAddr) {
 				return errors.New("paidtool: --fund needs --fund-address")

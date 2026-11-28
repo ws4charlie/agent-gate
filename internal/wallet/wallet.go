@@ -26,8 +26,8 @@ import (
 
 // ErrRefusedChain: the signer refuses this chain id. A local key signs only
 // on the in-process simulated chain (1337); every real chain signs through
-// QuorumVault (84532, or 1337 in tests).
-var ErrRefusedChain = errors.New("wallet: refusing to start, chain id not allowed: a local key signs only on 1337 (simulated chain), QuorumVault on 84532 or 1337")
+// QuorumVault (84532 Base Sepolia, 31337 local anvil, or 1337 in tests).
+var ErrRefusedChain = errors.New("wallet: refusing to start, chain id not allowed: a local key signs only on 1337 (simulated chain), QuorumVault on 84532, 31337 or 1337")
 
 // DefaultMaxTx is the wallet's own per-transaction cap, in Nanos ($1.00).
 // It is deliberately independent of policy (I10, defence in depth): if the

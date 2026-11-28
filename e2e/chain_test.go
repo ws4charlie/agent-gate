@@ -22,7 +22,7 @@ func anvilURL(t testing.TB) string {
 		if os.Getenv("AG_REQUIRE_ANVIL") == "1" {
 			t.Fatal("AG_REQUIRE_ANVIL=1 but AG_ANVIL_URL is not set")
 		}
-		t.Skip("AG_ANVIL_URL not set: start `anvil --chain-id 84532` and set it to run the chain tests")
+		t.Skip("AG_ANVIL_URL not set: start `anvil --chain-id 31337` (84532 is still accepted) and set it to run the chain tests")
 	}
 	if err := checkLoopback(raw); err != nil {
 		t.Fatal(err)
@@ -51,7 +51,8 @@ type refusal struct{ why string }
 
 func (r *refusal) Error() string { return "e2e: refusing AG_ANVIL_URL: " + r.why }
 
-// dialAnvil connects through the same guard the binary uses (anvil, chain 84532).
+// dialAnvil connects through the same guard the binary uses (anvil, chain
+// 31337 or 84532). The tests run on whichever id the node has.
 func dialAnvil(t testing.TB) *x402.Node {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
